@@ -1,0 +1,53 @@
+.dc-root {
+  height: 100%;
+}
+
+.dc-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: calc(32 * var(--u));
+  height: calc(32 * var(--u));
+  border-radius: calc(10 * var(--u));
+  background: var(--panel);
+  color: var(--ink-2);
+  flex: none;
+}
+
+.dc-icon.is-call {
+  color: var(--accent);
+  background: var(--panel-2);
+}
+
+.dc-dot {
+  width: calc(6 * var(--u));
+  height: calc(6 * var(--u));
+  border-radius: 50%;
+  background: var(--ink-4);
+  flex: none;
+  align-self: center;
+}
+
+.dc-dot.is-call {
+  background: var(--accent);
+}
+
+.dc-label {
+  font-family: var(--font-display);
+  font-weight: var(--w-display);
+  letter-spacing: -0.03em;
+  color: var(--ink-1);
+  line-height: 1;
+}
+
+.dc-side {
+  width: calc(104 * var(--u));
+  flex: none;
+  align-items: flex-end;
+  text-align: right;
+}
+
+.dc-detection {
+  max-width: calc(104 * var(--u));
+  line-height: 1.35;
+}

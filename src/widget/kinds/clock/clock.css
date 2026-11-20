@@ -1,0 +1,47 @@
+.clock { width: 100%; height: 100%; position: relative; }
+.clock-pill { display: flex; align-items: center; gap: calc(10 * var(--u)); padding-left: calc(2 * var(--u)); }
+.clock-pill-time { position: relative; display: flex; align-items: center; }
+.clock-seconds { color: var(--ink-3); font-size: calc(13 * var(--u)); align-self: flex-start; margin-top: calc(5 * var(--u)); margin-left: calc(2 * var(--u)); }
+.clock-pill-meta { gap: calc(2 * var(--u)); }
+.clock-pill-meta .title-s { font-size: calc(11.5 * var(--u)); }
+.clock-s, .clock-m-primary { display: flex; flex-direction: column; height: 100%; }
+.clock-s-time { font-size: calc(40 * var(--u)); }
+.clock-date { margin-top: calc(6 * var(--u)); }
+.clock-inline-seconds { margin-top: calc(2 * var(--u)); }
+.clock-m { display: flex; gap: calc(14 * var(--u)); }
+.clock-m-primary { width: calc(110 * var(--u)); flex: none; }
+.clock-m-time { font-size: calc(36 * var(--u)); }
+.clock-zones { justify-content: center; }
+.clock-zone { height: calc(32 * var(--u)); flex: none; }
+.clock-zone + .clock-zone { border-top: 1px solid var(--track); }
+.clock-week { display: grid; grid-template-columns: repeat(7, 1fr); align-items: center; flex: 1; }
+.clock-week-day { text-align: center; position: relative; padding-bottom: calc(8 * var(--u)); }
+.clock-week-day.is-today { color: var(--ink-1); }
+.clock-week-day.is-today::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  bottom: 0;
+  width: calc(4 * var(--u));
+  height: calc(4 * var(--u));
+  border-radius: 50%;
+  background: var(--accent);
+  transform: translateX(-50%);
+}
+.clock-analog { padding: 0; }
+.clock-analog svg { display: block; width: 100%; height: 100%; overflow: visible; }
+.clock-tick { stroke: var(--ink-4); stroke-width: 1.5; stroke-linecap: round; }
+.clock-tick-major { stroke: var(--ink-2); stroke-width: 2; }
+.clock-hand, .clock-second line { stroke: var(--ink-1); stroke-linecap: round; }
+.clock-hour { stroke-width: 3.5; }
+.clock-minute { stroke-width: 2.5; }
+.clock-second { transform-box: view-box; transform-origin: center; animation: od-clock-second 60s steps(60, end) infinite; }
+.clock-second line { stroke: var(--accent); stroke-width: 1.3; }
+.clock-center { fill: var(--ink-1); }
+.clock-center.is-second { fill: var(--accent); }
+.rolling-number { display: inline-flex; align-items: baseline; }
+.rolling-static, .rolling-digit { display: inline-block; white-space: pre; }
+.rolling-digit { display: inline-grid; width: 1ch; overflow: hidden; }
+.rolling-digit > span { grid-area: 1 / 1; }
+.rolling-old { animation: od-digit-out 260ms var(--e-out) both; }
+.rolling-new { animation: od-digit-in 320ms var(--e-out) both; }

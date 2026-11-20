@@ -1,0 +1,110 @@
+.note-root {
+  position: relative;
+  height: 100%;
+}
+.note-body {
+  position: relative;
+  margin-top: calc(8 * var(--u));
+  flex: 1;
+  min-height: 0;
+  border-radius: var(--r-panel);
+  background: transparent;
+  transition: background var(--d-fast) var(--e-soft);
+  overflow: hidden;
+}
+.note-body.is-focused {
+  background: var(--panel);
+}
+.note-textarea {
+  width: 100%;
+  height: 100%;
+  border: 0;
+  outline: 0;
+  resize: none;
+  background: transparent;
+  color: var(--ink-1);
+  caret-color: var(--accent);
+  line-height: 1.45;
+  padding: calc(4 * var(--u));
+  overflow-y: auto;
+  scrollbar-width: none;
+  user-select: text;
+}
+.note-textarea::-webkit-scrollbar {
+  display: none;
+}
+.note-textarea.is-scrollable {
+  -webkit-mask-image: linear-gradient(
+    180deg,
+    transparent,
+    #000 calc(16 * var(--u)),
+    #000 calc(100% - 16 * var(--u)),
+    transparent
+  );
+  mask-image: linear-gradient(
+    180deg,
+    transparent,
+    #000 calc(16 * var(--u)),
+    #000 calc(100% - 16 * var(--u)),
+    transparent
+  );
+}
+.note-textarea::placeholder {
+  color: var(--ink-4);
+}
+
+.note-list {
+  height: 100%;
+  overflow-y: auto;
+  scrollbar-width: none;
+  padding: calc(2 * var(--u)) calc(4 * var(--u));
+}
+.note-list::-webkit-scrollbar {
+  display: none;
+}
+.note-row {
+  min-height: calc(26 * var(--u));
+  gap: calc(8 * var(--u));
+}
+.note-check {
+  width: calc(20 * var(--u));
+  height: calc(20 * var(--u));
+  border: 0;
+  padding: 0;
+  background: transparent;
+  color: var(--ink-2);
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+  flex: none;
+}
+.note-check.is-done {
+  color: var(--ink-1);
+}
+.note-item-input {
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: var(--ink-1);
+  caret-color: var(--accent);
+  line-height: 1.3;
+  padding: 0;
+  user-select: text;
+}
+.note-item-input::placeholder {
+  color: var(--ink-4);
+}
+.note-item-input.is-done {
+  color: var(--ink-3);
+  text-decoration: line-through;
+  text-decoration-thickness: 1px;
+}
+.note-save-error {
+  position: absolute;
+  right: 0;
+  bottom: calc(-2 * var(--u));
+  color: var(--crit);
+  pointer-events: none;
+}

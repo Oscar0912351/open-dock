@@ -1,0 +1,280 @@
+.eq {
+  display: flex;
+  align-items: flex-end;
+  gap: calc(2 * var(--u));
+  height: calc(var(--eqh, 13) * var(--u));
+}
+.eq i {
+  width: calc(2.5 * var(--u));
+  height: 100%;
+  border-radius: calc(1.5 * var(--u));
+  background: var(--accent);
+  transform-origin: bottom;
+  animation: od-eq var(--d) ease-in-out infinite;
+  animation-delay: var(--dl);
+}
+.theme-laerk .eq i {
+  background: var(--ink-1);
+}
+.eq.paused i {
+  animation: none;
+  transform: scaleY(var(--h));
+}
+
+.prog-hit {
+  position: relative;
+  width: 100%;
+  height: calc(14 * var(--u));
+  margin: calc(-5 * var(--u)) 0;
+  display: flex;
+  align-items: center;
+  touch-action: none;
+  cursor: pointer;
+}
+.prog-hit.is-unsupported {
+  cursor: default;
+}
+.prog {
+  position: relative;
+  width: 100%;
+  border-radius: 999px;
+  background: var(--track);
+  overflow: visible;
+  transition: height 140ms var(--e-out);
+}
+.prog-seekable {
+  cursor: pointer;
+}
+.prog > i {
+  display: block;
+  height: 100%;
+  width: 100%;
+  background: var(--accent);
+  border-radius: inherit;
+  transform-origin: left;
+  transform: scaleX(var(--p-live, var(--p0, 0)));
+}
+.prog > i.is-playing {
+  animation: od-progress var(--rest, 1ms) linear forwards;
+}
+.theme-laerk .prog > i {
+  background: var(--ink-1);
+}
+.prog-thumb {
+  position: absolute;
+  top: 50%;
+  width: calc(8 * var(--u));
+  height: calc(8 * var(--u));
+  border-radius: 50%;
+  background: var(--ink-1);
+  transform: translate(-50%, -50%) scale(0);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 120ms var(--e-soft), transform 140ms var(--e-out);
+}
+.prog-hit:hover .prog-thumb,
+.prog-hit:focus-visible .prog-thumb,
+.prog-hit.is-dragging .prog-thumb {
+  opacity: 1;
+  transform: translate(-50%, -50%) scale(1);
+}
+.prog-tooltip {
+  position: absolute;
+  bottom: calc(100% + 4 * var(--u));
+  transform: translateX(-50%);
+  background: var(--chip-bg);
+  color: var(--ink-1);
+  padding: calc(2 * var(--u)) calc(6 * var(--u));
+  border-radius: 999px;
+  pointer-events: none;
+  white-space: nowrap;
+  backdrop-filter: blur(10px);
+  z-index: 2;
+}
+.prog-tooltip.is-hint {
+  font-family: var(--font-ui);
+  font-size: calc(9.5 * var(--u));
+  max-width: calc(220 * var(--u));
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.np-cover {
+  position: relative;
+  flex: none;
+  overflow: hidden;
+  border-radius: calc(var(--cr, 12) * var(--u));
+  width: calc(var(--cs, 50) * var(--u));
+  height: calc(var(--cs, 50) * var(--u));
+  background: var(--panel);
+  display: grid;
+  place-items: center;
+}
+.np-cover img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+  animation: od-cover-in 380ms var(--e-out) both;
+}
+.np-cover::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  box-shadow: inset 0 0 0 1px var(--edge);
+  pointer-events: none;
+}
+
+@keyframes od-cover-in {
+  from {
+    opacity: 0;
+    transform: scale(1.04);
+    filter: blur(6px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+    filter: none;
+  }
+}
+
+.np-stopped {
+  opacity: .6;
+}
+
+.np-pill {
+  height: 100%;
+}
+.np-pill-action {
+  position: relative;
+  width: calc(28 * var(--u));
+  height: calc(28 * var(--u));
+  display: grid;
+  place-items: center;
+  margin-right: calc(4 * var(--u));
+  flex: none;
+}
+.np-pill-eq,
+.np-pill-pause {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  transition: opacity 160ms var(--e-soft);
+}
+.np-pill-pause {
+  opacity: 0;
+  pointer-events: none;
+}
+.widget:hover .np-pill-eq.is-active {
+  opacity: 0;
+}
+.widget:hover .np-pill-pause.is-active {
+  opacity: 1;
+  pointer-events: auto;
+}
+.np-pill-prog {
+  position: absolute;
+  left: calc(48 * var(--u));
+  right: calc(16 * var(--u));
+  bottom: calc(4 * var(--u));
+  opacity: .7;
+}
+
+.np-s-top {
+  align-items: stretch;
+}
+.np-s-side {
+  align-items: flex-end;
+}
+.np-s-meta {
+  gap: calc(1 * var(--u));
+  margin-top: calc(8 * var(--u));
+}
+
+.np-m-root {
+  height: 100%;
+}
+.np-m-info {
+  height: 100%;
+  min-width: 0;
+}
+.np-m-text {
+  gap: calc(2 * var(--u));
+  margin-top: calc(6 * var(--u));
+}
+.np-m-controls {
+  margin-top: calc(5 * var(--u));
+  margin-left: calc(-4 * var(--u));
+}
+
+.np-l-cover {
+  width: 100%;
+  height: calc(132 * var(--u));
+  border-radius: var(--r-panel);
+}
+.np-l-chip {
+  position: absolute;
+  left: calc(8 * var(--u));
+  bottom: calc(8 * var(--u));
+  background: rgba(10, 20, 26, .42);
+  color: #fff;
+  backdrop-filter: blur(12px);
+}
+.np-l-head {
+  margin-top: calc(10 * var(--u));
+  gap: calc(8 * var(--u));
+}
+.np-l-title {
+  font-size: calc(18 * var(--u));
+  font-weight: var(--w-title);
+  letter-spacing: -.02em;
+  line-height: 1.2;
+}
+.theme-laerk .np-l-title {
+  font-weight: 400;
+}
+.np-l-times {
+  margin-top: calc(4 * var(--u));
+}
+.np-l-controls {
+  justify-content: center;
+  gap: calc(4 * var(--u));
+  margin-top: calc(2 * var(--u));
+}
+.np-btn-muted {
+  color: var(--ink-3);
+}
+.np-btn-active {
+  color: var(--accent);
+}
+
+/* Kilde-chips: skift mellem samtidige mediesessioner (Spotify, YouTube m.fl.) */
+.np-sources {
+  display: flex;
+  gap: calc(4 * var(--u));
+  min-width: 0;
+  overflow: hidden;
+}
+
+.np-source-chip {
+  cursor: pointer;
+  border: 0;
+  font-family: var(--font-ui);
+  font-size: calc(10.5 * var(--u));
+  font-weight: 500;
+  color: var(--ink-3);
+  flex: none;
+  transition: background 140ms var(--e-soft), color 140ms var(--e-soft);
+}
+
+.np-source-chip:hover {
+  color: var(--ink-2);
+  background: var(--panel);
+}
+
+.np-source-chip.is-active {
+  color: var(--ink-1);
+  background: var(--panel-2);
+}

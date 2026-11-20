@@ -1,0 +1,175 @@
+import { convertFileSrc, invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
+import { getCurrentWindow } from "@tauri-apps/api/window";
+import type { Appearance } from "./bindings/Appearance";
+import type { AppearancePatch } from "./bindings/AppearancePatch";
+import type { AppPaused } from "./bindings/AppPaused";
+import type { AppStats } from "./bindings/AppStats";
+import type { AppStatus } from "./bindings/AppStatus";
+import type { AppVisible } from "./bindings/AppVisible";
+import type { Config } from "./bindings/Config";
+import type { DiscordSnapshot } from "./bindings/DiscordSnapshot";
+import type { EditDragging } from "./bindings/EditDragging";
+import type { EditGuides } from "./bindings/EditGuides";
+import type { EditModeState } from "./bindings/EditModeState";
+import type { EditSelected } from "./bindings/EditSelected";
+import type { GeneralPatch } from "./bindings/GeneralPatch";
+import type { GeoResult } from "./bindings/GeoResult";
+import type { MediaAction } from "./bindings/MediaAction";
+import type { MediaSnapshot } from "./bindings/MediaSnapshot";
+import type { MonitorInfo } from "./bindings/MonitorInfo";
+import type { MonitorWallpaperPatch } from "./bindings/MonitorWallpaperPatch";
+import type { ProviderKind } from "./bindings/ProviderKind";
+import type { ProviderSnapshot } from "./bindings/ProviderSnapshot";
+import type { SystemCaps } from "./bindings/SystemCaps";
+import type { SystemSample } from "./bindings/SystemSample";
+import type { VerticalAnchor } from "./bindings/VerticalAnchor";
+import type { WallpaperEngineSettingsPatch } from "./bindings/WallpaperEngineSettingsPatch";
+import type { WallpaperEngineStatus } from "./bindings/WallpaperEngineStatus";
+import type { WallpaperFit } from "./bindings/WallpaperFit";
+import type { WallpaperItem } from "./bindings/WallpaperItem";
+import type { WeatherSnapshot } from "./bindings/WeatherSnapshot";
+import type { WidgetBoot } from "./bindings/WidgetBoot";
+import type { WidgetGlassState } from "./bindings/WidgetGlassState";
+import type { WidgetInstance } from "./bindings/WidgetInstance";
+import type { WidgetKind } from "./bindings/WidgetKind";
+import type { WidgetPatch } from "./bindings/WidgetPatch";
+import type { WidgetPlacement } from "./bindings/WidgetPlacement";
+import type { WidgetSize } from "./bindings/WidgetSize";
+import type { WindowsQualityStatus } from "./bindings/WindowsQualityStatus";
+
+export function toAssetUrl(path: string): string {
+  return path ? convertFileSrc(path) : "";
+}
+
+export const ipc = {
+  configGet: () => invoke<Config>("config_get"),
+  configTakeRestoreNotice: () => invoke<string | null>("config_take_restore_notice"),
+  appearanceGet: () => invoke<Appearance>("appearance_get"),
+  appearancePatch: (patch: AppearancePatch) => invoke<Config>("appearance_patch", { patch }),
+  generalPatch: (patch: GeneralPatch) => invoke<Config>("general_patch", { patch }),
+  onboardingComplete: () => invoke<Config>("onboarding_complete"),
+  widgetAdd: (kind: WidgetKind, size: WidgetSize, monitor?: string | null) =>
+    invoke<WidgetInstance>("widget_add", { kind, size, monitor: monitor ?? null }),
+  widgetUpdate: (id: string, patch: WidgetPatch) =>
+    invoke<WidgetInstance>("widget_update", { id, patch }),
+  widgetRemove: (id: string) => invoke<void>("widget_remove", { id }),
+  widgetDuplicate: (id: string) => invoke<WidgetInstance>("widget_duplicate", { id }),
+  widgetRestore: (instance?: WidgetInstance | null) =>
+    invoke<WidgetInstance>("widget_restore", { instance: instance ?? null }),
+  widgetMove: (id: string, monitor: string, x: number, y: number) =>
+    invoke<WidgetInstance>("widget_move", { id, monitor, x, y }),
+  widgetReady: (id: string) => invoke<WidgetBoot>("widget_ready", { id }),
+  widgetSetFocusable: (id: string, focusable: boolean) =>
+    invoke<void>("widget_set_focusable", { id, focusable }),
+  widgetContextMenu: (id: string) => invoke<void>("widget_context_menu", { id }),
+  clusterAddPreset: (presetId: string, monitor?: string | null) =>
+    invoke<WidgetInstance[]>("cluster_add_preset", { presetId, monitor: monitor ?? null }),
+  clusterSetWindowSize: (
+    id: string,
+    width: number,
+    height: number,
+    anchor: VerticalAnchor,
+  ) => invoke<void>("cluster_set_window_size", { id, width, height, anchor }),
+  editSet: (on: boolean) => invoke<void>("edit_set", { on }),
+  editBeginDrag: (id: string) => invoke<void>("edit_begin_drag", { id }),
+  editNudge: (id: string, dx: number, dy: number) => invoke<void>("edit_nudge", { id, dx, dy }),
+  editCycleSize: (id: string) => invoke<WidgetInstance>("edit_cycle_size", { id }),
+  monitorsList: () => invoke<MonitorInfo[]>("monitors_list"),
+  providerSubscribe: (kind: ProviderKind, key?: string | null) =>
+    invoke<ProviderSnapshot | null>("provider_subscribe", { kind, key: key ?? null }),
+  providerUnsubscribe: (kind: ProviderKind, key?: string | null) =>
+    invoke<void>("provider_unsubscribe", { kind, key: key ?? null }),
+  mediaControl: (action: MediaAction, source?: string | null) =>
+    invoke<void>("media_control", { action, source: source ?? null }),
+  systemHistory: () => invoke<SystemSample[]>("system_history"),
+  systemCaps: () => invoke<SystemCaps>("system_caps"),
+  weatherSearch: (query: string) => invoke<GeoResult[]>("weather_search", { query }),
+  weatherLocationAdd: (result: GeoResult) => invoke<Config>("weather_location_add", { result }),
+  weatherLocationRemove: (id: string) => invoke<Config>("weather_location_remove", { id }),
+  weatherRefresh: (locationId: string) => invoke<void>("weather_refresh", { locationId }),
+  mediaSelectSource: (source: string | null) => invoke<void>("media_select_source", { source }),
+  noteLoad: (id: string) => invoke<string>("note_load", { id }),
+  noteSave: (id: string, text: string) => invoke<void>("note_save", { id, text }),
+  appOpenControl: (route?: string | null) =>
+    invoke<void>("app_open_control", { route: route ?? null }),
+  appToggleDevtools: () => invoke<void>("app_toggle_devtools"),
+  appQuit: () => invoke<void>("app_quit"),
+  appSetVisible: (visible: boolean) => invoke<void>("app_set_visible", { visible }),
+  appSetPaused: (paused: boolean) => invoke<void>("app_set_paused", { paused }),
+  appStatus: () => invoke<AppStatus>("app_status"),
+  appStats: () => invoke<AppStats>("app_stats"),
+  appOpenFolder: (kind: "logs" | "data") => invoke<void>("app_open_folder", { kind }),
+  layoutExport: (path: string) => invoke<void>("layout_export", { path }),
+  layoutImport: (path: string) => invoke<Config>("layout_import", { path }),
+  appReset: () => invoke<Config>("app_reset"),
+  wallpaperCatalog: () => invoke<WallpaperItem[]>("wallpaper_catalog"),
+  wallpaperApply: (
+    wallpaperId: string,
+    monitor?: string | null,
+    fit?: WallpaperFit | null,
+  ) => invoke<Config>("wallpaper_apply", { wallpaperId, monitor: monitor ?? null, fit: fit ?? null }),
+  wallpaperUpdateAssignment: (monitor: string | null, patch: MonitorWallpaperPatch) =>
+    invoke<Config>("wallpaper_update_assignment", { monitor, patch }),
+  wallpaperEnginePatch: (patch: WallpaperEngineSettingsPatch) =>
+    invoke<Config>("wallpaper_engine_patch", { patch }),
+  wallpaperStopLive: (monitor?: string | null) =>
+    invoke<Config>("wallpaper_stop_live", { monitor: monitor ?? null }),
+  wallpaperImport: (path: string) => invoke<WallpaperItem>("wallpaper_import", { path }),
+  wallpaperDeleteCustom: (id: string) => invoke<Config>("wallpaper_delete_custom", { id }),
+  wallpaperEngineStatus: () => invoke<WallpaperEngineStatus>("wallpaper_engine_status"),
+  wallpaperWindowsQualityGet: () => invoke<WindowsQualityStatus>("wallpaper_windows_quality_get"),
+  wallpaperWindowsQualitySet: (enabled: boolean) =>
+    invoke<WindowsQualityStatus>("wallpaper_windows_quality_set", { enabled }),
+};
+
+export const on = {
+  config: (callback: (config: Config) => void) =>
+    listen<Config>("config://changed", (event) => callback(event.payload)),
+  configRestored: (callback: (message: string) => void) =>
+    listen<string>("config://restored", (event) => callback(event.payload)),
+  editMode: (callback: (state: EditModeState) => void) =>
+    listen<EditModeState>("edit://mode", (event) => callback(event.payload)),
+  editSelected: (callback: (state: EditSelected) => void) =>
+    listen<EditSelected>("edit://selected", (event) => callback(event.payload)),
+  editDragging: (callback: (state: EditDragging) => void) =>
+    listen<EditDragging>("edit://dragging", (event) => callback(event.payload)),
+  editGuides: (callback: (guides: EditGuides) => void) =>
+    listen<EditGuides>("edit://guides", (event) => callback(event.payload)),
+  paused: (callback: (state: AppPaused) => void) =>
+    listen<AppPaused>("app://paused", (event) => callback(event.payload)),
+  visible: (callback: (state: AppVisible) => void) =>
+    listen<AppVisible>("app://visible", (event) => callback(event.payload)),
+  trayNotice: (callback: (message: string) => void) =>
+    listen<string>("app://tray-notice", (event) => callback(event.payload)),
+  monitors: (callback: (monitors: MonitorInfo[]) => void) =>
+    listen<MonitorInfo[]>("desktop://monitors", (event) => callback(event.payload)),
+  placement: (callback: (placement: WidgetPlacement) => void) =>
+    listen<WidgetPlacement>("widget://placement", (event) => callback(event.payload)),
+  glass: (callback: (glass: WidgetGlassState) => void) =>
+    listen<WidgetGlassState>("widget://glass", (event) => callback(event.payload)),
+  widgetRemoved: (callback: (instance: WidgetInstance) => void) =>
+    listen<WidgetInstance>("widget://removed", (event) => callback(event.payload)),
+  navigate: (callback: (route: string) => void) =>
+    listen<string>("app://navigate", (event) => callback(event.payload)),
+  media: (callback: (snapshot: MediaSnapshot) => void) =>
+    listen<MediaSnapshot>("provider://media", (event) => callback(event.payload)),
+  system: (callback: (sample: SystemSample) => void) =>
+    listen<SystemSample>("provider://system", (event) => callback(event.payload)),
+  weather: (callback: (snapshot: WeatherSnapshot) => void) =>
+    listen<WeatherSnapshot>("provider://weather", (event) => callback(event.payload)),
+  discord: (callback: (snapshot: DiscordSnapshot) => void) =>
+    listen<DiscordSnapshot>("provider://discord", (event) => callback(event.payload)),
+  wallpaperStatus: (callback: (status: WallpaperEngineStatus) => void) =>
+    listen<WallpaperEngineStatus>("wallpaper://status", (event) => callback(event.payload)),
+  wallpaperThumbsReady: (callback: () => void) =>
+    listen<void>("wallpaper://thumbs-ready", () => callback()),
+};
+
+export const windowControls = {
+  minimize: () => getCurrentWindow().minimize(),
+  toggleMaximize: () => getCurrentWindow().toggleMaximize(),
+  isMaximized: () => getCurrentWindow().isMaximized(),
+  onResized: (cb: () => void) => getCurrentWindow().onResized(cb),
+  close: () => getCurrentWindow().close(),
+};

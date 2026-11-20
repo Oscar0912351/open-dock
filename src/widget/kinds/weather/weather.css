@@ -1,0 +1,71 @@
+.wx-s-label {
+  margin-top: calc(6 * var(--u));
+}
+.wx-s-hl {
+  margin-top: calc(2 * var(--u));
+}
+.wx-stale-foot {
+  margin-top: calc(3 * var(--u));
+}
+
+.wx-m-root {
+  height: 100%;
+}
+.wx-m-left {
+  width: calc(100 * var(--u));
+  height: 100%;
+  flex: none;
+}
+.wx-m-hours {
+  align-items: stretch;
+}
+.wx-m-col {
+  align-items: center;
+  justify-content: space-between;
+  width: calc(24 * var(--u));
+}
+.wx-m-temp {
+  font-size: calc(12.5 * var(--u));
+}
+
+.wx-l-head {
+  align-items: flex-start;
+}
+.wx-l-temp-row {
+  align-items: flex-end;
+  margin-top: calc(10 * var(--u));
+}
+.wx-l-feels {
+  padding-bottom: calc(6 * var(--u));
+}
+.wx-l-metrics {
+  margin-top: calc(12 * var(--u));
+}
+.wx-l-metric-val {
+  font-size: calc(12.5 * var(--u));
+}
+.wx-l-chart-wrap {
+  position: relative;
+  margin: 0 calc(-2 * var(--u));
+}
+.wx-l-slots-top {
+  padding: 0 calc(2 * var(--u));
+  margin-bottom: calc(2 * var(--u));
+}
+.wx-l-slot {
+  align-items: center;
+  gap: calc(2 * var(--u));
+  width: calc(24 * var(--u));
+}
+.wx-l-slots-bot {
+  padding: 0 calc(2 * var(--u));
+  margin-top: calc(3 * var(--u));
+}
+.wx-l-time {
+  width: calc(24 * var(--u));
+  text-align: center;
+}
+.wx-l-time.is-now {
+  color: var(--ink-1);
+  font-weight: 600;
+}

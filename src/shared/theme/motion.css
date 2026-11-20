@@ -1,0 +1,137 @@
+@keyframes od-form {
+  from { opacity: 0; clip-path: inset(7% round var(--r-widget)); }
+  to { opacity: 1; clip-path: inset(0 round var(--r-widget)); }
+}
+@keyframes od-rise {
+  from { opacity: 0; transform: translateY(calc(8 * var(--u))); }
+  to { opacity: 1; transform: none; }
+}
+@keyframes od-pop {
+  from { opacity: 0; transform: scale(.7); }
+  to { opacity: 1; transform: none; }
+}
+@keyframes od-lineup {
+  from { transform: translateY(115%); }
+  to { transform: none; }
+}
+@keyframes od-draw {
+  from { stroke-dashoffset: 1; }
+  to { stroke-dashoffset: 0; }
+}
+@keyframes od-wipe-x {
+  from { transform: scaleX(0); }
+  to { transform: scaleX(1); }
+}
+@keyframes od-sheen {
+  from { transform: translate3d(-150%,0,0) skewX(-18deg); }
+  to { transform: translate3d(260%,0,0) skewX(-18deg); }
+}
+@keyframes od-digit-in {
+  from { opacity: 0; transform: translateY(38%); }
+  to { opacity: 1; transform: none; }
+}
+@keyframes od-digit-out {
+  from { opacity: 1; transform: none; }
+  to { opacity: 0; transform: translateY(-38%); }
+}
+@keyframes od-fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+@keyframes od-fade-out {
+  from { opacity: 1; }
+  to { opacity: 0; }
+}
+@keyframes od-eq {
+  0%,100% { transform: scaleY(.28); }
+  50% { transform: scaleY(1); }
+}
+@keyframes od-shimmer {
+  from { background-position: -160% 0; }
+  to { background-position: 260% 0; }
+}
+@keyframes od-progress {
+  from { transform: scaleX(var(--p0)); }
+  to { transform: scaleX(1); }
+}
+@keyframes od-bar {
+  from { transform: scaleX(0); }
+  to { transform: scaleX(var(--v, 0)); }
+}
+@keyframes od-ring {
+  from { stroke-dasharray: 0 100; }
+}
+@keyframes od-focus-pulse {
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(1.04); }
+}
+@keyframes od-clock-second {
+  from { transform: rotate(var(--second-angle)); }
+  to { transform: rotate(calc(var(--second-angle) + 360deg)); }
+}
+
+[data-enter] {
+  animation: od-rise 600ms var(--e-out) both;
+  animation-delay: calc(var(--t0, 0ms) + 160ms + var(--i, 0) * 60ms);
+}
+[data-enter="pop"] {
+  animation-name: od-pop;
+  animation-duration: 520ms;
+}
+
+.motion-calm .widget {
+  animation: od-fade-in 300ms var(--e-soft) both;
+  animation-delay: var(--t0, 0ms);
+}
+.motion-calm [data-enter] {
+  animation: none;
+}
+.motion-calm .glass-sheen {
+  display: none;
+}
+.motion-calm .rolling-old {
+  animation: od-fade-out 160ms var(--e-soft) both;
+}
+.motion-calm .rolling-new {
+  animation: od-fade-in 160ms var(--e-soft) both;
+}
+.motion-calm .eq i {
+  animation: none !important;
+  transform: scaleY(var(--h, .35));
+}
+
+.motion-off *, .motion-off *::before, .motion-off *::after {
+  animation: none !important;
+  transition: none !important;
+}
+.motion-off .glass-sheen { display: none; }
+.motion-off .prog > i,
+.motion-off .c-media-prog-edge > i {
+  transform: scaleX(var(--p-live, var(--p0, 0)));
+}
+.motion-off .curve path,
+.motion-off .curve .draw {
+  stroke-dasharray: none;
+  stroke-dashoffset: 0;
+}
+.motion-off .curve .dotted,
+.motion-off .curve .pt { opacity: 1; }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation: none !important;
+    transition: none !important;
+  }
+  .glass-sheen { display: none; }
+  .prog > i,
+  .c-media-prog-edge > i {
+    transform: scaleX(var(--p-live, var(--p0, 0)));
+  }
+  .curve path,
+  .curve .draw {
+    stroke-dasharray: none;
+    stroke-dashoffset: 0;
+  }
+  .curve .dotted,
+  .curve .pt { opacity: 1; }
+}

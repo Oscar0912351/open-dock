@@ -1,0 +1,404 @@
+.cluster-content {
+  display: flex;
+  flex-direction: column;
+  gap: calc(6 * var(--u));
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+}
+
+.is-fixed .cluster-content {
+  justify-content: space-between;
+}
+
+.c-mod {
+  position: relative;
+  border-radius: calc(12 * var(--u));
+  padding: calc(6 * var(--u)) calc(8 * var(--u));
+  margin: calc(-2 * var(--u)) calc(-4 * var(--u));
+  cursor: pointer;
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  min-width: 0;
+  transition: background 160ms var(--e-soft);
+}
+
+.c-mod:hover {
+  background: var(--veil);
+}
+
+.c-mod.is-exp {
+  background: var(--panel);
+  padding: calc(8 * var(--u)) calc(10 * var(--u));
+  margin: 0;
+  justify-content: flex-start;
+}
+
+.is-fixed .c-mod.is-exp {
+  flex: 1 1 auto;
+  min-height: 0;
+  justify-content: space-between;
+}
+
+.c-mod-clock-cmp,
+.c-mod-sys-cmp,
+.c-mod-wx-cmp,
+.c-mod-note-cmp {
+  min-height: calc(32 * var(--u));
+}
+
+.c-mod-media-cmp {
+  min-height: calc(40 * var(--u));
+  padding-bottom: calc(8 * var(--u));
+}
+
+.c-mod-focus-cmp {
+  min-height: calc(36 * var(--u));
+}
+
+.c-mod-clock-exp { min-height: calc(76 * var(--u)); }
+.c-mod-media-exp { min-height: calc(102 * var(--u)); }
+.c-mod-sys-exp { min-height: calc(104 * var(--u)); }
+.c-mod-wx-exp { min-height: calc(112 * var(--u)); }
+.c-mod-note-exp { min-height: calc(104 * var(--u)); }
+.c-mod-focus-exp { min-height: calc(80 * var(--u)); }
+
+.c-sep {
+  height: 1px;
+  background: var(--track);
+  margin: calc(-3 * var(--u)) calc(2 * var(--u));
+  flex: none;
+}
+
+.c-hint {
+  display: inline-flex;
+  align-items: center;
+  gap: calc(3 * var(--u));
+  opacity: 0;
+  color: var(--ink-3);
+  transition: opacity 140ms var(--e-soft);
+  flex: none;
+}
+
+.c-mod:hover .c-hint {
+  opacity: 1;
+}
+
+/* Afspiller i klynge */
+.c-cover {
+  width: calc(var(--cs, 26) * var(--u));
+  height: calc(var(--cs, 26) * var(--u));
+  border-radius: calc(var(--cr, 6) * var(--u));
+  background: var(--panel);
+  background-size: cover;
+  background-position: center;
+  border: 1px solid var(--edge);
+  display: grid;
+  place-items: center;
+  color: var(--ink-3);
+  flex: none;
+  overflow: hidden;
+}
+
+.c-media-toggle {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: calc(22 * var(--u));
+  height: calc(22 * var(--u));
+  flex: none;
+}
+
+.c-media-toggle .c-media-hover-btn {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.c-mod:hover .c-media-toggle .c-media-eq {
+  opacity: 0;
+}
+
+.c-mod:hover .c-media-toggle .c-media-hover-btn {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.c-media-prog-edge {
+  position: absolute;
+  left: calc(8 * var(--u));
+  right: calc(8 * var(--u));
+  bottom: calc(2 * var(--u));
+  height: calc(2 * var(--u));
+  border-radius: calc(1 * var(--u));
+  background: var(--track);
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.c-media-prog-edge > i {
+  display: block;
+  width: 100%;
+  height: 100%;
+  background: var(--accent);
+  transform-origin: left center;
+  transform: scaleX(var(--p-live, var(--p0, 0)));
+}
+
+.c-media-prog-edge > i.is-playing {
+  animation: od-progress var(--rest, 1ms) linear forwards;
+}
+
+/* System mini bars */
+.c-sys-stat {
+  display: flex;
+  flex-direction: column;
+  gap: calc(2 * var(--u));
+  min-width: 0;
+  flex: 1 1 0;
+}
+
+.c-mini-bar {
+  height: calc(2 * var(--u));
+  border-radius: calc(1 * var(--u));
+  background: var(--track);
+  overflow: hidden;
+}
+
+.c-mini-bar > i {
+  display: block;
+  height: 100%;
+  background: var(--accent);
+  transform-origin: left center;
+  transition: transform 320ms var(--e-soft), background 240ms var(--e-soft);
+}
+
+.c-mini-bar > i.is-warn { background: var(--warn); }
+.c-mini-bar > i.is-crit { background: var(--crit); }
+
+.c-spark {
+  width: 100%;
+  height: calc(36 * var(--u));
+  display: block;
+}
+
+.c-wave {
+  width: 100%;
+  height: calc(34 * var(--u));
+  display: block;
+}
+
+/* Fokus mini-ring knap */
+.c-focus-ring-wrap {
+  position: relative;
+  display: grid;
+  place-items: center;
+  flex: none;
+}
+
+.c-focus-ring-btn {
+  width: calc(22 * var(--u));
+  height: calc(22 * var(--u));
+  border-radius: 50%;
+  border: 0;
+  padding: 0;
+  background: transparent;
+  color: var(--ink-1);
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+}
+
+/* Note i klynge */
+.c-note-area {
+  width: 100%;
+  flex: 1 1 auto;
+  min-height: calc(58 * var(--u));
+  margin-top: calc(6 * var(--u));
+  border: 0;
+  outline: none;
+  resize: none;
+  background: transparent;
+  color: var(--ink-1);
+  font-family: var(--font-ui);
+  font-size: calc(12 * var(--u));
+  line-height: 1.4;
+}
+
+.c-note-area::placeholder {
+  color: var(--ink-3);
+}
+
+.c-note-list {
+  display: flex;
+  flex-direction: column;
+  gap: calc(4 * var(--u));
+  margin-top: calc(6 * var(--u));
+}
+
+.c-note-row {
+  display: flex;
+  align-items: center;
+  gap: calc(6 * var(--u));
+  font-size: calc(11.5 * var(--u));
+  line-height: 1.25;
+  min-width: 0;
+}
+
+.c-note-check {
+  border: 0;
+  padding: 0;
+  background: transparent;
+  color: var(--accent);
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+  flex: none;
+}
+
+.c-note-row input[type="text"] {
+  border: 0;
+  outline: none;
+  background: transparent;
+  color: var(--ink-1);
+  font: inherit;
+  width: 100%;
+  min-width: 0;
+}
+
+.c-note-row.is-done input[type="text"] {
+  color: var(--ink-3);
+  text-decoration: line-through;
+}
+
+/* Kapsel-Bar header strip */
+.c-pillbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: calc(4 * var(--u));
+  height: calc(32 * var(--u));
+  min-height: calc(32 * var(--u));
+  width: 100%;
+}
+
+.c-pill-chip {
+  height: calc(28 * var(--u));
+  border: 0;
+  border-radius: calc(10 * var(--u));
+  padding: 0 calc(7 * var(--u));
+  background: transparent;
+  color: var(--ink-1);
+  font-family: var(--font-ui);
+  font-size: calc(12 * var(--u));
+  display: inline-flex;
+  align-items: center;
+  gap: calc(5 * var(--u));
+  cursor: pointer;
+  min-width: 0;
+  transition: background 150ms var(--e-soft), color 150ms var(--e-soft);
+}
+
+.c-pill-chip:hover {
+  background: var(--veil);
+}
+
+.c-pill-chip.is-active {
+  background: var(--panel);
+  color: var(--ink-1);
+}
+
+.c-pill-divider {
+  width: 1px;
+  height: calc(14 * var(--u));
+  background: var(--track);
+  flex: none;
+}
+
+/* View Transitions inde i klynger */
+.cluster-content ::view-transition-group(*),
+::view-transition-group(*) {
+  animation-duration: 300ms;
+  animation-timing-function: cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.motion-calm ::view-transition-group(*) {
+  animation-duration: 180ms;
+}
+
+/* Kilde-chips i klyngens afspiller-modul */
+.c-sources {
+  display: flex;
+  gap: calc(4 * var(--u));
+  min-width: 0;
+  overflow: hidden;
+}
+
+.c-source-chip {
+  cursor: pointer;
+  border: 0;
+  font-family: var(--font-ui);
+  color: var(--ink-3);
+  flex: none;
+  transition: background 140ms var(--e-soft), color 140ms var(--e-soft);
+}
+
+.c-source-chip:hover {
+  color: var(--ink-2);
+  background: var(--panel);
+}
+
+.c-source-chip.is-active {
+  color: var(--ink-1);
+  background: var(--panel-2);
+}
+
+.c-source-count {
+  cursor: pointer;
+  border: 0;
+  font-family: var(--font-ui);
+  font-size: calc(9.5 * var(--u));
+  font-weight: 600;
+  height: calc(15 * var(--u));
+  padding: 0 calc(6 * var(--u));
+  color: var(--ink-2);
+  flex: none;
+  align-self: center;
+}
+
+.c-source-count:hover {
+  background: var(--panel-2);
+  color: var(--ink-1);
+}
+
+/* Discord-modul */
+.c-discord-ico {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: calc(20 * var(--u));
+  height: calc(20 * var(--u));
+  border-radius: calc(6 * var(--u));
+  background: var(--panel);
+  color: var(--ink-2);
+  flex: none;
+}
+
+.c-discord-ico.is-call {
+  color: var(--accent);
+  background: var(--panel-2);
+}
+
+.c-mod-discord-cmp {
+  height: calc(32 * var(--u));
+  display: flex;
+  align-items: center;
+}
+
+.c-mod-discord-exp {
+  min-height: calc(76 * var(--u));
+}

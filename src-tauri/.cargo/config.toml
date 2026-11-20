@@ -1,0 +1,4 @@
+# Hurtigere linkning: rust-lld følger med Rust-toolchainen (jf. Bevy's config_fast_builds.toml).
+# Se plan/09-optimering.md §2.2. MSVC link.exe er den serielle hale i hver build.
+[target.x86_64-pc-windows-msvc]
+linker = "rust-lld.exe"

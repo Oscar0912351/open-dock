@@ -1,0 +1,19 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "control",
+  "description": "Capabilities for kontrolcentret",
+  "windows": ["control"],
+  "permissions": [
+    "core:default",
+    "core:window:allow-start-dragging",
+    "core:window:allow-minimize",
+    "core:window:allow-toggle-maximize",
+    "core:window:allow-hide",
+    "core:window:allow-close",
+    "autostart:default",
+    "dialog:default",
+    "opener:default",
+    "notification:default",
+    "log:default"
+  ]
+}

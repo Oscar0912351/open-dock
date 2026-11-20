@@ -1,0 +1,14 @@
+:root {
+  --e-out: cubic-bezier(.16, 1, .3, 1);
+  --e-soft: cubic-bezier(.22, .61, .36, 1);
+  --e-pen: cubic-bezier(.37, .01, .2, 1);
+  --e-press: cubic-bezier(.3, .7, .4, 1);
+  --d-fast: 140ms;
+  --d-base: 220ms;
+  --d-slow: 420ms;
+  --hair: 1px;
+  --z-content: 5;
+  --z-edge: 6;
+  --z-sheen: 7;
+  --z-edit: 9;
+}

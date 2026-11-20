@@ -1,0 +1,285 @@
+.widget-root {
+  --u: calc(100vw / var(--base-w));
+  --blur: calc(var(--blur-base) * var(--gs, 1) * var(--u));
+  --r-widget: calc(var(--r-base) * var(--r-mult) * var(--u));
+  --r-panel: max(calc(8 * var(--u)), calc(var(--r-widget) - var(--px) * var(--u)));
+  position: fixed;
+  inset: 0;
+  color: var(--ink-1);
+  font-family: var(--font-ui);
+}
+.widget-root.is-preview {
+  position: relative;
+  inset: auto;
+  --u: 1px;
+  width: calc(var(--base-w) * 1px);
+  height: calc(var(--base-h) * 1px);
+  flex-shrink: 0;
+}
+.widget-root.is-preview.is-cluster.is-adaptive {
+  height: calc(var(--box-h) * 1px);
+  transition: height var(--cluster-dur, 340ms) var(--e-out);
+}
+.widget-root.is-preview.is-cluster.is-adaptive.anchor-bottom .glass-anchor-layer {
+  height: 100%;
+}
+.widget {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  border-radius: var(--r-widget);
+  isolation: isolate;
+  animation: od-form 640ms var(--e-out) both;
+  animation-delay: var(--t0, 0ms);
+}
+@supports (corner-shape: squircle) {
+  .widget { corner-shape: squircle; border-radius: calc(var(--r-widget) * 1.5); }
+  .widget::before,
+  .glass-sheen { corner-shape: squircle; }
+}
+.widget::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  z-index: var(--z-edge);
+  box-shadow: inset 0 0 0 1px var(--edge), inset 0 1px 0 0 var(--edge-top);
+}
+.glass-scrim, .glass-ambient, .glass-surface, .glass-veil, .glass-sheen, .edit-chrome {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+.glass-anchor-layer {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+.is-cluster.is-adaptive .widget {
+  left: 0;
+  right: 0;
+  height: calc(var(--box-h) * var(--u));
+  transition: height var(--cluster-dur, 340ms) var(--e-out);
+}
+.is-cluster.is-adaptive.anchor-top .widget {
+  top: 0;
+  bottom: auto;
+}
+.is-cluster.is-adaptive.anchor-bottom .widget {
+  top: auto;
+  bottom: 0;
+}
+.is-cluster.is-adaptive.anchor-bottom .glass-anchor-layer {
+  top: auto;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: 100vh;
+}
+.motion-off.is-cluster.is-adaptive .widget {
+  transition: none;
+}
+@media (prefers-reduced-motion: reduce) {
+  .is-cluster.is-adaptive .widget {
+    transition: none;
+  }
+}
+.glass-ambient {
+  background: radial-gradient(120% 140% at 0% 0%, rgba(var(--art-rgb, 0, 0, 0), .38), transparent 70%);
+  opacity: 0;
+  transition: background 600ms var(--e-soft), opacity 420ms var(--e-soft);
+}
+.glass-ambient.has-ambient {
+  opacity: 1;
+}
+.theme-laerk .glass-ambient.has-ambient {
+  opacity: .55;
+}
+.widget-root {
+  opacity: 1;
+  transition: opacity 420ms var(--e-soft);
+}
+.widget-root.is-hidden-idle {
+  opacity: 0;
+  pointer-events: none;
+}
+.glass-plate {
+  position: absolute;
+  inset: calc(-2 * var(--blur));
+  pointer-events: none;
+  background-image: var(--plate);
+  background-size: var(--mon-w, 100%) var(--mon-h, 100%);
+  background-position:
+    calc(-1 * var(--wx, 0px) + 2 * var(--blur))
+    calc(-1 * var(--wy, 0px) + 2 * var(--blur));
+  background-repeat: no-repeat;
+  filter: blur(var(--blur)) saturate(var(--sat));
+  transform: translateZ(0);
+}
+.engine-acrylic { --r-widget: 8px; }
+@supports (corner-shape: squircle) {
+  .engine-acrylic .widget { corner-shape: round; border-radius: 8px; }
+  .engine-acrylic .widget::before,
+  .engine-acrylic .glass-sheen { corner-shape: round; }
+}
+.engine-acrylic .glass-plate,
+.engine-tint .glass-plate {
+  display: none;
+}
+.glass-scrim { background: rgba(var(--scrim-rgb), var(--scrim-a, 0)); }
+.glass-surface {
+  background: var(--surface);
+  opacity: clamp(.55, calc(.55 + (var(--gs, 1) - .6) * 1.125), 1);
+}
+.engine-acrylic .glass-surface {
+  opacity: calc(0.6 * clamp(.55, calc(.55 + (var(--gs, 1) - .6) * 1.125), 1));
+}
+.engine-tint .glass-surface { background: var(--surface-solid); opacity: 1; }
+.is-paused .eq i,
+.is-paused .prog > i,
+.is-paused .c-media-prog-edge > i,
+.is-paused .clock-second,
+.is-paused .sk {
+  animation-play-state: paused !important;
+}
+.glass-veil {
+  background: var(--veil);
+  opacity: 0;
+  transition: opacity 180ms var(--e-soft);
+}
+.widget:hover .glass-veil { opacity: 1; }
+.content {
+  position: absolute;
+  inset: 0;
+  z-index: var(--z-content);
+  padding: calc(var(--py) * var(--u)) calc(var(--px) * var(--u));
+  text-shadow: var(--text-shadow);
+  display: flex;
+  flex-direction: column;
+}
+.glass-sheen {
+  z-index: var(--z-sheen);
+  overflow: hidden;
+  border-radius: inherit;
+}
+.glass-sheen::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 38%;
+  background: linear-gradient(100deg, transparent 0%, var(--sheen) 50%, transparent 100%);
+  transform: translate3d(-150%, 0, 0) skewX(-18deg);
+  animation: od-sheen 1150ms var(--e-soft) both;
+  animation-delay: calc(var(--t0, 0ms) + 1100ms);
+}
+.edit-chrome {
+  z-index: var(--z-edit);
+  pointer-events: none;
+}
+
+.is-editing .widget {
+  outline: 1.5px solid var(--edit-line);
+  outline-offset: -1.5px;
+  cursor: grab;
+}
+
+.is-editing.is-selected .widget {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.theme-aurora .is-editing.is-selected .widget {
+  outline-color: #fff;
+}
+
+.is-editing .content {
+  transform: scale(0.94);
+  transition: transform 200ms var(--e-out);
+}
+
+.is-editing .content * {
+  pointer-events: none;
+}
+
+.is-dragging .widget {
+  cursor: grabbing;
+}
+
+.is-dragging .content {
+  opacity: 0.85;
+}
+
+.is-editing .edit-chrome {
+  pointer-events: auto;
+}
+
+.ed-btn {
+  position: absolute;
+  z-index: var(--z-edit);
+  width: calc(16 * var(--u));
+  height: calc(16 * var(--u));
+  border-radius: 50%;
+  border: 0;
+  padding: 0;
+  display: grid;
+  place-items: center;
+  background: rgba(16, 20, 24, 0.72);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.18);
+  color: #fff;
+  -webkit-backdrop-filter: blur(8px);
+  backdrop-filter: blur(8px);
+  cursor: pointer;
+  animation: od-pop 260ms var(--e-out) both;
+  transition: background var(--d-fast) var(--e-out), color var(--d-fast) var(--e-out);
+}
+
+.theme-laerk .ed-btn {
+  background: rgba(244, 240, 233, 0.92);
+  box-shadow: inset 0 0 0 1px rgba(46, 45, 42, 0.14);
+  color: #2e2d2a;
+}
+
+.ed-btn svg {
+  width: calc(8 * var(--u));
+  height: calc(8 * var(--u));
+}
+
+.ed-btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.ed-x {
+  left: calc(5 * var(--u));
+  top: calc(5 * var(--u));
+}
+
+.ed-x:hover {
+  background: var(--crit);
+  color: #fff;
+  box-shadow: none;
+}
+
+.ed-size {
+  right: calc(5 * var(--u));
+  bottom: calc(5 * var(--u));
+}
+
+.ed-size:hover {
+  background: rgba(28, 34, 42, 0.88);
+}
+
+.theme-laerk .ed-size:hover {
+  background: #f4f0e9;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ed-btn,
+  .is-editing .content {
+    animation: none !important;
+    transition: none !important;
+  }
+}

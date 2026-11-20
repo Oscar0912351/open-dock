@@ -1,0 +1,179 @@
+.ring {
+  position: relative;
+  width: calc(var(--s) * var(--u));
+  height: calc(var(--s) * var(--u));
+  flex: none;
+}
+.ring svg {
+  width: 100%;
+  height: 100%;
+  transform: rotate(-90deg);
+  overflow: visible;
+}
+.ring circle {
+  fill: none;
+  stroke-linecap: round;
+}
+.ring .r-track {
+  stroke: var(--track);
+}
+.ring .r-fill {
+  stroke: var(--accent);
+  animation: od-ring 1100ms var(--e-out) both;
+  animation-delay: calc(var(--t0, 0ms) + 300ms);
+  transition: stroke-dasharray 600ms var(--e-out), stroke 220ms var(--e-soft);
+}
+.ring .r-fill.r-countdown {
+  animation: none;
+  transition: none;
+}
+.theme-laerk .ring .r-fill {
+  stroke: url(#amber-grad);
+}
+.ring .r-knob {
+  fill: #fff;
+  display: none;
+  transition: cx 600ms var(--e-out), cy 600ms var(--e-out);
+}
+.theme-laerk .ring .r-knob {
+  display: block;
+}
+.ring-in {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  text-align: center;
+}
+
+@keyframes od-focus-drain {
+  from { stroke-dashoffset: var(--from-offset, 0); }
+  to { stroke-dashoffset: 100; }
+}
+
+.curve {
+  display: block;
+  overflow: visible;
+}
+.curve path {
+  fill: none;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.curve .l1 { stroke-width: 4.8; opacity: .17; }
+.curve .l2 { stroke-width: 3.4; opacity: .26; }
+.curve .l3 { stroke-width: 2.2; }
+.theme-laerk .curve .l1,
+.theme-laerk .curve .l2,
+.theme-grafit .curve .l1,
+.theme-grafit .curve .l2 {
+  display: none;
+}
+.theme-laerk .curve .l3 { stroke-width: 2.6; }
+.theme-grafit .curve .l3 { stroke-width: 2; }
+.curve .draw {
+  stroke-dasharray: 1;
+  stroke-dashoffset: 1;
+  animation: od-draw 1200ms var(--e-pen) forwards;
+  animation-delay: calc(var(--t0, 0ms) + 420ms);
+}
+.curve .wipe {
+  transform-box: fill-box;
+  transform-origin: left;
+  animation: od-wipe-x 1100ms var(--e-pen) both;
+  animation-delay: calc(var(--t0, 0ms) + 600ms);
+}
+.curve .dotted {
+  stroke: var(--ink-4);
+  stroke-width: 2;
+  stroke-dasharray: .1 5.5;
+  opacity: 0;
+  animation: od-fade-in 500ms var(--e-soft) forwards;
+  animation-delay: calc(var(--t0, 0ms) + 1300ms);
+}
+.curve .pt {
+  fill: var(--accent);
+  opacity: 0;
+  animation: od-fade-in 300ms forwards;
+  animation-delay: calc(var(--t0, 0ms) + 1500ms);
+}
+.theme-aurora .curve .pt { fill: #fff; }
+.curve .pt-ring {
+  fill: none;
+  stroke: var(--panel);
+  stroke-width: 2;
+}
+
+.sys-pill {
+  height: 100%;
+  padding: 0 calc(2 * var(--u));
+}
+.sys-pill-net {
+  gap: calc(2 * var(--u));
+  min-width: 0;
+}
+.sys-pill-net-row {
+  gap: calc(4 * var(--u));
+  font-size: calc(11 * var(--u));
+}
+.sys-pill-val {
+  font-size: calc(13 * var(--u));
+}
+.sys-pill-lab {
+  font-size: calc(9.5 * var(--u));
+}
+.sys-s-ring-wrap {
+  display: grid;
+  place-items: center;
+}
+.sys-s-num {
+  font-size: calc(26 * var(--u));
+}
+.sys-s-foot {
+  text-align: center;
+}
+.sys-m-cols {
+  align-items: flex-end;
+}
+.sys-m-val {
+  margin: calc(6 * var(--u)) 0 calc(8 * var(--u));
+}
+.sys-m-sub {
+  margin-top: calc(6 * var(--u));
+}
+.sys-m-label {
+  font-size: calc(10.5 * var(--u));
+}
+.theme-laerk .sys-m-label,
+.theme-grafit .sys-m-label {
+  font-size: calc(10 * var(--u));
+}
+.sys-l-primary {
+  margin-top: calc(6 * var(--u));
+}
+.sys-l-spark {
+  margin: calc(4 * var(--u)) calc(-2 * var(--u)) 0;
+}
+.sys-l-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: calc(8 * var(--u));
+}
+.sys-l-card {
+  padding: calc(8 * var(--u)) calc(10 * var(--u));
+  height: calc(48 * var(--u));
+  justify-content: space-between;
+}
+.sys-l-card-label {
+  font-size: calc(10.5 * var(--u));
+}
+.theme-laerk .sys-l-card-label,
+.theme-grafit .sys-l-card-label {
+  font-size: calc(9.5 * var(--u));
+}
+.sys-l-card-val {
+  font-size: calc(12 * var(--u));
+}
+.sys-pill-vsep {
+  margin: calc(6 * var(--u)) 0;
+}

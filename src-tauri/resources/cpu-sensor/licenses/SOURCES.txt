@@ -1,0 +1,41 @@
+Open Dock CPU sensor dependencies (unmodified upstream binaries)
+
+All DLLs are from the official Libre Hardware Monitor 0.9.6 release:
+https://github.com/LibreHardwareMonitor/LibreHardwareMonitor/releases/tag/v0.9.6
+The release archive and individual DLL SHA-256 hashes are in ../libraries.json.
+
+LibreHardwareMonitorLib 0.9.6 -- MPL-2.0
+Source: https://github.com/LibreHardwareMonitor/LibreHardwareMonitor/tree/v0.9.6
+License and upstream notices: LibreHardwareMonitor-MPL-2.0.txt,
+LibreHardwareMonitor-THIRD-PARTY-NOTICES.txt
+
+Embedded PawnIO.Modules 0.1.6 -- LGPL-2.1
+Source: https://github.com/namazso/PawnIO.Modules/tree/0.1.6
+Release/source downloads: https://github.com/namazso/PawnIO.Modules/releases/tag/0.1.6
+License: PawnIO.Modules-LGPL-2.1.txt
+These modules are embedded in the unmodified LibreHardwareMonitorLib.dll.
+The separately installed PawnIO driver is not distributed in this app.
+
+BlackSharp.Core 1.0.7 -- MPL-2.0, Florian K.
+Source: https://github.com/Blacktempel/BlackSharp/tree/c70b735c6cec123ee8a046ac4a0bc6c606f52cf0
+DiskInfoToolkit 1.1.2 -- MPL-2.0, Florian K.
+Source: https://github.com/Blacktempel/DiskInfoToolkit/tree/25319eae5781e75bcf141e844ceab2afe94d40ea
+RAMSPDToolkit-NDD 1.4.2 -- MPL-2.0, Florian K.
+Source: https://github.com/Blacktempel/RAMSPDToolkit/tree/3b47b960e0830fef344624ad5e389675d5f0a1ce
+License for these three: LibreHardwareMonitor-MPL-2.0.txt (same MPL-2.0 text).
+Exact upstream package metadata, copyright and source commits: *.nuspec.
+
+HidSharp 2.6.4 -- Apache-2.0, James F. Bellinger
+Source/project: https://software.seekye.com/hidsharp
+Package: https://www.nuget.org/packages/HidSharp/2.6.4
+License: HidSharp-Apache-2.0.txt
+
+System.Buffers 4.6.1, System.Numerics.Vectors 4.6.1 -- MIT, Microsoft
+Source: https://github.com/dotnet/maintenance-packages/tree/6b84308c9ad012f53240d72c1d716d7e42546483
+System.Memory 4.6.3, System.Runtime.CompilerServices.Unsafe 6.1.2 -- MIT, Microsoft
+Source: https://github.com/dotnet/maintenance-packages/tree/f62ca0009b038cab4725a720f386623a969d73ad
+License: Microsoft-MIT.txt
+
+The original NuGet package metadata (*.nuspec) is included for each dependency.
+NuGet packages are available from https://www.nuget.org/packages/<id>/<version>.
+No upstream DLL or embedded sensor module has been modified by Open Dock.
