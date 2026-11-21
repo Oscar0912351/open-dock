@@ -190,6 +190,7 @@ export const da = {
       open: "Design selv",
       heading: "Design din klynge",
       modules: "Vælg hvad den viser",
+      media: "Medie",
       shape: "Form",
       box: "Boks",
       pill: "Kapsel-bar",

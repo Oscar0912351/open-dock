@@ -3,7 +3,6 @@ import {
   Check,
   Clock,
   CloudSun,
-  DiscordLogo,
   Gauge,
   MusicNote,
   NotePencil,
@@ -29,13 +28,16 @@ import { useControlStore } from "../store";
 
 type MonitorInfo = ReturnType<typeof useControlStore.getState>["monitors"][number];
 
-const CUSTOM_MODULE_CHOICES: ReadonlyArray<{ kind: FreeWidgetKind; icon: Icon }> = [
-  { kind: "clock", icon: Clock },
-  { kind: "weather", icon: CloudSun },
-  { kind: "system", icon: Gauge },
-  { kind: "nowPlaying", icon: MusicNote },
-  { kind: "note", icon: NotePencil },
-  { kind: "discord", icon: DiscordLogo },
+const CUSTOM_MODULE_CHOICES: ReadonlyArray<{
+  id: string;
+  kinds: FreeWidgetKind[];
+  icon: Icon;
+}> = [
+  { id: "clock", kinds: ["clock"], icon: Clock },
+  { id: "weather", kinds: ["weather"], icon: CloudSun },
+  { id: "system", kinds: ["system"], icon: Gauge },
+  { id: "media", kinds: ["nowPlaying", "discord"], icon: MusicNote },
+  { id: "note", kinds: ["note"], icon: NotePencil },
 ];
 
 const MAX_CUSTOM_MODULES = 5;
@@ -590,14 +592,13 @@ function CustomizeDialog({
 
   if (!open) return null;
 
-  const toggleModule = (kind: FreeWidgetKind) => {
-    setSelected((prev) =>
-      prev.includes(kind)
-        ? prev.filter((item) => item !== kind)
-        : prev.length >= MAX_CUSTOM_MODULES
-          ? prev
-          : [...prev, kind],
-    );
+  const toggleChoice = (kinds: FreeWidgetKind[]) => {
+    setSelected((prev) => {
+      const allOn = kinds.every((kind) => prev.includes(kind));
+      if (allOn) return prev.filter((kind) => !kinds.includes(kind));
+      const next = [...prev, ...kinds.filter((kind) => !prev.includes(kind))];
+      return next.length <= MAX_CUSTOM_MODULES ? next : prev;
+    });
   };
 
   return (
@@ -656,20 +657,22 @@ function CustomizeDialog({
             </span>
           </div>
           <div className="cc-modchips" role="group" aria-label={t("gallery.custom.modules")}>
-            {CUSTOM_MODULE_CHOICES.map(({ kind, icon: ModuleIcon }) => {
-              const isOn = selected.includes(kind);
-              const isFull = !isOn && selected.length >= MAX_CUSTOM_MODULES;
+            {CUSTOM_MODULE_CHOICES.map(({ id, kinds, icon: ModuleIcon }) => {
+              const isOn = kinds.every((kind) => selected.includes(kind));
+              const isFull = !isOn && selected.length + kinds.length > MAX_CUSTOM_MODULES;
               return (
                 <button
-                  key={kind}
+                  key={id}
                   type="button"
                   className={`cc-modchip${isOn ? " is-on" : ""}`}
                   aria-pressed={isOn}
                   disabled={isFull}
-                  onClick={() => toggleModule(kind)}
+                  onClick={() => toggleChoice(kinds)}
                 >
                   <ModuleIcon size={15} weight={isOn ? "fill" : "regular"} aria-hidden="true" />
-                  <span>{t(`widgets.${kind}.name`)}</span>
+                  <span>
+                    {id === "media" ? t("gallery.custom.media") : t(`widgets.${id}.name`)}
+                  </span>
                 </button>
               );
             })}

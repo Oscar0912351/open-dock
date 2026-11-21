@@ -192,6 +192,7 @@ export const en: Messages = {
       open: "Design your own",
       heading: "Design your cluster",
       modules: "Choose what it shows",
+      media: "Media",
       shape: "Shape",
       box: "Box",
       pill: "Pill bar",
