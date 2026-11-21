@@ -235,6 +235,18 @@ export function Gallery() {
   const primaryMonitor = monitors.find((m) => m.isPrimary) ?? monitors[0] ?? null;
   const plateUrl = toAssetUrl(primaryMonitor?.platePath ?? "");
 
+  // "Din egen" shows the cluster the user actually runs; default box if none.
+  const ownCluster =
+    config.widgets.find((w) => w.kind === "cluster" && w.cluster)?.cluster ?? null;
+  const ownSeed = ownCluster
+    ? {
+        shape: (ownCluster.presetId === "pillBar" ? "pill" : "box") as CustomShape,
+        selected: ownCluster.modules
+          .map((m) => m.kind as FreeWidgetKind)
+          .filter((k, i, a) => a.indexOf(k) === i),
+      }
+    : { shape: "box" as CustomShape, selected: ["clock", "weather", "system"] as FreeWidgetKind[] };
+
   return (
     <div className="cc-route">
       <div className="cc-page-header">
@@ -320,9 +332,7 @@ export function Gallery() {
               <button
                 type="button"
                 className="cc-gallery-stage cc-custom-cta"
-                onClick={() =>
-                  setCustomSeed({ shape: "box", selected: ["clock", "weather", "system"] })
-                }
+                onClick={() => setCustomSeed(ownSeed)}
               >
                 {plateUrl && (
                   <div
@@ -336,7 +346,7 @@ export function Gallery() {
                   id="preview-custom-cta"
                   kind="cluster"
                   size="m"
-                  cluster={buildCustomCluster("box", ["clock", "weather", "system"])}
+                  cluster={ownCluster ?? buildCustomCluster("box", ownSeed.selected)}
                   appearance={config.appearance}
                   monitors={monitors}
                   locations={config.weather.locations}
@@ -356,9 +366,7 @@ export function Gallery() {
                 <div className="cc-gallery-foot" style={{ justifyContent: "flex-end" }}>
                   <Button
                     variant="secondary"
-                    onClick={() =>
-                      setCustomSeed({ shape: "box", selected: ["clock", "weather", "system"] })
-                    }
+                    onClick={() => setCustomSeed(ownSeed)}
                   >
                     <Sparkle size={13} weight="bold" aria-hidden="true" />
                     <span>{t("gallery.custom.open")}</span>
