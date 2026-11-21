@@ -61,6 +61,7 @@ import {
   type ChecklistRow,
 } from "../kinds/note/Note";
 import { AgentRow } from "../kinds/agents/Agents";
+import { agentTint } from "../kinds/agents/AgentIcon";
 import { Equalizer } from "../kinds/nowPlaying/Equalizer";
 import { resolveNowPlayingSettings } from "../kinds/nowPlaying/NowPlaying";
 import { formatTrackTime, Progress } from "../kinds/nowPlaying/Progress";
@@ -963,7 +964,7 @@ function AgentsClusterMod({
         <span className="c-discord-ico">
           <Robot size="calc(13 * var(--u))" />
         </span>
-        <span className="title-s trunc" style={{ fontSize: "calc(12 * var(--u))" }}>
+        <span className="title-s ag-trunc" style={{ fontSize: "calc(12 * var(--u))" }}>
           {sessions.length === 0
             ? t("agents.empty.title")
             : working > 0
@@ -977,6 +978,11 @@ function AgentsClusterMod({
               <span
                 key={session.id}
                 className={`ag-dot${session.status === "working" ? " is-live" : ""}`}
+                style={
+                  session.status === "working"
+                    ? undefined
+                    : { background: agentTint(session.agent) }
+                }
               />
             ))}
           </div>

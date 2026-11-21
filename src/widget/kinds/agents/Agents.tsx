@@ -1,4 +1,5 @@
 import { Robot } from "@phosphor-icons/react";
+import { AgentIcon, agentTint } from "./AgentIcon";
 import { useEffect, useState } from "react";
 import type { AgentSession } from "../../../shared/bindings/AgentSession";
 import type { AgentsSnapshot } from "../../../shared/bindings/AgentsSnapshot";
@@ -83,8 +84,8 @@ export function Agents({ size, onAriaChange }: AgentsProps) {
     return (
       <div className="col between ag-root" style={{ height: "100%" }}>
         <div className="row between">
-          <div className="ag-icon" data-enter="pop">
-            <Robot size="calc(15 * var(--u))" />
+          <div data-enter="pop">
+            <AgentIcon agent={data.sessions[0]?.agent ?? ""} size={15} />
           </div>
           <span className={`ag-dot${working > 0 ? " is-live" : ""}`} data-enter="pop" />
         </div>
@@ -97,7 +98,7 @@ export function Agents({ size, onAriaChange }: AgentsProps) {
               {count === 1 ? t("agents.sessionOne") : t("agents.sessionMany")}
             </span>
           </div>
-          <div className="micro trunc ink3" data-enter>
+          <div className="micro ag-trunc ink3" data-enter>
             {working > 0 ? t("agents.workingN", { n: working }) : t("agents.allIdle")}
           </div>
         </div>
@@ -138,18 +139,23 @@ export function AgentRow({
   session: AgentSession;
   nowMs: number;
 }) {
+  const tint = agentTint(session.agent);
   return (
     <div className="row g8 ag-row" data-enter>
-      <span className={`ag-dot${session.status === "working" ? " is-live" : ""}`} />
+      <AgentIcon agent={session.agent} size={14} />
       <div className="col grow" style={{ gap: "calc(1 * var(--u))", minWidth: 0 }}>
         <div className="row g6" style={{ minWidth: 0 }}>
-          <span className="title-s trunc" style={{ fontSize: "calc(12 * var(--u))" }}>
+          <span className="title-s ag-trunc" style={{ fontSize: "calc(12 * var(--u))" }}>
             {session.agentLabel}
           </span>
-          <span className="micro trunc ink3">{session.project}</span>
+          <span className="micro ag-trunc ink3">{session.project}</span>
         </div>
-        <span className="micro trunc ink3">{statusLabel(session, nowMs)}</span>
+        <span className="micro ag-trunc ink3">{statusLabel(session, nowMs)}</span>
       </div>
+      <span
+        className={`ag-dot${session.status === "working" ? " is-live" : ""}`}
+        style={session.status === "working" ? undefined : { background: tint }}
+      />
     </div>
   );
 }
