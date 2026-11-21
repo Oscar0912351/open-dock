@@ -9,6 +9,10 @@
   align-items: center;
   justify-content: center;
 }
+.state-empty-icon svg {
+  width: calc(26 * var(--u));
+  height: calc(26 * var(--u));
+}
 .state-empty-title {
   margin-top: calc(8 * var(--u));
 }
@@ -29,6 +33,10 @@
   display: grid;
   place-items: center;
   flex: none;
+}
+.state-empty-pill-icon svg {
+  width: calc(15 * var(--u));
+  height: calc(15 * var(--u));
 }
 .state-empty-pill-text {
   gap: calc(1 * var(--u));
