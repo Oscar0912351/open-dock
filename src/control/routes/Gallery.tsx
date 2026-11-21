@@ -332,9 +332,17 @@ export function Gallery() {
                   />
                 )}
                 <div className="cc-stage-scrim" aria-hidden="true" />
-                <span className="cc-custom-cta-mark" aria-hidden="true">
-                  <Sparkle size={22} weight="duotone" />
-                </span>
+                <WidgetPreview
+                  id="preview-custom-cta"
+                  kind="cluster"
+                  size="m"
+                  cluster={buildCustomCluster("box", ["clock", "weather", "system"])}
+                  appearance={config.appearance}
+                  monitors={monitors}
+                  locations={config.weather.locations}
+                  maxWidth={256}
+                  maxHeight={184}
+                />
               </button>
 
               <div className="cc-gallery-body">
