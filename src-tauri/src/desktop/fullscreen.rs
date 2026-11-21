@@ -83,13 +83,16 @@ fn sync_top_widgets(app: &AppHandle, fullscreen: bool) {
             continue;
         };
         if fullscreen || !visible {
-            if let Err(error) = window.hide() {
-                log::error!("Kunne ikke skjule {label} ved fuldskærm: {error}");
+            // Tauris `hide()` er en no-op på de subklassede widget-vinduer.
+            if let Ok(raw) = window.hwnd() {
+                let hwnd = windows::Win32::Foundation::HWND(raw.0 as _);
+                unsafe {
+                    let _ = windows::Win32::UI::WindowsAndMessaging::ShowWindow(
+                        hwnd,
+                        windows::Win32::UI::WindowsAndMessaging::SW_HIDE,
+                    );
+                }
             }
-            continue;
-        }
-        if let Err(error) = window.show() {
-            log::error!("Kunne ikke vise {label} efter fuldskærm: {error}");
             continue;
         }
         match window.hwnd() {

@@ -227,20 +227,25 @@ fn place(hwnd: HWND, layer: Layer) -> windows::core::Result<()> {
         Layer::Top => Some(HWND_TOPMOST),
         Layer::Normal => Some(HWND_NOTOPMOST),
     };
+    // A hidden widget (Bruger valgte "Skjul alle") must stay hidden when the
+    // desktop layer is reapplied: only re-show it when widgets are meant visible.
+    let show = super::app_handle()
+        .map(|app| {
+            app.state::<crate::state::AppState>()
+                .widgets_visible
+                .load(Ordering::Acquire)
+        })
+        .unwrap_or(true);
     unsafe {
         styles::apply_widget_styles(hwnd)?;
         if let Some(state) = state_for(hwnd) {
             styles::set_activatable(hwnd, state.activatable.load(Ordering::Acquire))?;
         }
-        SetWindowPos(
-            hwnd,
-            insert_after,
-            0,
-            0,
-            0,
-            0,
-            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW,
-        )?;
+        let mut flags = SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE;
+        if show {
+            flags |= SWP_SHOWWINDOW;
+        }
+        SetWindowPos(hwnd, insert_after, 0, 0, 0, 0, flags)?;
     }
     if layer == Layer::Desktop {
         if let Some(app) = super::app_handle() {

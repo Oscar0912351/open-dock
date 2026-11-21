@@ -5,7 +5,10 @@ use tauri::{
     WebviewWindow, WebviewWindowBuilder,
 };
 use uuid::Uuid;
-use windows::Win32::Foundation::HWND;
+use windows::Win32::{
+    Foundation::HWND,
+    UI::WindowsAndMessaging::{ShowWindow, SW_HIDE},
+};
 
 use crate::{
     config::schema::{Layer, VerticalAnchor, WidgetInstance, WidgetKind},
@@ -183,8 +186,13 @@ pub fn set_all_visible(app: &AppHandle, visible: bool) {
             continue;
         };
         if !visible || (fullscreen && widget.layer == Layer::Top) {
-            if let Err(error) = window.hide() {
-                log::warn!("Kunne ikke skjule widget {label}: {error}");
+            // Tauris `hide()` er en no-op på de subklassede widget-vinduer;
+            // skjul direkte på HWND'et i stedet.
+            if let Ok(raw) = window.hwnd() {
+                let hwnd = HWND(raw.0 as _);
+                unsafe {
+                    let _ = ShowWindow(hwnd, SW_HIDE);
+                }
             }
             continue;
         }
