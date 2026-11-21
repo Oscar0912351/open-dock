@@ -1,0 +1,45 @@
+.ag-root {
+  width: 100%;
+}
+
+.ag-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: calc(28 * var(--u));
+  height: calc(28 * var(--u));
+  border-radius: calc(9 * var(--u));
+  background: var(--ink-a10);
+  color: var(--ink-1);
+}
+
+.ag-dot {
+  flex: 0 0 auto;
+  width: calc(7 * var(--u));
+  height: calc(7 * var(--u));
+  border-radius: 999px;
+  background: var(--ink-4);
+  opacity: 0.8;
+  align-self: center;
+}
+
+.ag-dot.is-live {
+  background: var(--accent);
+  opacity: 1;
+  animation: ag-pulse 1.6s ease-in-out infinite;
+}
+
+.ag-row {
+  align-items: center;
+}
+
+.ag-count {
+  display: flex;
+  align-items: baseline;
+  gap: calc(6 * var(--u));
+}
+
+@keyframes ag-pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.55; transform: scale(0.82); }
+}

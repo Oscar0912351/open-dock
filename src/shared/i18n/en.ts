@@ -115,6 +115,23 @@ export const en: Messages = {
     detection: "Based on Discord audio activity",
     aria: "Discord: {state}",
   },
+  agents: {
+    empty: {
+      title: "No agents",
+      body: "Start Claude Code, Codex or another AI agent",
+    },
+    working: "Working…",
+    running: "Running",
+    idleFor: "Idle for {dur}",
+    summary: "{total} sessions · {working} working",
+    workingN: "{n} working",
+    allIdle: "All idle",
+    more: "+ {n} more",
+    sessionOne: "session",
+    sessionMany: "sessions",
+    aria: "AI agents: {total} sessions, {working} working",
+    ariaEmpty: "AI agents: none active",
+  },
   state: { error: "Could not load data", retrySoon: "Trying again shortly", dash: "—" },
   toast: {
     added: "{name} added to the desktop",
@@ -159,6 +176,7 @@ export const en: Messages = {
     weather: { name: "Weather", desc: "Weather now and the next hours" },
     note: { name: "Note", desc: "A quick note or checklist" },
     discord: { name: "Discord", desc: "See whether you are in a Discord call (audio-based)" },
+    agents: { name: "AI Agents", desc: "See what your AI agents are doing right now" },
     cluster: { name: "Adaptive Cluster", desc: "Compact boxes that expand when needed" },
   },
   gallery: {

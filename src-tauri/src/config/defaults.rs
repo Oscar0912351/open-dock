@@ -52,6 +52,7 @@ pub fn default_settings(kind: WidgetKind) -> serde_json::Value {
         }),
         WidgetKind::Discord => json!({}),
         WidgetKind::Cluster => json!({}),
+        WidgetKind::Agents => json!({}),
     }
 }
 

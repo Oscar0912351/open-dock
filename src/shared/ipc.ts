@@ -1,6 +1,7 @@
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import type { AgentsSnapshot } from "./bindings/AgentsSnapshot";
 import type { Appearance } from "./bindings/Appearance";
 import type { AppearancePatch } from "./bindings/AppearancePatch";
 import type { AppPaused } from "./bindings/AppPaused";
@@ -163,6 +164,8 @@ export const on = {
     listen<WeatherSnapshot>("provider://weather", (event) => callback(event.payload)),
   discord: (callback: (snapshot: DiscordSnapshot) => void) =>
     listen<DiscordSnapshot>("provider://discord", (event) => callback(event.payload)),
+  agents: (callback: (snapshot: AgentsSnapshot) => void) =>
+    listen<AgentsSnapshot>("provider://agents", (event) => callback(event.payload)),
   wallpaperStatus: (callback: (status: WallpaperEngineStatus) => void) =>
     listen<WallpaperEngineStatus>("wallpaper://status", (event) => callback(event.payload)),
   wallpaperThumbsReady: (callback: () => void) =>

@@ -315,6 +315,7 @@ pub enum WidgetKind {
     Note,
     Discord,
     Cluster,
+    Agents,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -335,7 +336,7 @@ impl WidgetKind {
                 &[WidgetSize::Pill, WidgetSize::S, WidgetSize::M, WidgetSize::L]
             }
             Self::Weather | Self::Note => &[WidgetSize::S, WidgetSize::M, WidgetSize::L],
-            Self::Cluster => &[WidgetSize::S, WidgetSize::M, WidgetSize::L],
+            Self::Cluster | Self::Agents => &[WidgetSize::S, WidgetSize::M, WidgetSize::L],
         }
     }
 
@@ -345,7 +346,9 @@ impl WidgetKind {
 
     pub fn default_size(self) -> WidgetSize {
         match self {
-            Self::Clock | Self::NowPlaying | Self::System | Self::Discord => WidgetSize::M,
+            Self::Clock | Self::NowPlaying | Self::System | Self::Discord | Self::Agents => {
+                WidgetSize::M
+            }
             Self::Weather | Self::Note | Self::Cluster => WidgetSize::M,
         }
     }
@@ -575,6 +578,8 @@ impl ClusterConfig {
             (WidgetKind::Note, ModuleMode::Expanded) => 104.0,
             (WidgetKind::Discord, ModuleMode::Compact) => 32.0,
             (WidgetKind::Discord, ModuleMode::Expanded) => 76.0,
+            (WidgetKind::Agents, ModuleMode::Compact) => 32.0,
+            (WidgetKind::Agents, ModuleMode::Expanded) => 104.0,
             (WidgetKind::Cluster, _) => 48.0,
         }
     }

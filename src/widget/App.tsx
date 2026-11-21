@@ -17,6 +17,7 @@ import {
   type ClusterFrameInfo,
   type GlassPlacementInfo,
 } from "./WidgetShell";
+import { Agents } from "./kinds/agents/Agents";
 import { Clock, resolveClockSettings } from "./kinds/clock/Clock";
 import { useClock } from "./kinds/clock/useClock";
 import { Discord } from "./kinds/discord/Discord";
@@ -487,6 +488,12 @@ export function WidgetApp({ id }: WidgetAppProps) {
           />
         ) : kind === "discord" ? (
           <Discord
+            size={size}
+            theme={theme}
+            onAriaChange={setAriaLabel}
+          />
+        ) : kind === "agents" ? (
+          <Agents
             size={size}
             theme={theme}
             onAriaChange={setAriaLabel}

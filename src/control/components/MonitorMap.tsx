@@ -1,4 +1,4 @@
-import { Clock, CloudSun, Cpu, MusicNote, Note, SquaresFour, Headset } from "@phosphor-icons/react";
+import { Clock, CloudSun, Cpu, MusicNote, Note, Robot, SquaresFour, Headset } from "@phosphor-icons/react";
 import { useEffect, useMemo, useRef, useState, type PointerEvent } from "react";
 import type { MonitorInfo } from "../../shared/bindings/MonitorInfo";
 import type { WidgetInstance } from "../../shared/bindings/WidgetInstance";
@@ -24,6 +24,7 @@ const KIND_ICONS: Record<WidgetKind, typeof Clock> = {
   note: Note,
   discord: Headset,
   cluster: SquaresFour,
+  agents: Robot,
 };
 
 const KIND_LABELS: Record<WidgetKind, string> = {
@@ -34,6 +35,7 @@ const KIND_LABELS: Record<WidgetKind, string> = {
   note: "widgets.note.name",
   discord: "widgets.discord.name",
   cluster: "widgets.cluster.name",
+  agents: "widgets.agents.name",
 };
 
 function findTargetMonitor(w: WidgetInstance, monitors: MonitorInfo[]): MonitorInfo | null {

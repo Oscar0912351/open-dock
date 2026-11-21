@@ -7,6 +7,7 @@ import {
   MusicNote,
   NotePencil,
   Plus,
+  Robot,
   Sparkle,
   X,
   type Icon,
@@ -38,6 +39,7 @@ const CUSTOM_MODULE_CHOICES: ReadonlyArray<{
   { id: "system", kinds: ["system"], icon: Gauge },
   { id: "media", kinds: ["nowPlaying", "discord"], icon: MusicNote },
   { id: "note", kinds: ["note"], icon: NotePencil },
+  { id: "agents", kinds: ["agents"], icon: Robot },
 ];
 
 const MAX_CUSTOM_MODULES = 5;
@@ -84,6 +86,7 @@ const KIND_CATEGORY: Record<FreeWidgetKind, GalleryFilter> = {
   weather: "weather",
   note: "productivity",
   discord: "productivity",
+  agents: "productivity",
 };
 
 function mod(

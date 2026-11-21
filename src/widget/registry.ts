@@ -196,6 +196,15 @@ export const WIDGET_REGISTRY: Record<FreeWidgetKind, WidgetMeta> = {
     defaultSettings: {},
     settingsSchema: [],
   },
+  agents: {
+    kind: "agents",
+    name: "AI Agenter",
+    description: "Se dine AI-agenter arbejde – Claude, Codex, Cline m.fl.",
+    allowedSizes: ["s", "m", "l"],
+    defaultSize: "m",
+    defaultSettings: {},
+    settingsSchema: [],
+  },
 };
 
 export const WIDGET_LIST: readonly WidgetMeta[] = Object.values(WIDGET_REGISTRY);

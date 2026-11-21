@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import type { AgentsSnapshot } from "../bindings/AgentsSnapshot";
 import type { DiscordSnapshot } from "../bindings/DiscordSnapshot";
 import type { MediaSnapshot } from "../bindings/MediaSnapshot";
 import type { ProviderKind } from "../bindings/ProviderKind";
@@ -14,6 +15,7 @@ export type ProviderDataMap = {
   system: SystemSample;
   weather: WeatherSnapshot;
   discord: DiscordSnapshot;
+  agents: AgentsSnapshot;
 };
 
 export interface ProviderResult<T> {
@@ -111,7 +113,12 @@ export function useProvider<K extends ProviderKind>(
           );
         });
       }
-      return on.discord((payload) => {
+      if (kind === "discord") {
+        return on.discord((payload) => {
+          applyData(payload as ProviderDataMap[K]);
+        });
+      }
+      return on.agents((payload) => {
         applyData(payload as ProviderDataMap[K]);
       });
     };

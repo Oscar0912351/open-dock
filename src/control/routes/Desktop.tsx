@@ -7,6 +7,7 @@ import {
   Note,
   NotePencil,
   Plus,
+  Robot,
   SquaresFour,
   Headset,
   X,
@@ -28,6 +29,7 @@ const KIND_ICONS: Record<WidgetKind, typeof Clock> = {
   note: Note,
   discord: Headset,
   cluster: SquaresFour,
+  agents: Robot,
 };
 
 export function Desktop() {

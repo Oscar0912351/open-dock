@@ -82,6 +82,7 @@ export function ClusterShell({
   const hasMedia = cluster.modules.some((m) => m.kind === "nowPlaying");
   const hasSystem = cluster.modules.some((m) => m.kind === "system");
   const hasDiscord = cluster.modules.some((m) => m.kind === "discord");
+  const hasAgents = cluster.modules.some((m) => m.kind === "agents");
   const firstWeather = cluster.modules.find((m) => m.kind === "weather");
   const hasClock = cluster.modules.some((m) => m.kind === "clock");
   const needsSeconds = cluster.modules.some(
@@ -96,6 +97,7 @@ export function ClusterShell({
   const media = useProvider("media", null, hasMedia);
   const system = useProvider("system", null, hasSystem);
   const discord = useProvider("discord", null, hasDiscord);
+  const agents = useProvider("agents", null, hasAgents);
   const weather = useProvider("weather", weatherLocId, Boolean(firstWeather));
 
   const rawSystemHistory = useSystemHistory(hasSystem);
@@ -538,6 +540,7 @@ export function ClusterShell({
     systemCaps,
     weatherByLoc,
     discord: { status: discord.status, data: discord.data },
+    agents: { status: agents.status, data: agents.data },
   };
 
   if (isPillBar) {

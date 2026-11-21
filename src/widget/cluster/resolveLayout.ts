@@ -22,6 +22,7 @@ export const MODULE_HEIGHT_U: Record<ClusterModuleKind, Record<ModuleMode, numbe
   weather: { hidden: 0, compact: 32, expanded: 112 },
   note: { hidden: 0, compact: 32, expanded: 104 },
   discord: { hidden: 0, compact: 32, expanded: 76 },
+  agents: { hidden: 0, compact: 32, expanded: 104 },
 };
 
 const FIXED_EXPANSION_ORDER: readonly ClusterModuleKind[] = [
@@ -29,6 +30,7 @@ const FIXED_EXPANSION_ORDER: readonly ClusterModuleKind[] = [
   "system",
   "nowPlaying",
   "note",
+  "agents",
   "discord",
   "clock",
 ];

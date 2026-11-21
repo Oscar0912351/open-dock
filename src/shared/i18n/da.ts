@@ -113,6 +113,23 @@ export const da = {
     detection: "Baseret på Discords lydaktivitet",
     aria: "Discord: {state}",
   },
+  agents: {
+    empty: {
+      title: "Ingen agenter",
+      body: "Start Claude Code, Codex eller en anden AI-agent",
+    },
+    working: "Arbejder…",
+    running: "Kører",
+    idleFor: "Pause i {dur}",
+    summary: "{total} sessioner · {working} arbejder",
+    workingN: "{n} arbejder",
+    allIdle: "Alle på pause",
+    more: "+ {n} flere",
+    sessionOne: "session",
+    sessionMany: "sessioner",
+    aria: "AI-agenter: {total} sessioner, {working} arbejder",
+    ariaEmpty: "AI-agenter: ingen aktive",
+  },
   state: { error: "Kunne ikke hente data", retrySoon: "Prøver igen om lidt", dash: "—" },
   toast: {
     added: "{name} lagt på skrivebordet",
@@ -157,6 +174,7 @@ export const da = {
     weather: { name: "Vejr", desc: "Vejret nu og de næste timer" },
     note: { name: "Note", desc: "En lille note eller tjekliste" },
     discord: { name: "Discord", desc: "Se om du er i et Discord-call (lydbaseret)" },
+    agents: { name: "AI Agenter", desc: "Se hvad dine AI-agenter laver lige nu" },
     cluster: { name: "Adaptiv Klynge", desc: "Kompakte bokse der udvider sig efter behov" },
   },
   gallery: {

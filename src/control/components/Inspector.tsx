@@ -78,6 +78,7 @@ function autoRulesForKind(kind: FreeWidgetKind): SelectOption<AutoRule>[] {
     case "note":
     case "clock":
     case "discord":
+    case "agents":
       return [
         ...common,
         { value: "fillRemainingSpace", label: t("desktop.ruleFillRemainingSpace") },

@@ -9,6 +9,7 @@ use tauri::AppHandle;
 use ts_rs::TS;
 
 use super::{
+    agents::{AgentsProvider, AgentsSnapshot},
     discord::{DiscordProvider, DiscordSnapshot},
     media::{MediaProvider, MediaSnapshot},
     system::{SystemProvider, SystemSample},
@@ -23,6 +24,7 @@ pub enum ProviderKind {
     System,
     Weather,
     Discord,
+    Agents,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -53,6 +55,7 @@ pub enum ProviderSnapshot {
     System(SystemSample),
     Weather(WeatherSnapshot),
     Discord(DiscordSnapshot),
+    Agents(AgentsSnapshot),
 }
 
 pub struct Scheduler {
@@ -63,6 +66,7 @@ pub struct Scheduler {
     system: SystemProvider,
     weather: WeatherProvider,
     discord: DiscordProvider,
+    agents: AgentsProvider,
 }
 
 impl Scheduler {
@@ -75,6 +79,7 @@ impl Scheduler {
             system: SystemProvider::new(),
             weather: WeatherProvider::new(),
             discord: DiscordProvider::new(),
+            agents: AgentsProvider::new(),
         }
     }
 
@@ -92,6 +97,10 @@ impl Scheduler {
 
     pub fn discord(&self) -> &DiscordProvider {
         &self.discord
+    }
+
+    pub fn agents(&self) -> &AgentsProvider {
+        &self.agents
     }
 
     pub fn subscribe(
@@ -132,6 +141,7 @@ impl Scheduler {
                 .and_then(|loc_id| self.weather.snapshot(loc_id))
                 .map(ProviderSnapshot::Weather),
             ProviderKind::Discord => self.discord.snapshot().map(ProviderSnapshot::Discord),
+            ProviderKind::Agents => Some(ProviderSnapshot::Agents(self.agents.snapshot())),
         }
     }
 
@@ -201,6 +211,7 @@ impl Scheduler {
             self.system.stop();
             self.weather.stop_all();
             self.discord.stop();
+            self.agents.stop();
         } else {
             log::info!(target: "scheduler", "Genoptager aktive providers");
             for key in active_keys {
@@ -217,7 +228,7 @@ impl Scheduler {
     ) -> Vec<SubKey> {
         match removed.kind {
             ProviderKind::Weather => vec![removed.clone()],
-            ProviderKind::Media | ProviderKind::System | ProviderKind::Discord => {
+            ProviderKind::Media | ProviderKind::System | ProviderKind::Discord | ProviderKind::Agents => {
                 let any_remaining = subs.keys().any(|k| k.kind == removed.kind);
                 if !any_remaining {
                     vec![SubKey {
@@ -247,6 +258,9 @@ impl Scheduler {
             ProviderKind::Discord => {
                 self.discord.start(&self.app);
             }
+            ProviderKind::Agents => {
+                self.agents.start(&self.app);
+            }
         }
     }
 
@@ -260,6 +274,7 @@ impl Scheduler {
                 }
             }
             ProviderKind::Discord => self.discord.stop(),
+            ProviderKind::Agents => self.agents.stop(),
         }
     }
 }

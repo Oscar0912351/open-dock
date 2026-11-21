@@ -11,6 +11,7 @@ import type { WidgetSize } from "../../shared/bindings/WidgetSize";
 import { toAssetUrl } from "../../shared/ipc";
 import { ClusterShell } from "../../widget/cluster/ClusterShell";
 import { computeClusterTargetHeight, DEFAULT_CLUSTER_SIGNALS, resolveModuleModes } from "../../widget/cluster/resolveLayout";
+import { Agents } from "../../widget/kinds/agents/Agents";
 import { Clock, resolveClockSettings } from "../../widget/kinds/clock/Clock";
 import { useClock } from "../../widget/kinds/clock/useClock";
 import { Discord } from "../../widget/kinds/discord/Discord";
@@ -280,6 +281,8 @@ export function WidgetPreview({
             size={size === "l" ? "m" : size}
           />
         );
+      case "agents":
+        return <Agents size={size === "pill" ? "s" : size} />;
       case "cluster":
         if (!cluster) return null;
         return (

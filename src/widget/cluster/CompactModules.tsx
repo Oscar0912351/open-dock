@@ -8,6 +8,7 @@ import {
   Play,
   Repeat,
   RepeatOnce,
+  Robot,
   Shuffle,
   SkipBack,
   SkipForward,
@@ -23,6 +24,7 @@ import {
   type KeyboardEvent,
   type MouseEvent,
 } from "react";
+import type { AgentsSnapshot } from "../../shared/bindings/AgentsSnapshot";
 import type { ClusterModule } from "../../shared/bindings/ClusterModule";
 import type { DiscordSnapshot } from "../../shared/bindings/DiscordSnapshot";
 import type { Location } from "../../shared/bindings/Location";
@@ -58,6 +60,7 @@ import {
   serializeChecklist,
   type ChecklistRow,
 } from "../kinds/note/Note";
+import { AgentRow } from "../kinds/agents/Agents";
 import { Equalizer } from "../kinds/nowPlaying/Equalizer";
 import { resolveNowPlayingSettings } from "../kinds/nowPlaying/NowPlaying";
 import { formatTrackTime, Progress } from "../kinds/nowPlaying/Progress";
@@ -81,6 +84,7 @@ export interface ClusterModuleSharedData {
   systemCaps: SystemCaps | null;
   weatherByLoc: ReadonlyMap<string, { status: string; data: WeatherSnapshot | null }>;
   discord: { status: string; data: DiscordSnapshot | null };
+  agents: { status: string; data: AgentsSnapshot | null };
 }
 
 interface ModuleCardProps {
@@ -175,6 +179,16 @@ export function ClusterModuleView({ mod, mode, shared, onToggleExpand }: ModuleC
           mod={mod}
           mode={mode}
           data={shared.discord.data}
+          preview={shared.preview}
+          onClick={handleSurfaceClick}
+        />
+      );
+    case "agents":
+      return (
+        <AgentsClusterMod
+          mod={mod}
+          mode={mode}
+          data={shared.agents.data}
           preview={shared.preview}
           onClick={handleSurfaceClick}
         />
@@ -878,6 +892,96 @@ function DiscordClusterMod({
         <span className="grow" />
         {callMs !== null && <span className="micro tabular ink3">{formatDuration(callMs)}</span>}
         <span className={`dc-dot${inCall ? " is-call" : ""}`} />
+      </div>
+    </div>
+  );
+}
+
+function AgentsClusterMod({
+  mod,
+  mode,
+  data,
+  preview,
+  onClick,
+}: {
+  mod: ClusterModule;
+  mode: "compact" | "expanded";
+  data: AgentsSnapshot | null;
+  preview?: boolean;
+  onClick: (e: MouseEvent<HTMLDivElement>) => void;
+}) {
+  const [nowMs, setNowMs] = useState(() => Date.now());
+  const sessions = data?.sessions ?? [];
+  const working = sessions.filter((s) => s.status === "working").length;
+
+  useEffect(() => {
+    if (sessions.length === 0 || preview) return;
+    const id = window.setInterval(() => setNowMs(Date.now()), 10_000);
+    return () => window.clearInterval(id);
+  }, [sessions.length, preview]);
+
+  if (mode === "expanded") {
+    const rows = sessions.slice(0, 3);
+    const more = sessions.length - rows.length;
+    return (
+      <div
+        className="c-mod is-exp c-mod-agents-exp"
+        style={viewTransitionStyle(mod.id, preview)}
+        onClick={onClick}
+      >
+        <div className="col" style={{ gap: "calc(7 * var(--u))" }}>
+          <div className="row between">
+            <span className="meta" style={{ color: "var(--ink-2)" }}>
+              {sessions.length === 0
+                ? t("agents.empty.title")
+                : t("agents.summary", { total: sessions.length, working })}
+            </span>
+            <span className={`ag-dot${working > 0 ? " is-live" : ""}`} />
+          </div>
+          {sessions.length === 0 ? (
+            <span className="micro ink3">{t("agents.empty.body")}</span>
+          ) : (
+            <>
+              {rows.map((session) => (
+                <AgentRow key={session.id} session={session} nowMs={nowMs} />
+              ))}
+              {more > 0 && <span className="micro ink3">{t("agents.more", { n: more })}</span>}
+            </>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div
+      className="c-mod c-mod-agents-cmp"
+      style={viewTransitionStyle(mod.id, preview)}
+      onClick={onClick}
+    >
+      <div className="row g8">
+        <span className="c-discord-ico">
+          <Robot size="calc(13 * var(--u))" />
+        </span>
+        <span className="title-s trunc" style={{ fontSize: "calc(12 * var(--u))" }}>
+          {sessions.length === 0
+            ? t("agents.empty.title")
+            : working > 0
+              ? t("agents.workingN", { n: working })
+              : t("agents.allIdle")}
+        </span>
+        <span className="grow" />
+        {sessions.length > 0 && (
+          <div className="row g4">
+            {sessions.slice(0, 5).map((session) => (
+              <span
+                key={session.id}
+                className={`ag-dot${session.status === "working" ? " is-live" : ""}`}
+              />
+            ))}
+          </div>
+        )}
+        {sessions.length > 0 && <HintBadge label={t("cluster.more")} />}
       </div>
     </div>
   );
