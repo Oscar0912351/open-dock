@@ -194,6 +194,7 @@ export const da = {
     placeOnDesktop: "Læg på skrivebordet",
     add: "Tilføj",
     added: "Tilføjet",
+    customize: "Tilpas",
     singleHeading: "Enkelt-widgets",
     monitorPrimary: "Skærm {n} (primær)",
     monitorNth: "Skærm {n}",

@@ -196,6 +196,7 @@ export const en: Messages = {
     placeOnDesktop: "Place on desktop",
     add: "Add",
     added: "Added",
+    customize: "Customize",
     singleHeading: "Single widgets",
     monitorPrimary: "Display {n} (primary)",
     monitorNth: "Display {n}",

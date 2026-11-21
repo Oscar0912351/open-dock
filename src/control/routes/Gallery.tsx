@@ -162,6 +162,20 @@ export function buildPresetClusters(presetId: "allInOne" | "miniTrio" | "pillBar
   ];
 }
 
+function seedFromPreset(presetId: "allInOne" | "miniTrio" | "pillBar"): {
+  shape: CustomShape;
+  selected: FreeWidgetKind[];
+} {
+  const selected: FreeWidgetKind[] = [];
+  for (const box of buildPresetClusters(presetId)) {
+    for (const m of box.modules) {
+      const kind = m.kind as FreeWidgetKind;
+      if (!selected.includes(kind)) selected.push(kind);
+    }
+  }
+  return { shape: presetId === "pillBar" ? "pill" : "box", selected };
+}
+
 export function Gallery() {
   useControlStore((s) => s.locale);
   const config = useControlStore((s) => s.config);
@@ -170,7 +184,10 @@ export function Gallery() {
   const pushToast = useControlStore((s) => s.pushToast);
 
   const [addedKey, setAddedKey] = useState<string | null>(null);
-  const [customOpen, setCustomOpen] = useState(false);
+  const [customSeed, setCustomSeed] = useState<{
+    shape: CustomShape;
+    selected: FreeWidgetKind[];
+  } | null>(null);
   const addedTimerRef = useRef<number | null>(null);
 
   useEffect(() => {
@@ -282,6 +299,12 @@ export function Gallery() {
                     </div>
 
                     <div className="cc-gallery-foot" style={{ justifyContent: "flex-end" }}>
+                      <Button
+                        variant="secondary"
+                        onClick={() => setCustomSeed(seedFromPreset(preset.presetId))}
+                      >
+                        <span>{t("gallery.customize")}</span>
+                      </Button>
                       <MonitorAddButton
                         label={t("gallery.placeOnDesktop")}
                         added={isAdded}
@@ -297,7 +320,9 @@ export function Gallery() {
               <button
                 type="button"
                 className="cc-gallery-stage cc-custom-cta"
-                onClick={() => setCustomOpen(true)}
+                onClick={() =>
+                  setCustomSeed({ shape: "box", selected: ["clock", "weather", "system"] })
+                }
               >
                 {plateUrl && (
                   <div
@@ -321,7 +346,12 @@ export function Gallery() {
                 </div>
 
                 <div className="cc-gallery-foot" style={{ justifyContent: "flex-end" }}>
-                  <Button variant="secondary" onClick={() => setCustomOpen(true)}>
+                  <Button
+                    variant="secondary"
+                    onClick={() =>
+                      setCustomSeed({ shape: "box", selected: ["clock", "weather", "system"] })
+                    }
+                  >
                     <Sparkle size={13} weight="bold" aria-hidden="true" />
                     <span>{t("gallery.custom.open")}</span>
                   </Button>
@@ -331,15 +361,19 @@ export function Gallery() {
           </div>
       </section>
 
-      <CustomizeDialog
-        open={customOpen}
-        monitors={monitors}
-        locations={config.weather.locations}
-        appearance={config.appearance}
-        plateUrl={plateUrl}
-        onClose={() => setCustomOpen(false)}
-        onAdd={(cluster, mon) => void handleAddCustom(cluster, mon)}
-      />
+      {customSeed && (
+        <CustomizeDialog
+          key={JSON.stringify(customSeed)}
+          seed={customSeed}
+          open
+          monitors={monitors}
+          locations={config.weather.locations}
+          appearance={config.appearance}
+          plateUrl={plateUrl}
+          onClose={() => setCustomSeed(null)}
+          onAdd={(cluster, mon) => void handleAddCustom(cluster, mon)}
+        />
+      )}
     </div>
   );
 }
@@ -427,6 +461,7 @@ function MonitorAddButton({
 }
 
 function CustomizeDialog({
+  seed,
   open,
   monitors,
   locations,
@@ -435,6 +470,7 @@ function CustomizeDialog({
   onClose,
   onAdd,
 }: {
+  seed: { shape: CustomShape; selected: FreeWidgetKind[] };
   open: boolean;
   monitors: MonitorInfo[];
   locations: Location[];
@@ -443,12 +479,8 @@ function CustomizeDialog({
   onClose: () => void;
   onAdd: (cluster: ClusterConfig, monitor?: string) => void;
 }) {
-  const [shape, setShape] = useState<CustomShape>("box");
-  const [selected, setSelected] = useState<FreeWidgetKind[]>([
-    "clock",
-    "weather",
-    "system",
-  ]);
+  const [shape, setShape] = useState<CustomShape>(seed.shape);
+  const [selected, setSelected] = useState<FreeWidgetKind[]>(seed.selected);
 
   useEffect(() => {
     if (!open) return;
@@ -471,8 +503,8 @@ function CustomizeDialog({
 
   const toggleChoice = (kinds: FreeWidgetKind[]) => {
     setSelected((prev) => {
-      const allOn = kinds.every((kind) => prev.includes(kind));
-      if (allOn) return prev.filter((kind) => !kinds.includes(kind));
+      const anyOn = kinds.some((kind) => prev.includes(kind));
+      if (anyOn) return prev.filter((kind) => !kinds.includes(kind));
       const next = [...prev, ...kinds.filter((kind) => !prev.includes(kind))];
       return next.length <= MAX_CUSTOM_MODULES ? next : prev;
     });
@@ -535,8 +567,9 @@ function CustomizeDialog({
           </div>
           <div className="cc-modchips" role="group" aria-label={t("gallery.custom.modules")}>
             {CUSTOM_MODULE_CHOICES.map(({ id, kinds, icon: ModuleIcon }) => {
-              const isOn = kinds.every((kind) => selected.includes(kind));
-              const isFull = !isOn && selected.length + kinds.length > MAX_CUSTOM_MODULES;
+              const isOn = kinds.some((kind) => selected.includes(kind));
+              const missing = kinds.filter((kind) => !selected.includes(kind)).length;
+              const isFull = !isOn && selected.length + missing > MAX_CUSTOM_MODULES;
               return (
                 <button
                   key={id}
