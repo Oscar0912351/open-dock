@@ -419,7 +419,7 @@ export const da = {
       customTitle: "Ingen egne baggrunde endnu",
       customBody: "Importér lokale billeder (PNG, JPG, WebP) eller videoer (MP4, WebM, MKV).",
       filterTitle: "Ingen baggrunde matcher filteret",
-      filterBody: "Prøv at skifte stemning eller type.",
+      filterBody: "Prøv et andet filter.",
       resetFilters: "Nulstil filtre",
     },
     toast: {

@@ -36,7 +36,7 @@ const SHADER_ALPINE_MIST: &str = include_str!("shaders/alpine_mist.hlsl");
 const SHADER_MONOLITH_MESH: &str = include_str!("shaders/monolith_mesh.hlsl");
 const SHADER_DEEP_OCEAN: &str = include_str!("shaders/deep_ocean.hlsl");
 const SHADER_AMBER_DUNES: &str = include_str!("shaders/amber_dunes.hlsl");
-const SHADER_PRISM_GLASS: &str = include_str!("shaders/prism_glass.hlsl");
+const SHADER_QUIET_FIELD: &str = include_str!("shaders/quiet_field.hlsl");
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
@@ -56,7 +56,7 @@ pub fn scene_hlsl_source(shader_id: &str) -> Option<&'static str> {
         "scene-monolith-mesh" => Some(SHADER_MONOLITH_MESH),
         "scene-deep-ocean" => Some(SHADER_DEEP_OCEAN),
         "scene-amber-dunes" => Some(SHADER_AMBER_DUNES),
-        "scene-prism-glass" => Some(SHADER_PRISM_GLASS),
+        "scene-quiet-field" => Some(SHADER_QUIET_FIELD),
         _ => None,
     }
 }

@@ -421,7 +421,7 @@ export const en: Messages = {
       customTitle: "No custom wallpapers yet",
       customBody: "Import local images (PNG, JPG, WebP) or videos (MP4, WebM, MKV).",
       filterTitle: "No wallpapers match this filter",
-      filterBody: "Try switching mood or type.",
+      filterBody: "Try another filter.",
       resetFilters: "Reset filters",
     },
     toast: {
