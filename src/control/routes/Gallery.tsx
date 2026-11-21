@@ -18,10 +18,9 @@ import type { AutoRule } from "../../shared/bindings/AutoRule";
 import type { ClusterConfig } from "../../shared/bindings/ClusterConfig";
 import type { ClusterModule } from "../../shared/bindings/ClusterModule";
 import type { Location } from "../../shared/bindings/Location";
-import type { WidgetSize } from "../../shared/bindings/WidgetSize";
 import { t } from "../../shared/i18n";
 import { ipc, toAssetUrl } from "../../shared/ipc";
-import { CLUSTER_PRESETS, WIDGET_LIST, WIDGET_REGISTRY, type FreeWidgetKind } from "../../widget/registry";
+import { CLUSTER_PRESETS, WIDGET_REGISTRY, type FreeWidgetKind } from "../../widget/registry";
 import { Button } from "../components/Button";
 import { Segmented } from "../components/Segmented";
 import { WidgetPreview } from "../components/WidgetPreview";
@@ -69,25 +68,6 @@ function buildCustomCluster(shape: CustomShape, selected: FreeWidgetKind[]): Clu
     })),
   };
 }
-
-type GalleryFilter =
-  | "all"
-  | "clusters"
-  | "music"
-  | "system"
-  | "time"
-  | "weather"
-  | "productivity";
-
-const KIND_CATEGORY: Record<FreeWidgetKind, GalleryFilter> = {
-  nowPlaying: "music",
-  system: "system",
-  clock: "time",
-  weather: "weather",
-  note: "productivity",
-  discord: "productivity",
-  agents: "productivity",
-};
 
 function mod(
   presetKey: string,
@@ -189,8 +169,6 @@ export function Gallery() {
   const setRoute = useControlStore((s) => s.setRoute);
   const pushToast = useControlStore((s) => s.pushToast);
 
-  const [filter, setFilter] = useState<GalleryFilter>("all");
-  const [selectedSizes, setSelectedSizes] = useState<Partial<Record<FreeWidgetKind, WidgetSize>>>({});
   const [addedKey, setAddedKey] = useState<string | null>(null);
   const [customOpen, setCustomOpen] = useState(false);
   const addedTimerRef = useRef<number | null>(null);
@@ -210,17 +188,6 @@ export function Gallery() {
       addedTimerRef.current = null;
       setAddedKey(null);
     }, 1600);
-  };
-
-  const handleAddSingle = async (kind: FreeWidgetKind, size: WidgetSize, monitorName?: string) => {
-    const inst = await ipc.widgetAdd(kind, size, monitorName ?? null);
-    markAdded(`w:${kind}`);
-    const name = t(`widgets.${kind}.name`);
-    pushToast({
-      message: t("toast.added", { name }),
-      actionLabel: t("toast.show"),
-      onAction: () => setRoute("desktop", inst.id),
-    });
   };
 
   const handleAddPreset = async (
@@ -248,14 +215,6 @@ export function Gallery() {
     });
   };
 
-  const showClusters = filter === "all" || filter === "clusters";
-  const singleWidgets =
-    filter === "clusters"
-      ? []
-      : filter === "all"
-        ? WIDGET_LIST
-        : WIDGET_LIST.filter((meta) => KIND_CATEGORY[meta.kind] === filter);
-
   const primaryMonitor = monitors.find((m) => m.isPrimary) ?? monitors[0] ?? null;
   const plateUrl = toAssetUrl(primaryMonitor?.platePath ?? "");
 
@@ -268,25 +227,7 @@ export function Gallery() {
         </div>
       </div>
 
-      <div>
-        <Segmented<GalleryFilter>
-          value={filter}
-          ariaLabel={t("gallery.title")}
-          options={[
-            { value: "all", label: t("gallery.filters.all") },
-            { value: "clusters", label: t("gallery.filters.clusters") },
-            { value: "music", label: t("gallery.filters.music") },
-            { value: "system", label: t("gallery.filters.system") },
-            { value: "time", label: t("gallery.filters.time") },
-            { value: "weather", label: t("gallery.filters.weather") },
-            { value: "productivity", label: t("gallery.filters.productivity") },
-          ]}
-          onChange={setFilter}
-        />
-      </div>
-
-      {showClusters && (
-        <section className="cc-gallery-cluster-section">
+      <section className="cc-gallery-cluster-section">
           <div className="cc-section-head">
             <span className="cc-section-label">{t("gallery.clustersHeading")}</span>
             <span className="cc-field-help">{t("gallery.clustersSub")}</span>
@@ -388,8 +329,7 @@ export function Gallery() {
               </div>
             </article>
           </div>
-        </section>
-      )}
+      </section>
 
       <CustomizeDialog
         open={customOpen}
@@ -400,72 +340,6 @@ export function Gallery() {
         onClose={() => setCustomOpen(false)}
         onAdd={(cluster, mon) => void handleAddCustom(cluster, mon)}
       />
-
-      {singleWidgets.length > 0 && (
-        <section className="cc-gallery-cluster-section">
-          {showClusters && (
-            <div className="cc-section-head">
-              <span className="cc-section-label">{t("gallery.singleHeading")}</span>
-            </div>
-          )}
-          <div className="cc-gallery-grid">
-            {singleWidgets.map((meta) => {
-              const currentSize = selectedSizes[meta.kind] ?? meta.defaultSize;
-              const isAdded = addedKey === `w:${meta.kind}`;
-              return (
-                <article key={meta.kind} className="cc-gallery-card">
-                  <WidgetPreview
-                    id={`preview-card-${meta.kind}`}
-                    kind={meta.kind}
-                    size={currentSize}
-                    settings={meta.defaultSettings}
-                    appearance={config.appearance}
-                    monitors={monitors}
-                    locations={config.weather.locations}
-                    maxWidth={248}
-                    maxHeight={144}
-                    stageHeight={168}
-                    retriggerKey={`${meta.kind}-${currentSize}`}
-                  />
-
-                  <div className="cc-gallery-body">
-                    <div className="cc-gallery-meta">
-                      <div className="cc-gallery-title">{t(`widgets.${meta.kind}.name`)}</div>
-                      <div className="cc-gallery-desc" title={t(`widgets.${meta.kind}.desc`)}>
-                        {t(`widgets.${meta.kind}.desc`)}
-                      </div>
-                    </div>
-
-                    <div className="cc-gallery-foot">
-                      <div className="cc-size-chips">
-                        {meta.allowedSizes.map((size) => (
-                          <button
-                            key={size}
-                            type="button"
-                            className={`cc-chip${currentSize === size ? " is-active" : ""}`}
-                            onClick={() =>
-                              setSelectedSizes((prev) => ({ ...prev, [meta.kind]: size }))
-                            }
-                          >
-                            {t(`size.${size}`)}
-                          </button>
-                        ))}
-                      </div>
-
-                      <MonitorAddButton
-                        label={t("gallery.add")}
-                        added={isAdded}
-                        monitors={monitors}
-                        onAdd={(mon) => void handleAddSingle(meta.kind, currentSize, mon)}
-                      />
-                    </div>
-                  </div>
-                </article>
-              );
-            })}
-          </div>
-        </section>
-      )}
     </div>
   );
 }
