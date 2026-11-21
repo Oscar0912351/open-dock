@@ -46,6 +46,8 @@ export interface WidgetPreviewProps {
   maxHeight: number;
   stageHeight?: number;
   interactive?: boolean;
+  /** Cluster previews only: show every module compact instead of the idle collapse. */
+  previewShowAll?: boolean;
   retriggerKey?: string | number;
   className?: string;
 }
@@ -67,6 +69,7 @@ export function WidgetPreview({
   maxHeight,
   stageHeight,
   interactive = false,
+  previewShowAll = false,
   retriggerKey,
   className = "",
 }: WidgetPreviewProps) {
@@ -295,6 +298,7 @@ export function WidgetPreview({
             pausedApp={false}
             locations={locations}
             preview
+            previewShowAll={previewShowAll}
             onClusterFrameChange={handleClusterFrameChange}
             onAmbientChange={handleAmbientChange}
             onAriaChange={() => {}}

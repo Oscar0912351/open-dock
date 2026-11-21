@@ -82,6 +82,11 @@
   flex: none;
 }
 
+.c-hint svg {
+  width: calc(10 * var(--u));
+  height: calc(10 * var(--u));
+}
+
 .c-mod:hover .c-hint {
   opacity: 1;
 }

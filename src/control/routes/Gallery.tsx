@@ -292,6 +292,7 @@ export function Gallery() {
                           maxWidth={256}
                           maxHeight={boxes.length > 1 ? 58 : 184}
                           interactive
+                          previewShowAll
                         />
                       ))}
                     </div>
@@ -352,6 +353,7 @@ export function Gallery() {
                   locations={config.weather.locations}
                   maxWidth={256}
                   maxHeight={184}
+                  previewShowAll
                 />
               </button>
 
@@ -568,6 +570,7 @@ function CustomizeDialog({
               maxWidth={320}
               maxHeight={196}
               interactive
+              previewShowAll
             />
           ) : (
             <span className="cc-custom-empty">{t("gallery.custom.empty")}</span>

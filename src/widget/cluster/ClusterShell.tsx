@@ -2,6 +2,7 @@ import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "rea
 import { flushSync } from "react-dom";
 import type { ClusterConfig } from "../../shared/bindings/ClusterConfig";
 import type { Location } from "../../shared/bindings/Location";
+import type { ModuleMode } from "../../shared/bindings/ModuleMode";
 import type { MotionPreset } from "../../shared/bindings/MotionPreset";
 import type { SystemCaps } from "../../shared/bindings/SystemCaps";
 import type { ThemeId } from "../../shared/bindings/ThemeId";
@@ -34,6 +35,8 @@ interface ClusterShellProps {
   pausedApp?: boolean;
   locations: Location[];
   preview?: boolean;
+  /** Preview-only: render every module compact so the card shows the full config. */
+  previewShowAll?: boolean;
   onClusterFrameChange: (frame: ClusterFrameInfo | null) => void;
   onAmbientChange: (rgb: [number, number, number] | null) => void;
   onAriaChange: (aria: string | undefined) => void;
@@ -74,6 +77,7 @@ export function ClusterShell({
   pausedApp = false,
   locations,
   preview = false,
+  previewShowAll = false,
   onClusterFrameChange,
   onAmbientChange,
   onAriaChange,
@@ -269,8 +273,11 @@ export function ClusterShell({
   const isPillBar = cluster.presetId === "pillBar";
 
   const modes = useMemo(
-    () =>
-      resolveModuleModes(
+    () => {
+      if (previewShowAll) {
+        return new Map(cluster.modules.map((m) => [m.id, "compact" as ModuleMode]));
+      }
+      return resolveModuleModes(
         cluster.modules,
         {
           mediaActive: hasMedia && mediaActive,
@@ -279,9 +286,11 @@ export function ClusterShell({
         manualExpandedId,
         cluster.resizeBehavior,
         isPillBar,
-      ),
+      );
+    },
     [
       cluster.modules,
+      previewShowAll,
       hasMedia,
       mediaActive,
       hasSystem,
