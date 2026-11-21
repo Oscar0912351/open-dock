@@ -274,18 +274,6 @@ pub const CURATED_PHOTOS: &[CuratedPhotoSpec] = &[
         accent_hex: "#F6B733",
         estimated_luma: 0.08,
     },
-    CuratedPhotoSpec {
-        id: "photo-blue-gradient",
-        title_da: "Blå Gradient",
-        title_en: "Blue Gradient",
-        sub_da: "Ren kølig gradient uden støj eller motiver",
-        sub_en: "Clean cool gradient without noise or motifs",
-        base_url: "https://images.unsplash.com/photo-1557683316-973673baf926",
-        moods: &[WallpaperMood::Minimal, WallpaperMood::Light],
-        recommended_theme: ThemeId::Laerk,
-        accent_hex: "#8CCBFF",
-        estimated_luma: 0.50,
-    },
 ];
 
 pub fn find_shader(id: &str) -> Option<&'static BuiltinShaderSpec> {
