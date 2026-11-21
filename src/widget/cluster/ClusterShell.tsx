@@ -335,6 +335,7 @@ export function ClusterShell({
         window.clearTimeout(collapseTimerRef.current);
         collapseTimerRef.current = null;
       }
+      setTransitionKind("idle");
       if (preview) return;
       void ipc
         .clusterSetWindowSize(instance.id, cluster.width, nextH, cluster.anchor)
@@ -348,6 +349,8 @@ export function ClusterShell({
       const target = pendingCollapseTargetRef.current;
       if (target !== null) {
         commitWinSize(target);
+      } else {
+        setTransitionKind("idle");
       }
     });
     return () => registerTransitionEnd(null);
@@ -539,17 +542,22 @@ export function ClusterShell({
 
   if (isPillBar) {
     const expandedMod = cluster.modules.find((m) => modes.get(m.id) === "expanded") ?? null;
+    const hasChips = cluster.modules.some(
+      (m) => m.kind === "clock" || m.kind === "weather" || m.kind === "system",
+    );
     return (
       <div className="cluster-content">
-        <ClusterPillBarHeader
-          modules={cluster.modules}
-          expandedId={expandedMod && expandedMod.kind !== "nowPlaying" ? expandedMod.id : null}
-          shared={shared}
-          onToggleChip={handleToggleExpand}
-        />
+        {hasChips && (
+          <ClusterPillBarHeader
+            modules={cluster.modules}
+            expandedId={expandedMod && expandedMod.kind !== "nowPlaying" ? expandedMod.id : null}
+            shared={shared}
+            onToggleChip={handleToggleExpand}
+          />
+        )}
         {expandedMod && hasExpandedModule && (
           <>
-            <div className="c-sep" />
+            {hasChips && <div className="c-sep" />}
             <ClusterModuleView
               mod={expandedMod}
               mode="expanded"

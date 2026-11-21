@@ -16,7 +16,7 @@ use windows::Win32::{
 };
 
 use crate::{
-    config::schema::{MonitorKey, Placement, PointF, RectF, RectI},
+    config::schema::{MonitorKey, Placement, PointF, RectF, RectI, VerticalAnchor},
     error::AppError,
     state::{AppState, EditDragging, EditModeState, EditSelected},
     windows::{overlay, widget},
@@ -284,6 +284,7 @@ fn run_drag_loop(session: DragSession) {
         x: 0.0,
         y: 0.0,
     };
+    let mut last_log_h = 0.0;
 
     loop {
         std::thread::sleep(Duration::from_millis(8));
@@ -392,6 +393,7 @@ fn run_drag_loop(session: DragSession) {
         let ctx = SnapCtx::standard(work_log, others, session.grid_snap, !alt_down);
         let (snapped_pt, guides) = snap::resolve(cand_rect, &ctx);
         last_log_pt = snapped_pt;
+        last_log_h = cur_log_h;
 
         let dest_phys_x = mon.work_area.x + (snapped_pt.x * scale).round() as i32;
         let dest_phys_y = mon.work_area.y + (snapped_pt.y * scale).round() as i32;
@@ -447,7 +449,7 @@ fn run_drag_loop(session: DragSession) {
             .y
             .clamp(0.0, (work_h - session.target_log_h).max(0.0));
 
-        let new_placement = Placement {
+        let mut new_placement = Placement {
             monitor: MonitorKey {
                 name: mon.name.clone(),
                 rect: mon.rect,
@@ -460,6 +462,15 @@ fn run_drag_loop(session: DragSession) {
             let Some(target) = cfg.widgets.iter_mut().find(|w| w.id == session.id) else {
                 return Err(AppError::WidgetNotFound);
             };
+            // Anchor-bottom klynger: omsæt den aktuelle top til "top ved
+            // idle-højde" så bundkanten genfindes efter genstart.
+            if let Some(cluster) = target.cluster.as_ref() {
+                if cluster.anchor == VerticalAnchor::Bottom && last_log_h > 0.0 {
+                    let idle_log_h = cluster.initial_height() * target.scale as f64;
+                    new_placement.y = (last_log_pt.y + last_log_h - idle_log_h)
+                        .clamp(0.0, (work_h - idle_log_h).max(0.0));
+                }
+            }
             target.placement = new_placement;
             Ok(target.clone())
         });

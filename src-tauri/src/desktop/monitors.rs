@@ -6,7 +6,7 @@ use tokio::time::{interval, MissedTickBehavior};
 use ts_rs::TS;
 
 use crate::{
-    config::schema::{MonitorKey, Placement, RectF, RectI, SizeF, WidgetInstance},
+    config::schema::{MonitorKey, Placement, RectF, RectI, SizeF, VerticalAnchor, WidgetInstance},
     state::AppState,
 };
 
@@ -234,7 +234,17 @@ pub fn resolve_placement_with_size(
         .clamp(1.0, mon.work_area.height.max(1) as f64) as i32;
 
     let phys_x = mon.work_area.x + (instance.placement.x * scale).round() as i32;
-    let phys_y = mon.work_area.y + (instance.placement.y * scale).round() as i32;
+    // For anchor-bottom klynger er placement.y "top ved idle-højde"; den
+    // nuværende kasses top forskydes så bundkanten holdes konstant.
+    let anchor_offset = instance
+        .cluster
+        .as_ref()
+        .filter(|c| c.anchor == VerticalAnchor::Bottom)
+        .map(|c| {
+            (c.initial_height() * instance.scale as f64 * scale).round() as i32 - phys_h
+        })
+        .unwrap_or(0);
+    let phys_y = mon.work_area.y + (instance.placement.y * scale).round() as i32 + anchor_offset;
 
     let max_x = mon.work_area.x + (mon.work_area.width - phys_w).max(0);
     let max_y = mon.work_area.y + (mon.work_area.height - phys_h).max(0);

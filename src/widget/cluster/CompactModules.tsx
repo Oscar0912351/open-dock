@@ -885,6 +885,10 @@ function DiscordClusterMod({
 
 const PREVIEW_CLUSTER_NOTE = "- [x] Havregryn og kaffe\n- [ ] Mælk og æbler\n- [ ] Rugbrød";
 
+// Behold note-tekst på tværs af collapse/expand-remounts så feltet ikke
+// blinker tomt mens disken genindlæses.
+const noteTextCache = new Map<string, string>();
+
 function NoteClusterMod({
   mod,
   mode,
@@ -902,9 +906,13 @@ function NoteClusterMod({
 }) {
   const settings = resolveNoteSettings(mod.settings);
   const isPreviewSample = Boolean(preview && widgetId.startsWith("preview-"));
-  const [text, setText] = useState(() => (isPreviewSample ? PREVIEW_CLUSTER_NOTE : ""));
+  const [text, setText] = useState(() =>
+    isPreviewSample ? PREVIEW_CLUSTER_NOTE : (noteTextCache.get(mod.id) ?? ""),
+  );
   const saveTimerRef = useRef<number | null>(null);
-  const latestRef = useRef(isPreviewSample ? PREVIEW_CLUSTER_NOTE : "");
+  const latestRef = useRef(
+    isPreviewSample ? PREVIEW_CLUSTER_NOTE : (noteTextCache.get(mod.id) ?? ""),
+  );
 
   useEffect(() => {
     if (isPreviewSample) {
@@ -915,6 +923,7 @@ function NoteClusterMod({
       .noteLoad(mod.id)
       .then((content) => {
         if (!active) return;
+        noteTextCache.set(mod.id, content);
         setText(content);
         latestRef.current = content;
       })
@@ -930,6 +939,7 @@ function NoteClusterMod({
       const clipped = next.slice(0, 4000);
       setText(clipped);
       latestRef.current = clipped;
+      noteTextCache.set(mod.id, clipped);
       if (isPreviewSample) return;
       if (saveTimerRef.current !== null) window.clearTimeout(saveTimerRef.current);
       saveTimerRef.current = window.setTimeout(() => {

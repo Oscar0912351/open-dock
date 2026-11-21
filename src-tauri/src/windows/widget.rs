@@ -496,8 +496,22 @@ pub fn cluster_set_window_size(
 
     state.cluster_sizes.write().insert(id, (clamped_w, clamped_h));
 
+    // For anchor-bottom klynger betyder placement.y "top ved idle-højde":
+    // bundkanten holdes konstant mens kassen vokser/krymper opad.
+    let persist_phys_y = instance
+        .cluster
+        .as_ref()
+        .filter(|c| c.anchor == VerticalAnchor::Bottom)
+        .map(|c| {
+            let idle_phys = (c.initial_height() * instance.scale as f64 * scale)
+                .round()
+                .clamp(1.0, mon.work_area.height.max(1) as f64) as i32;
+            (phys_y + phys_h - idle_phys).max(mon.work_area.y)
+        })
+        .unwrap_or(phys_y);
+
     let log_x = (phys_x - mon.work_area.x) as f64 / scale;
-    let log_y = (phys_y - mon.work_area.y) as f64 / scale;
+    let log_y = (persist_phys_y - mon.work_area.y) as f64 / scale;
     state.config.update_placement_quiet(id, log_x, log_y);
 
     let id_str = id.to_string();
