@@ -1,8 +1,6 @@
 import {
   Check,
-  FilmStrip,
-  Image as ImageIcon,
-  Sparkle,
+  Plus,
   SpinnerGap,
   Stop,
   Trash,
@@ -15,7 +13,6 @@ import type { MonitorWallpaper } from "../../shared/bindings/MonitorWallpaper";
 import type { WallpaperEngineStatus } from "../../shared/bindings/WallpaperEngineStatus";
 import type { WallpaperFit } from "../../shared/bindings/WallpaperFit";
 import type { WallpaperItem } from "../../shared/bindings/WallpaperItem";
-import type { WallpaperMood } from "../../shared/bindings/WallpaperMood";
 import type { WallpaperResolution } from "../../shared/bindings/WallpaperResolution";
 import type { WindowsQualityStatus } from "../../shared/bindings/WindowsQualityStatus";
 import { t } from "../../shared/i18n";
@@ -29,17 +26,6 @@ import { Switch } from "../components/Switch";
 import { useControlStore } from "../store";
 
 type KindFilter = "all" | "shader" | "photo" | "custom";
-type MoodFilter = "all" | WallpaperMood;
-
-const MOOD_OPTIONS: ReadonlyArray<{ value: MoodFilter; labelKey: string }> = [
-  { value: "all", labelKey: "wallpapers.moods.all" },
-  { value: "dark", labelKey: "wallpapers.moods.dark" },
-  { value: "nature", labelKey: "wallpapers.moods.nature" },
-  { value: "minimal", labelKey: "wallpapers.moods.minimal" },
-  { value: "warm", labelKey: "wallpapers.moods.warm" },
-  { value: "architecture", labelKey: "wallpapers.moods.architecture" },
-  { value: "light", labelKey: "wallpapers.moods.light" },
-];
 
 const FPS_OPTIONS = [
   { value: "24", label: "24 FPS" },
@@ -70,7 +56,6 @@ export function Wallpapers() {
   const [winQuality, setWinQuality] = useState<WindowsQualityStatus | null>(null);
   const [targetMonitor, setTargetMonitor] = useState<string>("*");
   const [kindFilter, setKindFilter] = useState<KindFilter>("all");
-  const [moodFilter, setMoodFilter] = useState<MoodFilter>("all");
   const [busyId, setBusyId] = useState<string | null>(null);
   const [importing, setImporting] = useState(false);
 
@@ -194,10 +179,9 @@ export function Wallpapers() {
       if (kindFilter === "custom" && !item.isCustom) return false;
       if (kindFilter === "shader" && item.kind !== "shader") return false;
       if (kindFilter === "photo" && (item.kind !== "photo" || item.isCustom)) return false;
-      if (moodFilter !== "all" && !item.moods.includes(moodFilter)) return false;
       return true;
     });
-  }, [catalog, kindFilter, moodFilter]);
+  }, [catalog, kindFilter]);
 
   if (!config) return null;
 
@@ -211,7 +195,6 @@ export function Wallpapers() {
     minimumFractionDigits: 1,
     maximumFractionDigits: 2,
   });
-  const numFmtInt = new Intl.NumberFormat(locale === "da" ? "da-DK" : "en-US");
 
   const baseSpeed = activeAssignment?.speed ?? 1;
   const speedPct =
@@ -322,7 +305,7 @@ export function Wallpapers() {
   };
 
   const statusText = formatEngineStatus(engineStatus, numFmt1, numFmt2);
-  const heroThumbUrl = activeItem?.thumbPath
+  const nowThumbUrl = activeItem?.thumbPath
     ? toAssetUrl(activeItem.thumbPath)
     : toAssetUrl(selectedMonitorInfo?.platePath ?? "");
   const isActiveLive = activeItem?.kind === "shader" || activeItem?.kind === "video";
@@ -336,21 +319,6 @@ export function Wallpapers() {
         : t("gallery.monitorNth", { n: idx + 1 }),
     })),
   ];
-
-  const telemetryBackend =
-    engineStatus.activeSurfaces > 0 && engineStatus.backend
-      ? engineStatus.backend
-      : t("wallpapers.telemetry.staticMode");
-  const telemetryPerf =
-    engineStatus.runState === "running"
-      ? `${numFmt1.format(engineStatus.actualFps)} FPS · ${numFmt2.format(engineStatus.frameTimeMs)} ms`
-      : t("wallpapers.telemetry.zeroGpu");
-  const telemetryRes =
-    engineStatus.renderWidth > 0 && engineStatus.renderHeight > 0
-      ? `${numFmtInt.format(engineStatus.renderWidth)}×${numFmtInt.format(engineStatus.renderHeight)}`
-      : selectedMonitorInfo
-        ? `${numFmtInt.format(selectedMonitorInfo.rect.width)}×${numFmtInt.format(selectedMonitorInfo.rect.height)}`
-        : t("state.dash");
 
   const activeError = errorMsg ?? engineStatus.lastError;
 
@@ -378,47 +346,28 @@ export function Wallpapers() {
         </div>
       )}
 
-      {/* Active Wallpaper Hero */}
-      <div className="cc-wp-hero">
-        <div className="cc-wp-hero-stage">
-          {heroThumbUrl && (
+      {/* Current wallpaper + its controls */}
+      <div className="cc-wp-now">
+        <div className="cc-wp-now-thumb" aria-hidden="true">
+          {nowThumbUrl && (
             <div
-              className="cc-wp-hero-img"
-              aria-hidden="true"
-              style={{ backgroundImage: `url("${heroThumbUrl}")` }}
+              className="cc-wp-now-img"
+              style={{ backgroundImage: `url("${nowThumbUrl}")` }}
             />
           )}
-          <div className="cc-stage-scrim" aria-hidden="true" />
-          <div
-            className={`cc-wp-status-pill${engineStatus.runState === "running" ? " is-live" : ""}`}
-          >
-            <span className="cc-wp-status-dot" aria-hidden="true" />
-            <span>{statusText}</span>
-          </div>
-          <div className="cc-wp-res-pill">
-            <span>{activeItem ? activeItem.resolutionLabel : telemetryRes}</span>
-            {engineStatus.adapterName && engineStatus.activeSurfaces > 0 && (
-              <>
-                <span>·</span>
-                <span>{engineStatus.adapterName}</span>
-              </>
-            )}
-          </div>
         </div>
-
-        <div className="cc-wp-hero-controls">
-          <div className="cc-wp-hero-head">
-            <div className="cc-wp-hero-title-group">
-              <span className="cc-section-label">{t("wallpapers.controls.activeTitle")}</span>
-              <h2 className="cc-wp-hero-title">
+        <div className="cc-wp-now-main">
+          <div className="cc-wp-now-head">
+            <div className="cc-wp-now-title-group">
+              <span className="cc-wp-now-title trunc">
                 {activeItem ? activeItem.title : t("wallpapers.controls.windowsCurrent")}
-              </h2>
-              <p className="cc-wp-hero-sub">
-                {activeItem ? activeItem.subtitle : t("wallpapers.controls.windowsCurrentDesc")}
-              </p>
+              </span>
+              <span className="cc-wp-now-sub trunc">
+                {activeItem ? `${statusText} · ${activeItem.subtitle}` : statusText}
+              </span>
             </div>
             {monitors.length > 1 && (
-              <div style={{ width: 170 }}>
+              <div className="cc-wp-now-monitor">
                 <Select
                   value={effectiveTarget}
                   ariaLabel={t("wallpapers.monitorTarget")}
@@ -427,39 +376,41 @@ export function Wallpapers() {
                 />
               </div>
             )}
+            {isActiveLive && (
+              <Button variant="secondary" size="sm" onClick={() => void handleStopLive()}>
+                <Stop size={12} weight="fill" aria-hidden="true" />
+                <span>{t("wallpapers.controls.stopLive")}</span>
+              </Button>
+            )}
           </div>
 
           {activeItem && activeAssignment && (
-            <div className="cc-wp-inline-params">
+            <div className="cc-wp-now-params">
               {activeItem.kind === "shader" && (
                 <>
                   <div className="cc-wp-param-row">
                     <span className="cc-field-label">{t("wallpapers.controls.speed")}</span>
-                    <div style={{ width: 196 }}>
-                      <Slider
-                        value={speedPct}
-                        min={25}
-                        max={200}
-                        step={5}
-                        ariaLabel={t("wallpapers.controls.speed")}
-                        formatValue={(v) => `${v} %`}
-                        onChange={handleSpeedChange}
-                      />
-                    </div>
+                    <Slider
+                      value={speedPct}
+                      min={25}
+                      max={200}
+                      step={5}
+                      ariaLabel={t("wallpapers.controls.speed")}
+                      formatValue={(v) => `${v} %`}
+                      onChange={handleSpeedChange}
+                    />
                   </div>
                   <div className="cc-wp-param-row">
                     <span className="cc-field-label">{t("wallpapers.controls.brightness")}</span>
-                    <div style={{ width: 196 }}>
-                      <Slider
-                        value={brightnessPct}
-                        min={60}
-                        max={120}
-                        step={5}
-                        ariaLabel={t("wallpapers.controls.brightness")}
-                        formatValue={(v) => `${v} %`}
-                        onChange={handleBrightnessChange}
-                      />
-                    </div>
+                    <Slider
+                      value={brightnessPct}
+                      min={60}
+                      max={120}
+                      step={5}
+                      ariaLabel={t("wallpapers.controls.brightness")}
+                      formatValue={(v) => `${v} %`}
+                      onChange={handleBrightnessChange}
+                    />
                   </div>
                 </>
               )}
@@ -483,17 +434,15 @@ export function Wallpapers() {
                   </div>
                   <div className="cc-wp-param-row">
                     <span className="cc-field-label">{t("wallpapers.controls.speed")}</span>
-                    <div style={{ width: 196 }}>
-                      <Slider
-                        value={speedPct}
-                        min={25}
-                        max={200}
-                        step={5}
-                        ariaLabel={t("wallpapers.controls.speed")}
-                        formatValue={(v) => `${v} %`}
-                        onChange={handleSpeedChange}
-                      />
-                    </div>
+                    <Slider
+                      value={speedPct}
+                      min={25}
+                      max={200}
+                      step={5}
+                      ariaLabel={t("wallpapers.controls.speed")}
+                      formatValue={(v) => `${v} %`}
+                      onChange={handleSpeedChange}
+                    />
                   </div>
                   <div className="cc-wp-param-row">
                     <span className="cc-field-label">{t("wallpapers.controls.muted")}</span>
@@ -528,94 +477,56 @@ export function Wallpapers() {
               )}
             </div>
           )}
-
-          <div className="cc-wp-hero-foot">
-            <span className="cc-field-help">{t("wallpapers.applyHint")}</span>
-            {isActiveLive && (
-              <Button variant="secondary" size="sm" onClick={() => void handleStopLive()}>
-                <Stop size={12} weight="fill" aria-hidden="true" />
-                <span>{t("wallpapers.controls.stopLive")}</span>
-              </Button>
-            )}
-          </div>
         </div>
       </div>
 
-      {/* Filter Bar */}
-      <div className="cc-wp-toolbar">
-        <Segmented<KindFilter>
-          value={kindFilter}
-          ariaLabel={t("wallpapers.title")}
-          options={[
-            { value: "all", label: t("wallpapers.filters.all") },
-            { value: "shader", label: t("wallpapers.filters.shader") },
-            { value: "photo", label: t("wallpapers.filters.photo") },
-            { value: "custom", label: t("wallpapers.filters.custom") },
-          ]}
-          onChange={setKindFilter}
-        />
-
-        <div className="cc-wp-moods" role="group" aria-label={t("wallpapers.moods.all")}>
-          {MOOD_OPTIONS.map((opt) => (
-            <button
-              key={opt.value}
-              type="button"
-              className={`cc-chip${moodFilter === opt.value ? " is-active" : ""}`}
-              onClick={() => setMoodFilter(opt.value)}
-            >
-              {t(opt.labelKey)}
-            </button>
-          ))}
-        </div>
+      <div className="cc-wp-filters">
+      <Segmented<KindFilter>
+        value={kindFilter}
+        ariaLabel={t("wallpapers.title")}
+        options={[
+          { value: "all", label: t("wallpapers.filters.all") },
+          { value: "shader", label: t("wallpapers.filters.shader") },
+          { value: "photo", label: t("wallpapers.filters.photo") },
+          { value: "custom", label: t("wallpapers.filters.custom") },
+        ]}
+        onChange={setKindFilter}
+      />
       </div>
 
-      {/* Wallpaper Grid */}
       {catalogLoading ? (
         <div className="cc-wp-grid" aria-busy="true">
           {Array.from({ length: 6 }).map((_, idx) => (
             <div key={idx} className="cc-wp-card is-skeleton">
               <div className="cc-wp-card-stage cc-wp-shimmer" />
-              <div className="cc-wp-card-meta">
-                <span className="cc-wp-skel-line" />
-              </div>
             </div>
           ))}
         </div>
-      ) : filteredItems.length === 0 ? (
+      ) : filteredItems.length === 0 && kindFilter !== "custom" ? (
         <div className="cc-empty">
           <div className="cc-empty-illus" aria-hidden="true">
             <div className="cc-empty-box" />
             <div className="cc-empty-box is-tall" />
           </div>
-          <h3>
-            {kindFilter === "custom"
-              ? t("wallpapers.empty.customTitle")
-              : t("wallpapers.empty.filterTitle")}
-          </h3>
-          <p>
-            {kindFilter === "custom"
-              ? t("wallpapers.empty.customBody")
-              : t("wallpapers.empty.filterBody")}
-          </p>
-          {kindFilter === "custom" ? (
-            <Button variant="primary" onClick={() => void handleImport()}>
-              <UploadSimple size={14} aria-hidden="true" />
-              <span>{t("wallpapers.importBtn")}</span>
-            </Button>
-          ) : (
-            <Button
-              variant="secondary"
-              onClick={() => {
-                setKindFilter("all");
-                setMoodFilter("all");
-              }}
-            >
-              {t("wallpapers.empty.resetFilters")}
-            </Button>
-          )}
+          <h3>{t("wallpapers.empty.filterTitle")}</h3>
+          <p>{t("wallpapers.empty.filterBody")}</p>
+          <Button variant="secondary" onClick={() => setKindFilter("all")}>
+            {t("wallpapers.empty.resetFilters")}
+          </Button>
         </div>
       ) : (
         <div className="cc-wp-grid">
+          {kindFilter === "custom" && (
+            <button
+              type="button"
+              className="cc-wp-card cc-wp-add"
+              disabled={importing}
+              onClick={() => void handleImport()}
+            >
+              <Plus size={20} aria-hidden="true" />
+              <span>{importing ? t("wallpapers.importing") : t("wallpapers.addCustom")}</span>
+            </button>
+          )}
           {filteredItems.map((item) => {
             const isSelected = activeAssignment?.wallpaperId === item.id;
             const isBusy = busyId === item.id;
@@ -642,26 +553,6 @@ export function Wallpapers() {
                     ) : (
                       <div className="cc-wp-card-img cc-wp-shimmer" />
                     )}
-                    <div className="cc-wp-card-scrim" aria-hidden="true" />
-
-                    <span className={`cc-wp-kind-badge is-${item.kind}`}>
-                      {item.kind === "shader" ? (
-                        <Sparkle size={11} weight="fill" aria-hidden="true" />
-                      ) : item.kind === "video" ? (
-                        <FilmStrip size={11} weight="fill" aria-hidden="true" />
-                      ) : (
-                        <ImageIcon size={11} aria-hidden="true" />
-                      )}
-                      <span>
-                        {item.kind === "shader"
-                          ? t("wallpapers.badges.live")
-                          : item.kind === "video"
-                            ? t("wallpapers.badges.video")
-                            : item.isCustom
-                              ? t("wallpapers.badges.custom")
-                              : t("wallpapers.badges.photo4k")}
-                      </span>
-                    </span>
 
                     {isSelected && !isBusy && (
                       <span className="cc-theme-check" aria-hidden="true">
@@ -682,13 +573,7 @@ export function Wallpapers() {
                   </div>
 
                   <div className="cc-wp-card-meta">
-                    <div className="cc-wp-card-title-row">
-                      <span className="cc-wp-card-title">{item.title}</span>
-                      <span className="cc-wp-card-res">{item.resolutionLabel}</span>
-                    </div>
-                    <span className="cc-wp-card-sub" title={item.subtitle}>
-                      {item.subtitle}
-                    </span>
+                    <span className="cc-wp-card-title trunc">{item.title}</span>
                   </div>
                 </button>
 
@@ -712,135 +597,97 @@ export function Wallpapers() {
         </div>
       )}
 
-      {/* Engine & Windows Quality Settings */}
-      <div className="cc-themes-controls-grid">
-        <section className="cc-section">
-          <span className="cc-section-label">{t("wallpapers.sections.engine")}</span>
-          <Card compact>
-            <SettingRow
-              title={t("wallpapers.settings.fpsCap")}
-              help={t("wallpapers.settings.fpsCapHelp")}
-            >
-              <Segmented<string>
-                value={String(engine.fpsCap)}
-                ariaLabel={t("wallpapers.settings.fpsCap")}
-                options={FPS_OPTIONS.map((o) => ({ value: o.value, label: o.label }))}
-                onChange={(val) => void ipc.wallpaperEnginePatch({ fpsCap: Number(val) })}
-              />
-            </SettingRow>
+      <section className="cc-section">
+        <span className="cc-section-label">{t("wallpapers.sections.engine")}</span>
+        <Card compact>
+          <SettingRow
+            title={t("wallpapers.settings.fpsCap")}
+            help={t("wallpapers.settings.fpsCapHelp")}
+          >
+            <Segmented<string>
+              value={String(engine.fpsCap)}
+              ariaLabel={t("wallpapers.settings.fpsCap")}
+              options={FPS_OPTIONS.map((o) => ({ value: o.value, label: o.label }))}
+              onChange={(val) => void ipc.wallpaperEnginePatch({ fpsCap: Number(val) })}
+            />
+          </SettingRow>
 
-            <SettingRow
-              title={t("wallpapers.settings.resolution")}
-              help={t("wallpapers.settings.resolutionHelp")}
-            >
-              <Segmented<WallpaperResolution>
-                value={engine.resolution}
-                ariaLabel={t("wallpapers.settings.resolution")}
-                options={[
-                  { value: "native", label: t("wallpapers.settings.resolutionNative") },
-                  { value: "balanced", label: t("wallpapers.settings.resolutionBalanced") },
-                ]}
-                onChange={(resolution) => void ipc.wallpaperEnginePatch({ resolution })}
-              />
-            </SettingRow>
+          <SettingRow
+            title={t("wallpapers.settings.resolution")}
+            help={t("wallpapers.settings.resolutionHelp")}
+          >
+            <Segmented<WallpaperResolution>
+              value={engine.resolution}
+              ariaLabel={t("wallpapers.settings.resolution")}
+              options={[
+                { value: "native", label: t("wallpapers.settings.resolutionNative") },
+                { value: "balanced", label: t("wallpapers.settings.resolutionBalanced") },
+              ]}
+              onChange={(resolution) => void ipc.wallpaperEnginePatch({ resolution })}
+            />
+          </SettingRow>
 
-            <SettingRow
-              title={t("wallpapers.settings.pauseCovered")}
-              help={t("wallpapers.settings.pauseCoveredHelp")}
-            >
-              <Switch
-                checked={engine.pauseWhenCovered}
-                ariaLabel={t("wallpapers.settings.pauseCovered")}
-                onChange={(pauseWhenCovered) =>
-                  void ipc.wallpaperEnginePatch({ pauseWhenCovered })
-                }
-              />
-            </SettingRow>
+          <SettingRow
+            title={t("wallpapers.settings.pauseCovered")}
+            help={t("wallpapers.settings.pauseCoveredHelp")}
+          >
+            <Switch
+              checked={engine.pauseWhenCovered}
+              ariaLabel={t("wallpapers.settings.pauseCovered")}
+              onChange={(pauseWhenCovered) =>
+                void ipc.wallpaperEnginePatch({ pauseWhenCovered })
+              }
+            />
+          </SettingRow>
 
-            <SettingRow
-              title={t("wallpapers.settings.pauseFullscreen")}
-              help={t("wallpapers.settings.pauseFullscreenHelp")}
-            >
-              <Switch
-                checked={engine.pauseOnFullscreen}
-                ariaLabel={t("wallpapers.settings.pauseFullscreen")}
-                onChange={(pauseOnFullscreen) =>
-                  void ipc.wallpaperEnginePatch({ pauseOnFullscreen })
-                }
-              />
-            </SettingRow>
+          <SettingRow
+            title={t("wallpapers.settings.pauseFullscreen")}
+            help={t("wallpapers.settings.pauseFullscreenHelp")}
+          >
+            <Switch
+              checked={engine.pauseOnFullscreen}
+              ariaLabel={t("wallpapers.settings.pauseFullscreen")}
+              onChange={(pauseOnFullscreen) =>
+                void ipc.wallpaperEnginePatch({ pauseOnFullscreen })
+              }
+            />
+          </SettingRow>
 
-            <SettingRow
-              title={t("wallpapers.settings.pauseBattery")}
-              help={t("wallpapers.settings.pauseBatteryHelp")}
-            >
-              <Switch
-                checked={engine.pauseOnBattery}
-                ariaLabel={t("wallpapers.settings.pauseBattery")}
-                onChange={(pauseOnBattery) => void ipc.wallpaperEnginePatch({ pauseOnBattery })}
-              />
-            </SettingRow>
-          </Card>
-        </section>
+          <SettingRow
+            title={t("wallpapers.settings.pauseBattery")}
+            help={t("wallpapers.settings.pauseBatteryHelp")}
+          >
+            <Switch
+              checked={engine.pauseOnBattery}
+              ariaLabel={t("wallpapers.settings.pauseBattery")}
+              onChange={(pauseOnBattery) => void ipc.wallpaperEnginePatch({ pauseOnBattery })}
+            />
+          </SettingRow>
 
-        <section className="cc-section">
-          <span className="cc-section-label">{t("wallpapers.sections.quality")}</span>
-          <Card compact>
-            <SettingRow
-              title={t("wallpapers.settings.windowsQuality")}
-              help={t("wallpapers.settings.windowsQualityHelp")}
-            >
-              <div className="cc-wp-quality-ctrl">
-                {winQuality && (
-                  <span
-                    className={`cc-wp-quality-badge${winQuality.losslessEnabled ? " is-on" : ""}`}
-                  >
-                    {winQuality.losslessEnabled
-                      ? t("wallpapers.settings.qualityLosslessBadge")
-                      : t("wallpapers.settings.qualityStandardBadge")}
-                  </span>
-                )}
-                <Switch
-                  checked={winQuality?.losslessEnabled ?? false}
-                  disabled={!winQuality}
-                  ariaLabel={t("wallpapers.settings.windowsQuality")}
-                  onChange={(enabled) => void handleToggleWindowsQuality(enabled)}
-                />
-              </div>
-            </SettingRow>
+          <SettingRow
+            title={t("wallpapers.settings.syncGlass")}
+            help={t("wallpapers.settings.syncGlassHelp")}
+          >
+            <Switch
+              checked={engine.syncGlassPlates}
+              ariaLabel={t("wallpapers.settings.syncGlass")}
+              onChange={(syncGlassPlates) => void ipc.wallpaperEnginePatch({ syncGlassPlates })}
+            />
+          </SettingRow>
 
-            <SettingRow
-              title={t("wallpapers.settings.syncGlass")}
-              help={t("wallpapers.settings.syncGlassHelp")}
-            >
-              <Switch
-                checked={engine.syncGlassPlates}
-                ariaLabel={t("wallpapers.settings.syncGlass")}
-                onChange={(syncGlassPlates) => void ipc.wallpaperEnginePatch({ syncGlassPlates })}
-              />
-            </SettingRow>
-
-            <div className="cc-wp-telemetry-strip">
-              <div className="cc-wp-telemetry-cell">
-                <span className="cc-wp-telemetry-label">{t("wallpapers.telemetry.backend")}</span>
-                <span className="cc-wp-telemetry-val" title={telemetryBackend}>
-                  {telemetryBackend}
-                </span>
-              </div>
-              <div className="cc-wp-telemetry-cell">
-                <span className="cc-wp-telemetry-label">{t("wallpapers.telemetry.frameTime")}</span>
-                <span className="cc-wp-telemetry-val">{telemetryPerf}</span>
-              </div>
-              <div className="cc-wp-telemetry-cell">
-                <span className="cc-wp-telemetry-label">
-                  {t("wallpapers.telemetry.resolution")}
-                </span>
-                <span className="cc-wp-telemetry-val">{telemetryRes}</span>
-              </div>
-            </div>
-          </Card>
-        </section>
-      </div>
+          <SettingRow
+            title={t("wallpapers.settings.windowsQuality")}
+            help={t("wallpapers.settings.windowsQualityHelp")}
+          >
+            <Switch
+              checked={winQuality?.losslessEnabled ?? false}
+              disabled={!winQuality}
+              ariaLabel={t("wallpapers.settings.windowsQuality")}
+              onChange={(enabled) => void handleToggleWindowsQuality(enabled)}
+            />
+          </SettingRow>
+        </Card>
+      </section>
     </div>
   );
 }
