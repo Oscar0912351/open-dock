@@ -186,6 +186,18 @@ export const en: Messages = {
       miniTrio: "Three ultra-compact boxes: Time & Weather, Activity, and Resources.",
       pillBar: "48 px glass pill showing Clock, Weather, and CPU that opens Player on music.",
     },
+    custom: {
+      title: "Your own",
+      desc: "Choose what the cluster shows.",
+      open: "Design your own",
+      heading: "Design your cluster",
+      modules: "Choose what it shows",
+      shape: "Shape",
+      box: "Box",
+      pill: "Pill bar",
+      empty: "Turn on at least one module to see the cluster",
+      cancel: "Cancel",
+    },
   },
   desktop: {
     title: "Desktop",

@@ -87,6 +87,7 @@ pub fn run() {
             commands::widgets::widget_set_focusable,
             commands::widgets::widget_context_menu,
             commands::widgets::cluster_add_preset,
+            commands::widgets::cluster_add,
             commands::widgets::cluster_set_window_size,
             commands::widgets::monitors_list,
             commands::edit::edit_set,

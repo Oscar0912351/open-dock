@@ -1,7 +1,23 @@
-import { CaretDown, Check, Plus } from "@phosphor-icons/react";
+import {
+  CaretDown,
+  Check,
+  Clock,
+  CloudSun,
+  DiscordLogo,
+  Gauge,
+  MusicNote,
+  NotePencil,
+  Plus,
+  Sparkle,
+  X,
+  type Icon,
+} from "@phosphor-icons/react";
 import { useEffect, useMemo, useRef, useState } from "react";
+import type { Appearance } from "../../shared/bindings/Appearance";
+import type { AutoRule } from "../../shared/bindings/AutoRule";
 import type { ClusterConfig } from "../../shared/bindings/ClusterConfig";
 import type { ClusterModule } from "../../shared/bindings/ClusterModule";
+import type { Location } from "../../shared/bindings/Location";
 import type { WidgetSize } from "../../shared/bindings/WidgetSize";
 import { t } from "../../shared/i18n";
 import { ipc, toAssetUrl } from "../../shared/ipc";
@@ -10,6 +26,45 @@ import { Button } from "../components/Button";
 import { Segmented } from "../components/Segmented";
 import { WidgetPreview } from "../components/WidgetPreview";
 import { useControlStore } from "../store";
+
+type MonitorInfo = ReturnType<typeof useControlStore.getState>["monitors"][number];
+
+const CUSTOM_MODULE_CHOICES: ReadonlyArray<{ kind: FreeWidgetKind; icon: Icon }> = [
+  { kind: "clock", icon: Clock },
+  { kind: "weather", icon: CloudSun },
+  { kind: "system", icon: Gauge },
+  { kind: "nowPlaying", icon: MusicNote },
+  { kind: "note", icon: NotePencil },
+  { kind: "discord", icon: DiscordLogo },
+];
+
+const MAX_CUSTOM_MODULES = 5;
+
+type CustomShape = "box" | "pill";
+
+function customAutoRule(kind: FreeWidgetKind, shape: CustomShape): AutoRule {
+  if (kind === "nowPlaying") return "expandWhenPlaying";
+  if (shape === "box" && kind === "system") return "expandWhenHighLoad";
+  if (shape === "box" && kind === "weather") return "fillRemainingSpace";
+  return "none";
+}
+
+function buildCustomCluster(shape: CustomShape, selected: FreeWidgetKind[]): ClusterConfig {
+  return {
+    presetId: shape === "pill" ? "pillBar" : null,
+    width: 264,
+    maxHeight: shape === "pill" ? 240 : 320,
+    resizeBehavior: "adaptive",
+    anchor: "top",
+    modules: selected.map((kind) => ({
+      id: crypto.randomUUID(),
+      kind,
+      defaultMode: kind === "nowPlaying" ? "hidden" : "compact",
+      autoRule: customAutoRule(kind, shape),
+      settings: { ...WIDGET_REGISTRY[kind].defaultSettings },
+    })),
+  };
+}
 
 type GalleryFilter =
   | "all"
@@ -132,6 +187,7 @@ export function Gallery() {
   const [filter, setFilter] = useState<GalleryFilter>("all");
   const [selectedSizes, setSelectedSizes] = useState<Partial<Record<FreeWidgetKind, WidgetSize>>>({});
   const [addedKey, setAddedKey] = useState<string | null>(null);
+  const [customOpen, setCustomOpen] = useState(false);
   const addedTimerRef = useRef<number | null>(null);
 
   useEffect(() => {
@@ -172,6 +228,16 @@ export function Gallery() {
     const firstId = created[0]?.id ?? null;
     pushToast({
       message: t("toast.added", { name }),
+      actionLabel: t("toast.show"),
+      onAction: () => setRoute("desktop", firstId),
+    });
+  };
+
+  const handleAddCustom = async (cluster: ClusterConfig, monitorName?: string) => {
+    const created = await ipc.clusterAdd([cluster], monitorName ?? null);
+    const firstId = created[0]?.id ?? null;
+    pushToast({
+      message: t("toast.added", { name: t("cluster.title") }),
       actionLabel: t("toast.show"),
       onAction: () => setRoute("desktop", firstId),
     });
@@ -281,9 +347,54 @@ export function Gallery() {
                 </article>
               );
             })}
+            <article className="cc-gallery-card">
+              <button
+                type="button"
+                className="cc-gallery-stage cc-custom-cta"
+                onClick={() => setCustomOpen(true)}
+              >
+                {plateUrl && (
+                  <div
+                    className="cc-preview-bg"
+                    aria-hidden="true"
+                    style={{ backgroundImage: `url("${plateUrl}")` }}
+                  />
+                )}
+                <div className="cc-stage-scrim" aria-hidden="true" />
+                <span className="cc-custom-cta-mark" aria-hidden="true">
+                  <Sparkle size={22} weight="duotone" />
+                </span>
+              </button>
+
+              <div className="cc-gallery-body">
+                <div className="cc-gallery-meta">
+                  <div className="cc-gallery-title">{t("gallery.custom.title")}</div>
+                  <div className="cc-gallery-desc" title={t("gallery.custom.desc")}>
+                    {t("gallery.custom.desc")}
+                  </div>
+                </div>
+
+                <div className="cc-gallery-foot" style={{ justifyContent: "flex-end" }}>
+                  <Button variant="secondary" onClick={() => setCustomOpen(true)}>
+                    <Sparkle size={13} weight="bold" aria-hidden="true" />
+                    <span>{t("gallery.custom.open")}</span>
+                  </Button>
+                </div>
+              </div>
+            </article>
           </div>
         </section>
       )}
+
+      <CustomizeDialog
+        open={customOpen}
+        monitors={monitors}
+        locations={config.weather.locations}
+        appearance={config.appearance}
+        plateUrl={plateUrl}
+        onClose={() => setCustomOpen(false)}
+        onAdd={(cluster, mon) => void handleAddCustom(cluster, mon)}
+      />
 
       {singleWidgets.length > 0 && (
         <section className="cc-gallery-cluster-section">
@@ -432,6 +543,174 @@ function MonitorAddButton({
           ))}
         </div>
       )}
+    </div>
+  );
+}
+
+function CustomizeDialog({
+  open,
+  monitors,
+  locations,
+  appearance,
+  plateUrl,
+  onClose,
+  onAdd,
+}: {
+  open: boolean;
+  monitors: MonitorInfo[];
+  locations: Location[];
+  appearance: Appearance;
+  plateUrl: string;
+  onClose: () => void;
+  onAdd: (cluster: ClusterConfig, monitor?: string) => void;
+}) {
+  const [shape, setShape] = useState<CustomShape>("box");
+  const [selected, setSelected] = useState<FreeWidgetKind[]>([
+    "clock",
+    "weather",
+    "system",
+  ]);
+
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.stopPropagation();
+        onClose();
+      }
+    };
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, [open, onClose]);
+
+  const cluster = useMemo(
+    () => buildCustomCluster(shape, selected),
+    [shape, selected],
+  );
+
+  if (!open) return null;
+
+  const toggleModule = (kind: FreeWidgetKind) => {
+    setSelected((prev) =>
+      prev.includes(kind)
+        ? prev.filter((item) => item !== kind)
+        : prev.length >= MAX_CUSTOM_MODULES
+          ? prev
+          : [...prev, kind],
+    );
+  };
+
+  return (
+    <div className="cc-backdrop" onClick={onClose}>
+      <div
+        className="cc-custom"
+        role="dialog"
+        aria-modal="true"
+        aria-label={t("gallery.custom.heading")}
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="cc-custom-head">
+          <h3>{t("gallery.custom.heading")}</h3>
+          <button
+            type="button"
+            className="cc-iconbtn"
+            aria-label={t("window.close")}
+            onClick={onClose}
+          >
+            <X size={15} aria-hidden="true" />
+          </button>
+        </div>
+
+        <div className="cc-custom-preview">
+          {plateUrl && (
+            <div
+              className="cc-preview-bg"
+              aria-hidden="true"
+              style={{ backgroundImage: `url("${plateUrl}")` }}
+            />
+          )}
+          <div className="cc-stage-scrim" aria-hidden="true" />
+          {cluster.modules.length > 0 ? (
+            <WidgetPreview
+              id="preview-custom"
+              kind="cluster"
+              size="m"
+              cluster={cluster}
+              appearance={appearance}
+              monitors={monitors}
+              locations={locations}
+              maxWidth={320}
+              maxHeight={196}
+              interactive
+            />
+          ) : (
+            <span className="cc-custom-empty">{t("gallery.custom.empty")}</span>
+          )}
+        </div>
+
+        <div className="cc-custom-section">
+          <div className="cc-custom-section-head">
+            <span className="cc-field-label">{t("gallery.custom.modules")}</span>
+            <span className="cc-field-help cc-mono">
+              {selected.length} / {MAX_CUSTOM_MODULES}
+            </span>
+          </div>
+          <div className="cc-modchips" role="group" aria-label={t("gallery.custom.modules")}>
+            {CUSTOM_MODULE_CHOICES.map(({ kind, icon: ModuleIcon }) => {
+              const isOn = selected.includes(kind);
+              const isFull = !isOn && selected.length >= MAX_CUSTOM_MODULES;
+              return (
+                <button
+                  key={kind}
+                  type="button"
+                  className={`cc-modchip${isOn ? " is-on" : ""}`}
+                  aria-pressed={isOn}
+                  disabled={isFull}
+                  onClick={() => toggleModule(kind)}
+                >
+                  <ModuleIcon size={15} weight={isOn ? "fill" : "regular"} aria-hidden="true" />
+                  <span>{t(`widgets.${kind}.name`)}</span>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+
+        <div className="cc-custom-section">
+          <span className="cc-field-label">{t("gallery.custom.shape")}</span>
+          <Segmented<CustomShape>
+            fullWidth
+            value={shape}
+            ariaLabel={t("gallery.custom.shape")}
+            options={[
+              { value: "box", label: t("gallery.custom.box") },
+              { value: "pill", label: t("gallery.custom.pill") },
+            ]}
+            onChange={setShape}
+          />
+        </div>
+
+        <div className="cc-custom-foot">
+          <Button variant="ghost" onClick={onClose}>
+            {t("gallery.custom.cancel")}
+          </Button>
+          {selected.length === 0 ? (
+            <Button variant="primary" disabled>
+              {t("gallery.placeOnDesktop")}
+            </Button>
+          ) : (
+            <MonitorAddButton
+              label={t("gallery.placeOnDesktop")}
+              added={false}
+              monitors={monitors}
+              onAdd={(mon) => {
+                onClose();
+                onAdd(cluster, mon);
+              }}
+            />
+          )}
+        </div>
+      </div>
     </div>
   );
 }

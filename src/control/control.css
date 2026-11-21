@@ -1348,6 +1348,145 @@ body {
   margin-top: 8px;
 }
 
+/* Customize-cluster dialog */
+.cc-custom {
+  margin: auto;
+  width: 392px;
+  max-width: calc(100vw - 32px);
+  border-radius: var(--c-r-l);
+  background: var(--c-popover);
+  border: 1px solid var(--c-line-2);
+  box-shadow: var(--c-popover-shadow);
+  backdrop-filter: blur(24px);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.cc-custom-head {
+  height: 48px;
+  padding: 0 8px 0 18px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.cc-custom-head h3 {
+  margin: 0;
+  font-size: 14.5px;
+  font-weight: 600;
+  color: var(--c-ink-1);
+}
+
+.cc-custom-preview {
+  position: relative;
+  height: 240px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-top: 1px solid var(--c-line);
+  border-bottom: 1px solid var(--c-line);
+  overflow: hidden;
+}
+
+.cc-custom-empty {
+  position: relative;
+  font-size: 12.5px;
+  color: var(--c-ink-2);
+  padding: 0 24px;
+  text-align: center;
+}
+
+.cc-custom-section {
+  padding: 14px 18px 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.cc-custom-section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.cc-modchips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.cc-modchip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 30px;
+  padding: 0 11px;
+  border-radius: 999px;
+  border: 1px solid var(--c-line);
+  background: transparent;
+  color: var(--c-ink-2);
+  font-size: 12.5px;
+  font-weight: 500;
+  cursor: pointer;
+  transition:
+    color 140ms ease,
+    border-color 140ms ease,
+    background 140ms ease;
+}
+
+.cc-modchip:hover:not(:disabled) {
+  color: var(--c-ink-1);
+  border-color: var(--c-line-strong);
+}
+
+.cc-modchip.is-on {
+  background: var(--c-accent);
+  border-color: var(--c-accent);
+  color: var(--c-accent-ink);
+}
+
+.cc-modchip:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.cc-custom-foot {
+  padding: 16px 18px 18px;
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+/* "Design selv" gallery card CTA */
+.cc-gallery-card .cc-custom-cta {
+  position: relative;
+  width: 100%;
+  border: none;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.cc-custom-cta-mark {
+  position: relative;
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--c-ink-1);
+  border: 1px dashed var(--c-line-strong);
+  background: var(--c-popover);
+  transition: transform 160ms ease;
+}
+
+.cc-custom-cta:hover .cc-custom-cta-mark {
+  transform: scale(1.08);
+}
+
 /* Toasts */
 @keyframes cc-toast-in {
   from {

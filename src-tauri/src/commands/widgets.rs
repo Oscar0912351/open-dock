@@ -5,8 +5,8 @@ use crate::{
     config::{
         defaults,
         schema::{
-            Language, Layer, MonitorKey, PatchValue, Placement, RectF, VerticalAnchor,
-            WidgetInstance, WidgetKind, WidgetPatch, WidgetSize,
+            ClusterConfig, Language, Layer, MonitorKey, PatchValue, Placement, RectF,
+            VerticalAnchor, WidgetInstance, WidgetKind, WidgetPatch, WidgetSize,
         },
     },
     desktop::{
@@ -415,6 +415,27 @@ pub async fn cluster_add_preset(
     add_cluster_preset_internal(&app, &preset_id, monitor)
 }
 
+#[tauri::command]
+pub async fn cluster_add(
+    app: AppHandle,
+    clusters: Vec<ClusterConfig>,
+    monitor: Option<String>,
+) -> Result<Vec<WidgetInstance>, AppError> {
+    let clusters: Vec<ClusterConfig> = clusters
+        .into_iter()
+        .map(|mut cluster| {
+            cluster.modules.retain(|m| m.kind != WidgetKind::Cluster);
+            cluster.modules.truncate(5);
+            cluster
+        })
+        .filter(|cluster| !cluster.modules.is_empty())
+        .collect();
+    if clusters.is_empty() {
+        return Err(AppError::Other("Klyngen skal have mindst ét modul".into()));
+    }
+    add_clusters_internal(&app, clusters, monitor)
+}
+
 pub fn add_cluster_preset_internal(
     app: &AppHandle,
     preset_id: &str,
@@ -422,6 +443,14 @@ pub fn add_cluster_preset_internal(
 ) -> Result<Vec<WidgetInstance>, AppError> {
     let presets = defaults::cluster_preset_configs(preset_id)
         .ok_or_else(|| AppError::Other(format!("Ukendt klynge-skabelon: {preset_id}")))?;
+    add_clusters_internal(app, presets, monitor)
+}
+
+fn add_clusters_internal(
+    app: &AppHandle,
+    presets: Vec<ClusterConfig>,
+    monitor: Option<String>,
+) -> Result<Vec<WidgetInstance>, AppError> {
 
     let state = app.state::<AppState>();
     let monitor_infos: Vec<MonitorInfo> = state

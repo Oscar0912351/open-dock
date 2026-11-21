@@ -184,6 +184,18 @@ export const da = {
       miniTrio: "Tre ultrakompakte bokse: Tid & Vejr, Aktivitet og Ressourcer.",
       pillBar: "48 px høj glas-pille med Ur, Vejr og CPU der folder Afspiller ud ved musik.",
     },
+    custom: {
+      title: "Din egen",
+      desc: "Vælg selv hvad klyngen viser.",
+      open: "Design selv",
+      heading: "Design din klynge",
+      modules: "Vælg hvad den viser",
+      shape: "Form",
+      box: "Boks",
+      pill: "Kapsel-bar",
+      empty: "Tænd mindst ét modul for at se klyngen",
+      cancel: "Annullér",
+    },
   },
   desktop: {
     title: "Skrivebord",

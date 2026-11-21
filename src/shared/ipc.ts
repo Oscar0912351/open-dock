@@ -7,6 +7,7 @@ import type { AppPaused } from "./bindings/AppPaused";
 import type { AppStats } from "./bindings/AppStats";
 import type { AppStatus } from "./bindings/AppStatus";
 import type { AppVisible } from "./bindings/AppVisible";
+import type { ClusterConfig } from "./bindings/ClusterConfig";
 import type { Config } from "./bindings/Config";
 import type { DiscordSnapshot } from "./bindings/DiscordSnapshot";
 import type { EditDragging } from "./bindings/EditDragging";
@@ -65,6 +66,8 @@ export const ipc = {
   widgetContextMenu: (id: string) => invoke<void>("widget_context_menu", { id }),
   clusterAddPreset: (presetId: string, monitor?: string | null) =>
     invoke<WidgetInstance[]>("cluster_add_preset", { presetId, monitor: monitor ?? null }),
+  clusterAdd: (clusters: ClusterConfig[], monitor?: string | null) =>
+    invoke<WidgetInstance[]>("cluster_add", { clusters, monitor: monitor ?? null }),
   clusterSetWindowSize: (
     id: string,
     width: number,
