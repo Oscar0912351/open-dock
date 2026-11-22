@@ -13,7 +13,7 @@ use windows::{
     },
 };
 
-use crate::config::schema::{GlassEngine, Layer, ThemeId, WidgetSize};
+use crate::config::schema::{GlassEngine, ThemeId, WidgetSize};
 
 #[repr(C)]
 struct OsVersionInfoW {
@@ -50,14 +50,10 @@ pub fn is_windows_11() -> bool {
 pub fn effective_engine(
     preferred: GlassEngine,
     widget_override: Option<GlassEngine>,
-    layer: Layer,
     size: WidgetSize,
     windows_11: bool,
 ) -> GlassEngine {
     let mut chosen = widget_override.unwrap_or(preferred);
-    if layer != Layer::Desktop && chosen == GlassEngine::Wallpaper {
-        chosen = GlassEngine::Acrylic;
-    }
     if chosen == GlassEngine::Acrylic && (!windows_11 || size == WidgetSize::Pill) {
         chosen = GlassEngine::Tint;
     }
@@ -67,7 +63,6 @@ pub fn effective_engine(
 pub fn effective_engine_in_context(
     preferred: GlassEngine,
     widget_override: Option<GlassEngine>,
-    layer: Layer,
     size: WidgetSize,
     windows_11: bool,
     game_overlay: bool,
@@ -75,7 +70,7 @@ pub fn effective_engine_in_context(
     if game_overlay {
         return GlassEngine::Tint;
     }
-    effective_engine(preferred, widget_override, layer, size, windows_11)
+    effective_engine(preferred, widget_override, size, windows_11)
 }
 
 /// SWCA-acrylic-tint per tema. Lav alpha med vilje: det rigtige indhold under
@@ -203,30 +198,32 @@ mod tests {
     use super::*;
 
     #[test]
-    fn effective_engine_follows_plan_02_section_7_4() {
-        // Desktop keeps wallpaper
+    fn effective_engine_preserves_wallpaper_and_handles_acrylic_fallbacks() {
+        // Wallpaper stays Wallpaper across sizes and Windows versions
         assert_eq!(
-            effective_engine(GlassEngine::Wallpaper, None, Layer::Desktop, WidgetSize::M, true),
+            effective_engine(GlassEngine::Wallpaper, None, WidgetSize::M, true),
             GlassEngine::Wallpaper
         );
-        // Top/Normal falls back from wallpaper -> acrylic on Win11
         assert_eq!(
-            effective_engine(GlassEngine::Wallpaper, None, Layer::Top, WidgetSize::M, true),
+            effective_engine(GlassEngine::Wallpaper, None, WidgetSize::Pill, true),
+            GlassEngine::Wallpaper
+        );
+        assert_eq!(
+            effective_engine(GlassEngine::Wallpaper, None, WidgetSize::L, false),
+            GlassEngine::Wallpaper
+        );
+        // Acrylic stays Acrylic on Win11 non-Pill
+        assert_eq!(
+            effective_engine(GlassEngine::Acrylic, None, WidgetSize::M, true),
             GlassEngine::Acrylic
         );
-        // Top/Normal + Pill falls back wallpaper -> acrylic -> tint
+        // Pill and Win10 fall back Acrylic -> Tint
         assert_eq!(
-            effective_engine(GlassEngine::Wallpaper, None, Layer::Top, WidgetSize::Pill, true),
+            effective_engine(GlassEngine::Acrylic, None, WidgetSize::Pill, true),
             GlassEngine::Tint
         );
-        // Win10 falls back acrylic -> tint
         assert_eq!(
-            effective_engine(GlassEngine::Wallpaper, None, Layer::Normal, WidgetSize::L, false),
-            GlassEngine::Tint
-        );
-        // Pill cannot use acrylic even on Desktop
-        assert_eq!(
-            effective_engine(GlassEngine::Acrylic, None, Layer::Desktop, WidgetSize::Pill, true),
+            effective_engine(GlassEngine::Acrylic, None, WidgetSize::L, false),
             GlassEngine::Tint
         );
         // Widget override wins
@@ -234,10 +231,14 @@ mod tests {
             effective_engine(
                 GlassEngine::Wallpaper,
                 Some(GlassEngine::Tint),
-                Layer::Desktop,
                 WidgetSize::M,
                 true
             ),
+            GlassEngine::Tint
+        );
+        // Game overlay forces Tint
+        assert_eq!(
+            effective_engine_in_context(GlassEngine::Wallpaper, None, WidgetSize::M, true, true),
             GlassEngine::Tint
         );
     }

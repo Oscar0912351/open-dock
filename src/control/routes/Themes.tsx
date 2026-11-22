@@ -227,7 +227,7 @@ export function Themes({ embedded = false }: { embedded?: boolean } = {}) {
       ? `${t("engine.acrylicHelp")} ${t("themes.enginePillNote")}`
       : appearance.glassEngine === "tint"
         ? t("engine.tintHelp")
-        : `${t("engine.wallpaperHelp")} ${t("themes.engineLayerNote")}`;
+        : t("engine.wallpaperHelp");
 
   const activeAppearance = {
     ...appearance,

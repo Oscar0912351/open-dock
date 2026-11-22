@@ -241,7 +241,6 @@ pub fn ready(app: &AppHandle, id: &str) -> Result<WidgetBoot, AppError> {
     let effective_engine = glass::effective_engine_in_context(
         appearance.glass_engine,
         instance.glass_override_engine,
-        instance.layer,
         instance.size,
         glass::is_windows_11(),
         game_overlay,
@@ -346,7 +345,6 @@ pub fn apply_instance_live(app: &AppHandle, instance: &WidgetInstance) {
     let effective_engine = glass::effective_engine_in_context(
         config.appearance.glass_engine,
         instance.glass_override_engine,
-        instance.layer,
         instance.size,
         glass::is_windows_11(),
         game_overlay,
@@ -383,7 +381,6 @@ pub fn reapply_glass_all(app: &AppHandle) {
         let effective_engine = glass::effective_engine_in_context(
             config.appearance.glass_engine,
             widget.glass_override_engine,
-            widget.layer,
             widget.size,
             win11,
             game_overlay,

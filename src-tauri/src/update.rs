@@ -447,11 +447,12 @@ pub async fn install(app: &AppHandle) -> Result<(), AppError> {
     result
 }
 
-/// Starter den frakoblede opdateringskæde: et midlertidigt PowerShell-script
-/// viser en status-sheet på skærmen, venter på at appen lukker, kører NSIS
+/// Starter den frakoblede opdateringskæde: status-splashen startes direkte
+/// herfra (så den er synlig mens appen lukker — ingen blank pause), og et
+/// midlertidigt PowerShell-script venter på at appen lukker, kører NSIS
 /// silent (/S — ingen "allerede installeret"-dialog ved samme versionsnummer)
-/// og genstarter det installerede build. Fejler statusboksen, kører
-/// installationen stadig som før.
+/// og genstarter det installerede build. Splashen læser sin tilstand fra en
+/// stage-fil og lukker selv; fejler den, kører installationen stadig som før.
 fn spawn_silent_install(installer: &Path, meta: &SplashMeta) -> Result<(), AppError> {
     use std::os::windows::process::CommandExt;
     const CREATE_NO_WINDOW: u32 = 0x0800_0000;
@@ -479,16 +480,14 @@ fn spawn_silent_install(installer: &Path, meta: &SplashMeta) -> Result<(), AppEr
     let splash_path = temp_dir.join("open-dock-update-splash.ps1");
     let stage_path = temp_dir.join("open-dock-update-stage.txt");
     let script_path = temp_dir.join("open-dock-update.ps1");
+    // Stage-filen skal findes før splashen starter, så dens første poll
+    // læser "closing" frem for at falde tilbage på default.
+    fs::write(&stage_path, "closing")
+        .map_err(|err| AppError::Other(format!("Kunne ikke skrive opdateringsstatus: {err}")))?;
     let splash = build_splash_script(&stage_path, meta);
     fs::write(&splash_path, splash)
         .map_err(|err| AppError::Other(format!("Kunne ikke skrive opdateringsscript: {err}")))?;
-    let script = update_script(
-        installer,
-        &relaunch,
-        std::process::id(),
-        &splash_path,
-        &stage_path,
-    );
+    let script = update_script(installer, &relaunch, std::process::id(), &stage_path);
     fs::write(&script_path, script)
         .map_err(|err| AppError::Other(format!("Kunne ikke skrive opdateringsscript: {err}")))?;
 
@@ -498,8 +497,10 @@ fn spawn_silent_install(installer: &Path, meta: &SplashMeta) -> Result<(), AppEr
         installer,
         relaunch
     );
-    Command::new("powershell")
-        .args([
+
+    let ps_args = |script: &Path| -> Command {
+        let mut cmd = Command::new("powershell");
+        cmd.args([
             "-NoProfile",
             "-ExecutionPolicy",
             "Bypass",
@@ -507,10 +508,33 @@ fn spawn_silent_install(installer: &Path, meta: &SplashMeta) -> Result<(), AppEr
             "Hidden",
             "-File",
         ])
-        .arg(&script_path)
-        .creation_flags(CREATE_NO_WINDOW)
-        .spawn()
-        .map_err(|err| AppError::Other(format!("Kunne ikke starte installationsprogrammet: {err}")))?;
+        .arg(script)
+        .creation_flags(CREATE_NO_WINDOW);
+        cmd
+    };
+
+    // Splashen startes FØR appen lukker, så den når at boote (PS + WPF ≈ 1s)
+    // imens vinduerne forsvinder — den viser "Lukker…" næsten med det samme.
+    // Kan den ikke starte, fortsætter installationen bare uden statusboks.
+    let mut splash_child = match ps_args(&splash_path).spawn() {
+        Ok(child) => Some(child),
+        Err(err) => {
+            log::warn!(target: "update", "Kunne ikke starte status-splash: {err}");
+            None
+        }
+    };
+
+    if let Err(err) = ps_args(&script_path).spawn() {
+        if let Some(child) = splash_child.as_mut() {
+            let _ = child.kill();
+        }
+        let _ = fs::remove_file(&stage_path);
+        let _ = fs::remove_file(&splash_path);
+        let _ = fs::remove_file(&script_path);
+        return Err(AppError::Other(format!(
+            "Kunne ikke starte installationsprogrammet: {err}"
+        )));
+    }
     Ok(())
 }
 
@@ -544,7 +568,6 @@ fn update_script(
     installer: &Path,
     relaunch: &Path,
     app_pid: u32,
-    splash: &Path,
     stage: &Path,
 ) -> String {
     let esc = |p: &Path| ps_escape(&p.display().to_string());
@@ -552,7 +575,6 @@ fn update_script(
         .replace("__APP_PID__", &app_pid.to_string())
         .replace("__INSTALLER__", &esc(installer))
         .replace("__RELAUNCH__", &esc(relaunch))
-        .replace("__SPLASH__", &esc(splash))
         .replace("__STAGE_FILE__", &esc(stage));
     format!("\u{feff}{body}")
 }
@@ -1056,22 +1078,13 @@ $null = $win.ShowDialog()
 const UPDATE_SCRIPT: &str = r#"$ErrorActionPreference = 'SilentlyContinue'
 $installer = '__INSTALLER__'
 $relaunch  = '__RELAUNCH__'
-$splashPs1 = '__SPLASH__'
+$splashPs1 = Join-Path $env:TEMP 'open-dock-update-splash.ps1'
 $stageFile = '__STAGE_FILE__'
 $appPid    = __APP_PID__
 
 function Set-Stage([string]$name) {
     try { [System.IO.File]::WriteAllText($stageFile, $name) } catch {}
 }
-
-Set-Stage 'closing'
-
-$splashProc = $null
-try {
-    $splashProc = Start-Process -FilePath 'powershell.exe' -PassThru -WindowStyle Hidden -ArgumentList @(
-        '-NoProfile','-ExecutionPolicy','Bypass','-WindowStyle','Hidden','-File',$splashPs1
-    )
-} catch {}
 
 try { Wait-Process -Id $appPid -Timeout 15 } catch {}
 Start-Sleep -Milliseconds 450
@@ -1089,10 +1102,9 @@ Start-Sleep -Milliseconds 250
 try { Start-Process -FilePath $relaunch } catch {}
 
 Set-Stage 'done'
-if ($splashProc) {
-    # Giv splash-vinduet tid til at vise grøn fuldført-tilstand og fade pænt ud.
-    try { if (-not $splashProc.WaitForExit(1300)) { Stop-Process -Id $splashProc.Id -Force } } catch {}
-}
+# Splashen lukker sig selv på 'done' (plus 3 min selvdestruktion som net) —
+# giv dens 180 ms-poll tid til at nå at læse stadiet før filen fjernes.
+Start-Sleep -Milliseconds 800
 try { Remove-Item -LiteralPath $stageFile -Force } catch {}
 try { Remove-Item -LiteralPath $splashPs1 -Force } catch {}
 try { Remove-Item -LiteralPath $PSCommandPath -Force } catch {}

@@ -313,12 +313,10 @@ export function Settings() {
         : "muted";
 
   const updateLabel =
-    updateBusy === "check"
-      ? t("settings.updateChecking")
-      : downloading
-        ? downloadPct !== null
-          ? t("settings.updateDownloading", { pct: downloadPct })
-          : t("settings.updateStatusDownloading")
+    downloading
+      ? t("settings.updateStatusDownloading")
+      : updateBusy === "check"
+        ? t("settings.updateChecking")
         : updateState === "ready"
           ? t("settings.updateStatusReady")
           : updateState === "failed"
@@ -336,14 +334,14 @@ export function Settings() {
     minute: "2-digit",
   });
   const updateHelp =
-    updateBusy === "check"
-      ? t("settings.updateChecking")
-      : updateState === "dev"
-        ? t("settings.updateHelpDev")
-        : downloading && updateInfo?.latest
-          ? t("settings.updateHelpDownloading", {
-              version: updateInfo.latest.version,
-            })
+    downloading && updateInfo?.latest
+      ? t("settings.updateHelpDownloading", {
+          version: updateInfo.latest.version,
+        })
+      : updateBusy === "check"
+        ? t("settings.updateChecking")
+        : updateState === "dev"
+          ? t("settings.updateHelpDev")
           : updateState === "ready" && updateInfo?.latest
             ? t("settings.updateHelpReady", {
                 version: updateInfo.latest.version,
