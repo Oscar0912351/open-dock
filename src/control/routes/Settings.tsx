@@ -77,6 +77,9 @@ export function Settings() {
       .discordRpcStatus((st) => {
         if (cancelled) return;
         setDiscordStatus(st);
+        if (st.connected || st.lastError === null) {
+          setDiscordError(null);
+        }
       })
       .then((fn) => {
         if (cancelled) {

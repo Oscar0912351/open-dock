@@ -36,7 +36,7 @@ opt-level = "s"
 lto = "thin"
 codegen-units = 4
 strip = true
-panic = "abort"
+panic = "unwind"
 
 [dependencies]
 base64 = "0.23.1"

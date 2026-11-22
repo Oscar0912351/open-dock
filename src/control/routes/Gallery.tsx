@@ -340,6 +340,70 @@ export function Gallery() {
       baseCluster: ownCluster,
     });
 
+  const customCard = (
+    <article className="cc-gallery-card">
+      <button
+        type="button"
+        className="cc-gallery-stage cc-custom-cta"
+        onClick={openOwnDialog}
+      >
+        {plateUrl && (
+          <div
+            className="cc-preview-bg"
+            aria-hidden="true"
+            style={{ backgroundImage: `url("${plateUrl}")` }}
+          />
+        )}
+        <div className="cc-stage-scrim" aria-hidden="true" />
+        <WidgetPreview
+          id="preview-custom-cta"
+          kind="cluster"
+          size="m"
+          cluster={ownCluster ?? buildCustomCluster("box", ownSeed.selected)}
+          appearance={config.appearance}
+          monitors={monitors}
+          locations={config.weather.locations}
+          maxWidth={256}
+          maxHeight={184}
+          previewShowAll
+        />
+      </button>
+
+      <div className="cc-gallery-body">
+        <div className="cc-gallery-meta">
+          <div className="cc-gallery-title">
+            {isEditingOwn ? t("gallery.custom.currentTitle") : t("gallery.custom.title")}
+          </div>
+          <div
+            className="cc-gallery-desc"
+            title={isEditingOwn ? t("gallery.custom.currentDesc") : t("gallery.custom.desc")}
+          >
+            {isEditingOwn ? t("gallery.custom.currentDesc") : t("gallery.custom.desc")}
+          </div>
+        </div>
+
+        <div className="cc-gallery-foot is-end">
+          <Button
+            variant="secondary"
+            onClick={openOwnDialog}
+          >
+            {isEditingOwn ? (
+              <>
+                <NotePencil size={13} weight="bold" aria-hidden="true" />
+                <span>{t("gallery.custom.edit")}</span>
+              </>
+            ) : (
+              <>
+                <Sparkle size={13} weight="bold" aria-hidden="true" />
+                <span>{t("gallery.custom.open")}</span>
+              </>
+            )}
+          </Button>
+        </div>
+      </div>
+    </article>
+  );
+
   return (
     <div className="cc-route">
       <div className="cc-page-header">
@@ -356,6 +420,7 @@ export function Gallery() {
           </div>
 
           <div className="cc-gallery-clusters">
+            {isEditingOwn && customCard}
             {CLUSTER_PRESETS.map((preset) => {
               const boxes = buildPresetClusters(preset.presetId);
               const isAdded = addedKey === `p:${preset.presetId}`;
@@ -428,67 +493,7 @@ export function Gallery() {
                 </article>
               );
             })}
-            <article className="cc-gallery-card">
-              <button
-                type="button"
-                className="cc-gallery-stage cc-custom-cta"
-                onClick={openOwnDialog}
-              >
-                {plateUrl && (
-                  <div
-                    className="cc-preview-bg"
-                    aria-hidden="true"
-                    style={{ backgroundImage: `url("${plateUrl}")` }}
-                  />
-                )}
-                <div className="cc-stage-scrim" aria-hidden="true" />
-                <WidgetPreview
-                  id="preview-custom-cta"
-                  kind="cluster"
-                  size="m"
-                  cluster={ownCluster ?? buildCustomCluster("box", ownSeed.selected)}
-                  appearance={config.appearance}
-                  monitors={monitors}
-                  locations={config.weather.locations}
-                  maxWidth={256}
-                  maxHeight={184}
-                  previewShowAll
-                />
-              </button>
-
-              <div className="cc-gallery-body">
-                <div className="cc-gallery-meta">
-                  <div className="cc-gallery-title">
-                    {isEditingOwn ? t("gallery.custom.currentTitle") : t("gallery.custom.title")}
-                  </div>
-                  <div
-                    className="cc-gallery-desc"
-                    title={isEditingOwn ? t("gallery.custom.currentDesc") : t("gallery.custom.desc")}
-                  >
-                    {isEditingOwn ? t("gallery.custom.currentDesc") : t("gallery.custom.desc")}
-                  </div>
-                </div>
-
-                <div className="cc-gallery-foot is-end">
-                  <Button
-                    variant="secondary"
-                    onClick={openOwnDialog}
-                  >
-                    {isEditingOwn ? (
-                      <>
-                        <NotePencil size={13} weight="bold" aria-hidden="true" />
-                        <span>{t("gallery.custom.edit")}</span>
-                      </>
-                    ) : (
-                      <>
-                        <Sparkle size={13} weight="bold" aria-hidden="true" />
-                        <span>{t("gallery.custom.open")}</span>
-                      </>
-                    )}
-                  </Button>
-                </div>
-              </div>
-            </article>
+            {!isEditingOwn && customCard}
           </div>
       </section>
 

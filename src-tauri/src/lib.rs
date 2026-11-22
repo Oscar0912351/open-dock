@@ -23,9 +23,48 @@ use tauri::{Manager, WindowEvent};
 use tauri_plugin_autostart::MacosLauncher;
 use tauri_plugin_log::{Target, TargetKind};
 
+fn install_panic_hook() {
+    let prev = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let thread = std::thread::current();
+        let thread_name = thread.name().unwrap_or("unnamed");
+        let payload = info
+            .payload()
+            .downcast_ref::<&str>()
+            .copied()
+            .or_else(|| info.payload().downcast_ref::<String>().map(String::as_str))
+            .unwrap_or("ukendt panic-payload");
+        let loc = info
+            .location()
+            .map(|l| format!("{}:{}:{}", l.file(), l.line(), l.column()))
+            .unwrap_or_else(|| "ukendt lokation".to_string());
+        error!(target: "panic", "Panic på tråd '{thread_name}' ved {loc}: {payload}");
+
+        let log_dir = paths::data_root().join("logs");
+        if std::fs::create_dir_all(&log_dir).is_ok() {
+            let panic_log = log_dir.join("panic.log");
+            let ts = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0);
+            if let Ok(mut file) = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(panic_log)
+            {
+                use std::io::Write;
+                let _ = writeln!(file, "[{ts}] thread={thread_name} at={loc} msg={payload}");
+                let _ = file.flush();
+            }
+        }
+        prev(info);
+    }));
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     providers::cpu_sensor::maybe_handle_cli_action();
+    install_panic_hook();
 
     let log_level = if cfg!(debug_assertions) {
         LevelFilter::Debug

@@ -281,7 +281,7 @@ async fn run_cycle(app: &AppHandle) -> Result<UpdateStatus, AppError> {
             status.state = UpdateCheckState::Ready;
             status.checked_at = unix_now_s();
             set_status(app, &status);
-            notify_ready(&app, &manifest.version);
+            notify_ready(app, &manifest.version);
             Ok(status)
         }
         Err(err) => {

@@ -76,6 +76,15 @@ pub struct DiscordIpcPipe {
     pub self_username: Option<String>,
 }
 
+impl std::fmt::Debug for DiscordIpcPipe {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DiscordIpcPipe")
+            .field("self_user_id", &self.self_user_id)
+            .field("self_username", &self.self_username)
+            .finish()
+    }
+}
+
 pub fn encode_frame(opcode: u32, payload: &Value) -> Result<Vec<u8>, String> {
     let json_bytes =
         serde_json::to_vec(payload).map_err(|err| format!("JSON-fejl i Discord-frame: {err}"))?;
@@ -144,6 +153,10 @@ impl DiscordIpcPipe {
         {
             Err(PipeError::NotFound)
         }
+    }
+
+    pub fn close(&mut self) {
+        let _ = self.write_frame(OP_CLOSE, &json!({}));
     }
 
     pub fn write_frame(&mut self, opcode: u32, payload: &Value) -> Result<(), PipeError> {
@@ -270,7 +283,7 @@ pub fn connect_and_handshake(client_id: &str) -> Result<DiscordIpcPipe, String> 
                 last_err = err.to_string();
                 continue;
             }
-            match pipe.read_frame_timeout(Duration::from_secs(3)) {
+            match pipe.read_frame_timeout(Duration::from_secs(5)) {
                 Ok((_, val)) => {
                     if val.get("evt").and_then(|v| v.as_str()) == Some("READY") {
                         if let Some(user) = val.get("data").and_then(|d| d.get("user")) {
@@ -319,7 +332,7 @@ pub fn extract_rpc_error(val: &Value) -> Option<String> {
 
 pub fn request_authorize_code(
     client_id: &str,
-) -> Result<(String, bool, Option<String>), String> {
+) -> Result<(String, bool, Option<String>, DiscordIpcPipe), String> {
     let mut pipe = connect_and_handshake(client_id)?;
     let initial_username = pipe.self_username.clone();
 
@@ -358,30 +371,40 @@ pub fn request_authorize_code(
                 .wait_for_nonce(&retry_nonce, Duration::from_secs(60))
                 .map_err(|e| e.to_string())?;
             if let Some(retry_err) = extract_rpc_error(&retry_resp) {
-                let _ = pipe.write_frame(OP_CLOSE, &json!({}));
+                pipe.close();
                 return Err(retry_err);
             }
-            let code = retry_resp
+            let code = match retry_resp
                 .get("data")
                 .and_then(|d| d.get("code"))
                 .and_then(|v| v.as_str())
                 .filter(|s| !s.is_empty())
-                .ok_or_else(|| "Discord returnerede ingen autorisationskode".to_string())?;
-            let _ = pipe.write_frame(OP_CLOSE, &json!({}));
-            return Ok((code.to_string(), false, initial_username));
+            {
+                Some(c) => c.to_string(),
+                None => {
+                    pipe.close();
+                    return Err("Discord returnerede ingen autorisationskode".to_string());
+                }
+            };
+            return Ok((code, false, initial_username, pipe));
         }
-        let _ = pipe.write_frame(OP_CLOSE, &json!({}));
+        pipe.close();
         return Err(err_msg);
     }
 
-    let code = resp
+    let code = match resp
         .get("data")
         .and_then(|d| d.get("code"))
         .and_then(|v| v.as_str())
         .filter(|s| !s.is_empty())
-        .ok_or_else(|| "Discord returnerede ingen autorisationskode".to_string())?;
-    let _ = pipe.write_frame(OP_CLOSE, &json!({}));
-    Ok((code.to_string(), true, initial_username))
+    {
+        Some(c) => c.to_string(),
+        None => {
+            pipe.close();
+            return Err("Discord returnerede ingen autorisationskode".to_string());
+        }
+    };
+    Ok((code, true, initial_username, pipe))
 }
 
 pub fn url_encode(input: &str) -> String {
