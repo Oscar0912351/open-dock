@@ -13,10 +13,11 @@ use windows::Win32::{
     UI::{
         Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass},
         WindowsAndMessaging::{
-            SetForegroundWindow, SetWindowPos, WINDOWPOS, HWND_BOTTOM, HWND_NOTOPMOST,
-            HWND_TOPMOST, MA_NOACTIVATE, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
-            SWP_NOZORDER,
-            SWP_SHOWWINDOW, WM_MOUSEACTIVATE, WM_NCDESTROY, WM_WINDOWPOSCHANGING,
+            BeginDeferWindowPos, DeferWindowPos, EndDeferWindowPos, SetForegroundWindow,
+            SetWindowPos, WINDOWPOS, HWND_BOTTOM, HWND_NOTOPMOST, HWND_TOPMOST, MA_NOACTIVATE,
+            SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SWP_SHOWWINDOW,
+            WM_MOUSEACTIVATE, WM_NCDESTROY, WM_SHOWWINDOW, WM_WINDOWPOSCHANGED,
+            WM_WINDOWPOSCHANGING,
         },
     },
 };
@@ -94,7 +95,16 @@ unsafe extern "system" fn widget_proc(
         WM_MOUSEACTIVATE if !state.activatable.load(Ordering::Acquire) => {
             return LRESULT(MA_NOACTIVATE as isize);
         }
+        WM_SHOWWINDOW => {
+            super::backdrop::set_window_visible(hwnd, wp.0 != 0);
+        }
+        WM_WINDOWPOSCHANGED => {
+            let res = DefSubclassProc(hwnd, msg, wp, lp);
+            super::backdrop::sync_from_widget(hwnd);
+            return res;
+        }
         WM_NCDESTROY => {
+            super::backdrop::detach(hwnd);
             let _ = RemoveWindowSubclass(hwnd, Some(widget_proc), id);
             REGISTRY.lock().remove(&(hwnd.0 as isize));
             drop(Arc::from_raw(data as *const HwndState));
@@ -138,6 +148,37 @@ pub fn set_widget_activatable(hwnd: HWND, yes: bool, focus: bool) -> windows::co
 }
 
 pub fn set_window_rect(hwnd: HWND, x: i32, y: i32, w: i32, h: i32) -> windows::core::Result<()> {
+    if let Some(backdrop_hwnd) = super::backdrop::backdrop_hwnd_for(hwnd) {
+        let batched = unsafe {
+            (|| -> windows::core::Result<()> {
+                let hdwp = BeginDeferWindowPos(2)?;
+                let hdwp = DeferWindowPos(
+                    hdwp,
+                    hwnd,
+                    None,
+                    x,
+                    y,
+                    w,
+                    h,
+                    SWP_NOACTIVATE | SWP_NOZORDER,
+                )?;
+                let hdwp = DeferWindowPos(
+                    hdwp,
+                    backdrop_hwnd,
+                    Some(hwnd),
+                    x,
+                    y,
+                    w,
+                    h,
+                    SWP_NOACTIVATE,
+                )?;
+                EndDeferWindowPos(hdwp)
+            })()
+        };
+        if batched.is_ok() {
+            return Ok(());
+        }
+    }
     unsafe {
         SetWindowPos(
             hwnd,
@@ -296,6 +337,7 @@ fn place(hwnd: HWND, layer: Layer) -> windows::core::Result<()> {
         }
         SetWindowPos(hwnd, insert_after, 0, 0, 0, 0, flags)?;
     }
+    super::backdrop::sync_from_widget(hwnd);
     if layer == Layer::Desktop {
         if let Some(app) = super::app_handle() {
             if app.state::<crate::state::AppState>().edit_mode.load(Ordering::Acquire) {

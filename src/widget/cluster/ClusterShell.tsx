@@ -39,6 +39,7 @@ interface ClusterShellProps {
   motion: MotionPreset;
   editMode: boolean;
   pausedApp?: boolean;
+  liveBackdrop?: boolean;
   locations: Location[];
   preview?: boolean;
   /** Preview-only: render every module compact so the card shows the full config. */
@@ -81,6 +82,7 @@ export function ClusterShell({
   motion,
   editMode,
   pausedApp = false,
+  liveBackdrop = false,
   locations,
   preview = false,
   previewShowAll = false,
@@ -480,6 +482,11 @@ export function ClusterShell({
     [instance.id, cluster.width, cluster.anchor, preview],
   );
 
+  const liveBackdropRef = useRef(liveBackdrop);
+  useEffect(() => {
+    liveBackdropRef.current = liveBackdrop;
+  }, [liveBackdrop]);
+
   useEffect(() => {
     registerTransitionEnd(() => {
       const target = pendingCollapseTargetRef.current;
@@ -487,10 +494,15 @@ export function ClusterShell({
         commitWinSize(target);
       } else {
         setTransitionKind("idle");
+        if (liveBackdropRef.current && !preview) {
+          void ipc
+            .widgetAnimateBackdropBox(instance.id, 0, 0, cluster.anchor, 0)
+            .catch(() => {});
+        }
       }
     });
     return () => registerTransitionEnd(null);
-  }, [commitWinSize, registerTransitionEnd]);
+  }, [commitWinSize, registerTransitionEnd, preview, instance.id, cluster.anchor]);
 
   useEffect(() => {
     if (preview) {
@@ -519,6 +531,7 @@ export function ClusterShell({
     if (targetHeightU > currentWinH) {
       // Udvidelse: udvid Win32-vindue FØR CSS-animation
       const seq = ++resizeSeqRef.current;
+      const fromH = boxHeightU;
       winHeightRef.current = targetHeightU;
       const frame = window.requestAnimationFrame(() => {
         setTransitionKind("expand");
@@ -542,6 +555,11 @@ export function ClusterShell({
         .finally(() => {
           if (resizeSeqRef.current === seq) {
             setBoxHeightU(targetHeightU);
+            if (liveBackdrop && Math.abs(fromH - targetHeightU) >= 0.25) {
+              void ipc
+                .widgetAnimateBackdropBox(instance.id, fromH, targetHeightU, cluster.anchor, 340)
+                .catch(() => {});
+            }
           }
         });
       return () => window.cancelAnimationFrame(frame);
@@ -558,10 +576,16 @@ export function ClusterShell({
         return () => window.cancelAnimationFrame(frame);
       }
 
+      const fromH = boxHeightU;
       const frame = window.requestAnimationFrame(() => {
         setTransitionKind("collapse");
         setBoxHeightU(targetHeightU);
         pendingCollapseTargetRef.current = targetHeightU;
+        if (liveBackdrop && Math.abs(fromH - targetHeightU) >= 0.25) {
+          void ipc
+            .widgetAnimateBackdropBox(instance.id, fromH, targetHeightU, cluster.anchor, 280)
+            .catch(() => {});
+        }
         collapseTimerRef.current = window.setTimeout(() => {
           const target = pendingCollapseTargetRef.current;
           if (target !== null) {
@@ -573,12 +597,18 @@ export function ClusterShell({
     }
 
     // Hvis currentWinH allerede matcher (fx gen-afbrudt kollaps), sæt boxHeight direkte
+    const fromH = boxHeightU;
     const frame = window.requestAnimationFrame(() => {
       setTransitionKind("expand");
       setBoxHeightU(targetHeightU);
+      if (liveBackdrop && !shouldReduceMotion(motion) && Math.abs(fromH - targetHeightU) >= 0.25) {
+        void ipc
+          .widgetAnimateBackdropBox(instance.id, fromH, targetHeightU, cluster.anchor, 340)
+          .catch(() => {});
+      }
     });
     return () => window.cancelAnimationFrame(frame);
-  }, [targetHeightU, cluster.resizeBehavior, cluster.width, cluster.anchor, instance.id, motion, commitWinSize, boxHeightU, preview]);
+  }, [targetHeightU, cluster.resizeBehavior, cluster.width, cluster.anchor, instance.id, motion, commitWinSize, boxHeightU, preview, liveBackdrop]);
 
   useEffect(() => {
     return () => {

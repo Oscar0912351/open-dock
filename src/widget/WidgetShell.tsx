@@ -79,6 +79,7 @@ interface WidgetShellProps {
   size: WidgetSize;
   theme: ThemeId;
   engine: GlassEngine;
+  liveBackdrop?: boolean;
   radius?: RadiusPreset;
   motion?: MotionPreset;
   glassStrength?: number;
@@ -111,6 +112,7 @@ export function WidgetShell({
   size,
   theme,
   engine,
+  liveBackdrop = false,
   radius = "round",
   motion = "full",
   glassStrength = 1.0,
@@ -185,6 +187,7 @@ export function WidgetShell({
     `size-${size}`,
     `radius-${radius}`,
     `engine-${engine}`,
+    liveBackdrop && !preview ? "is-live-backdrop" : "",
     `motion-${motion}`,
     paused ? "is-paused" : "",
     hiddenIdle ? "is-hidden-idle" : "",
@@ -320,7 +323,7 @@ export function WidgetShell({
           }
         }}
       >
-        {engine === "wallpaper" ? (
+        {engine === "wallpaper" && !(liveBackdrop && !preview) ? (
           <div className="glass-anchor-layer" aria-hidden="true">
             <GlassPlate
               plateRef={plateRef}

@@ -10,7 +10,8 @@ use windows::Win32::{
     UI::{
         Input::KeyboardAndMouse::{GetAsyncKeyState, VK_ESCAPE, VK_LBUTTON, VK_MENU},
         WindowsAndMessaging::{
-            GetCursorPos, SetWindowPos, SWP_NOACTIVATE, SWP_NOSIZE, SWP_NOZORDER,
+            BeginDeferWindowPos, DeferWindowPos, EndDeferWindowPos, GetCursorPos, SetWindowPos,
+            SWP_NOACTIVATE, SWP_NOSIZE, SWP_NOZORDER,
         },
     },
 };
@@ -411,16 +412,48 @@ fn run_drag_loop(session: DragSession) {
         let dest_phys_y = mon.work_area.y + (snapped_pt.y * scale).round() as i32;
 
         if (dest_phys_x, dest_phys_y) != prev_phys {
-            unsafe {
-                let _ = SetWindowPos(
-                    session.hwnd,
-                    None,
-                    dest_phys_x,
-                    dest_phys_y,
-                    0,
-                    0,
-                    SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE,
-                );
+            let mut moved = false;
+            if let Some(backdrop_hwnd) = super::backdrop::backdrop_hwnd_for(session.hwnd) {
+                let res = unsafe {
+                    (|| -> windows::core::Result<()> {
+                        let hdwp = BeginDeferWindowPos(2)?;
+                        let hdwp = DeferWindowPos(
+                            hdwp,
+                            session.hwnd,
+                            None,
+                            dest_phys_x,
+                            dest_phys_y,
+                            0,
+                            0,
+                            SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE,
+                        )?;
+                        let hdwp = DeferWindowPos(
+                            hdwp,
+                            backdrop_hwnd,
+                            Some(session.hwnd),
+                            dest_phys_x,
+                            dest_phys_y,
+                            0,
+                            0,
+                            SWP_NOSIZE | SWP_NOACTIVATE,
+                        )?;
+                        EndDeferWindowPos(hdwp)
+                    })()
+                };
+                moved = res.is_ok();
+            }
+            if !moved {
+                unsafe {
+                    let _ = SetWindowPos(
+                        session.hwnd,
+                        None,
+                        dest_phys_x,
+                        dest_phys_y,
+                        0,
+                        0,
+                        SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE,
+                    );
+                }
             }
             prev_phys = (dest_phys_x, dest_phys_y);
         }

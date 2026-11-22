@@ -2,4 +2,4 @@
 import type { Appearance } from "./Appearance";
 import type { GlassEngine } from "./GlassEngine";
 
-export type WidgetGlassState = { appearance: Appearance, effectiveEngine: GlassEngine, };
+export type WidgetGlassState = { appearance: Appearance, effectiveEngine: GlassEngine, liveBackdrop: boolean, };

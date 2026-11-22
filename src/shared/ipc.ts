@@ -71,6 +71,15 @@ export const ipc = {
   widgetSetFocusable: (id: string, focusable: boolean) =>
     invoke<void>("widget_set_focusable", { id, focusable }),
   widgetContextMenu: (id: string) => invoke<void>("widget_context_menu", { id }),
+  widgetSetBackdropVisible: (id: string, visible: boolean, durationMs: number) =>
+    invoke<void>("widget_set_backdrop_visible", { id, visible, durationMs }),
+  widgetAnimateBackdropBox: (
+    id: string,
+    fromHU: number,
+    toHU: number,
+    anchor: VerticalAnchor,
+    durationMs: number,
+  ) => invoke<void>("widget_animate_backdrop_box", { id, fromHU, toHU, anchor, durationMs }),
   clusterAddPreset: (presetId: string, monitor?: string | null) =>
     invoke<WidgetInstance[]>("cluster_add_preset", { presetId, monitor: monitor ?? null }),
   clusterAdd: (clusters: ClusterConfig[], monitor?: string | null) =>

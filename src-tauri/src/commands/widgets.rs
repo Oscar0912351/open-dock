@@ -407,6 +407,43 @@ pub fn widget_context_menu(app: AppHandle, id: String) -> Result<(), AppError> {
 }
 
 #[tauri::command]
+pub fn widget_set_backdrop_visible(
+    app: AppHandle,
+    id: String,
+    visible: bool,
+    duration_ms: u32,
+) -> Result<(), AppError> {
+    let result = crate::windows::widget::set_backdrop_visible(&app, &id, visible, duration_ms);
+    if let Err(error) = &result {
+        log::error!(target: "cmd", "widget_set_backdrop_visible fejlede for {id}: {error:?}");
+    }
+    result
+}
+
+#[tauri::command]
+pub fn widget_animate_backdrop_box(
+    app: AppHandle,
+    id: String,
+    from_h_u: f64,
+    to_h_u: f64,
+    anchor: VerticalAnchor,
+    duration_ms: u32,
+) -> Result<(), AppError> {
+    let result = crate::windows::widget::animate_backdrop_box(
+        &app,
+        &id,
+        from_h_u,
+        to_h_u,
+        anchor,
+        duration_ms,
+    );
+    if let Err(error) = &result {
+        log::error!(target: "cmd", "widget_animate_backdrop_box fejlede for {id}: {error:?}");
+    }
+    result
+}
+
+#[tauri::command]
 pub async fn cluster_add_preset(
     app: AppHandle,
     preset_id: String,

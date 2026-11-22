@@ -8,6 +8,8 @@ import cursorLogo from "./logos/cursor.svg";
 import devinLogo from "./logos/devin.png";
 import freebuffLogo from "./logos/freebuff.png";
 import geminiLogo from "./logos/googlegemini.svg";
+import grokbotLogo from "./logos/grokbot.png";
+import hermesLogo from "./logos/hermes.png";
 import kiloLogo from "./logos/kilo.png";
 import opencodeLogo from "./logos/opencode.svg";
 import qoderLogo from "./logos/qoder.png";
@@ -37,6 +39,8 @@ const AGENT_STYLES: Record<string, AgentStyle> = {
   qoder: { glyph: { kind: "img", src: qoderLogo } },
   aider: { glyph: { kind: "img", src: aiderLogo } },
   freebuff: { glyph: { kind: "img", src: freebuffLogo } },
+  "grok-bot": { glyph: { kind: "img", src: grokbotLogo } },
+  hermes: { glyph: { kind: "img", src: hermesLogo } },
 };
 
 const FALLBACK: AgentStyle = { glyph: { kind: "icon", Icon: Robot } };

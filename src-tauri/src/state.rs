@@ -63,6 +63,7 @@ pub struct EditDragging {
 pub struct WidgetGlassState {
     pub appearance: Appearance,
     pub effective_engine: GlassEngine,
+    pub live_backdrop: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
@@ -106,6 +107,7 @@ pub struct WidgetBoot {
     pub instance: WidgetInstance,
     pub appearance: Appearance,
     pub effective_engine: GlassEngine,
+    pub live_backdrop: bool,
     pub monitor: Option<MonitorInfo>,
     pub placement: Option<WidgetPlacement>,
     pub start_delay_ms: u32,

@@ -13,7 +13,7 @@ use windows::{
     },
 };
 
-use crate::config::schema::{GlassEngine, ThemeId, WidgetSize};
+use crate::config::schema::{GlassEngine, Layer, ThemeId, WidgetSize};
 
 #[repr(C)]
 struct OsVersionInfoW {
@@ -71,6 +71,18 @@ pub fn effective_engine_in_context(
         return GlassEngine::Tint;
     }
     effective_engine(preferred, widget_override, size, windows_11)
+}
+
+pub fn should_use_live_backdrop(
+    engine: GlassEngine,
+    layer: Layer,
+    windows_11: bool,
+    transparency_enabled: bool,
+) -> bool {
+    engine == GlassEngine::Wallpaper
+        && layer != Layer::Desktop
+        && windows_11
+        && transparency_enabled
 }
 
 /// SWCA-acrylic-tint per tema. Lav alpha med vilje: det rigtige indhold under
@@ -241,5 +253,16 @@ mod tests {
             effective_engine_in_context(GlassEngine::Wallpaper, None, WidgetSize::M, true, true),
             GlassEngine::Tint
         );
+    }
+
+    #[test]
+    fn live_backdrop_activates_for_floating_wallpaper_widgets_on_win11() {
+        assert!(should_use_live_backdrop(GlassEngine::Wallpaper, Layer::Top, true, true));
+        assert!(should_use_live_backdrop(GlassEngine::Wallpaper, Layer::Normal, true, true));
+        assert!(!should_use_live_backdrop(GlassEngine::Wallpaper, Layer::Desktop, true, true));
+        assert!(!should_use_live_backdrop(GlassEngine::Wallpaper, Layer::Top, false, true));
+        assert!(!should_use_live_backdrop(GlassEngine::Wallpaper, Layer::Top, true, false));
+        assert!(!should_use_live_backdrop(GlassEngine::Acrylic, Layer::Top, true, true));
+        assert!(!should_use_live_backdrop(GlassEngine::Tint, Layer::Top, true, true));
     }
 }

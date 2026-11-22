@@ -34,7 +34,7 @@ export const da = {
     wallpaper: "Tapet",
     acrylic: "Windows Acrylic",
     tint: "Simpel",
-    wallpaperHelp: "Det flotteste glas. Bruger dit tapet direkte.",
+    wallpaperHelp: "Levende glas med bløde hjørner. Slører tapet og vinduer bagved.",
     acrylicHelp: "Windows' eget glas med faste hjørner. Kun Windows 11.",
     acrylicWin10: "Kræver Windows 11",
     tintHelp: "Ingen sløring. Laveste strømforbrug.",
@@ -163,7 +163,7 @@ export const da = {
   agents: {
     empty: {
       title: "Ingen aktive agenter",
-      body: "Viser live aktivitet fra Antigravity, Devin, Claude Code, Codex m.fl.",
+      body: "Viser live aktivitet fra Antigravity, Devin, Claude Code, Codex, Hermes, Grok Bot m.fl.",
     },
     working: "Arbejder…",
     waiting: "Afventer dig",
@@ -239,7 +239,7 @@ export const da = {
     },
     agents: {
       name: "AI Agenter",
-      desc: "Se aktive AI-agenter i realtid – Antigravity, Devin, Claude Code, Codex m.fl.",
+      desc: "Se aktive AI-agenter i realtid – Antigravity, Devin, Claude Code, Codex, Hermes, Grok Bot m.fl.",
     },
     cluster: { name: "Adaptiv Klynge", desc: "Kompakte bokse der udvider sig efter behov" },
   },

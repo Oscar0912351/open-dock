@@ -36,7 +36,7 @@ export const en: Messages = {
     wallpaper: "Wallpaper",
     acrylic: "Windows Acrylic",
     tint: "Simple",
-    wallpaperHelp: "The finest glass. Uses your wallpaper directly.",
+    wallpaperHelp: "Living glass with smooth corners. Blurs wallpaper and windows behind.",
     acrylicHelp: "Windows' own glass with fixed corners. Windows 11 only.",
     acrylicWin10: "Requires Windows 11",
     tintHelp: "No blur. Lowest power consumption.",
@@ -165,7 +165,7 @@ export const en: Messages = {
   agents: {
     empty: {
       title: "No active agents",
-      body: "Shows live activity from Antigravity, Devin, Claude Code, Codex and others",
+      body: "Shows live activity from Antigravity, Devin, Claude Code, Codex, Hermes, Grok Bot and others",
     },
     working: "Working…",
     waiting: "Waiting for you",
@@ -241,7 +241,7 @@ export const en: Messages = {
     },
     agents: {
       name: "AI Agents",
-      desc: "Watch local AI agents in real time – Antigravity, Devin, Claude Code, Codex and more",
+      desc: "Watch local AI agents in real time – Antigravity, Devin, Claude Code, Codex, Hermes, Grok Bot and more",
     },
     cluster: { name: "Adaptive Cluster", desc: "Compact boxes that expand when needed" },
   },

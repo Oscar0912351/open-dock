@@ -273,8 +273,16 @@ mod tests {
             self.root.join("appdata")
         }
 
+        fn local_appdata(&self) -> PathBuf {
+            self.root.join("local_appdata")
+        }
+
         fn paths(&self) -> AgentPaths {
-            AgentPaths::from_roots(&self.home(), Some(&self.appdata()))
+            AgentPaths::from_roots(
+                &self.home(),
+                Some(&self.appdata()),
+                Some(&self.local_appdata()),
+            )
         }
     }
 
@@ -735,6 +743,197 @@ mod tests {
         assert_eq!(todo.done, 1);
         assert_eq!(todo.total, 3);
         assert_eq!(todo.current.as_deref(), Some("Implementér plan"));
+    }
+
+    fn create_hermes_db(path: &Path) {
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let conn = Connection::open(path).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE sessions (
+                id TEXT PRIMARY KEY,
+                source TEXT,
+                display_name TEXT,
+                parent_session_id TEXT,
+                started_at REAL NOT NULL,
+                ended_at REAL,
+                cwd TEXT,
+                title TEXT,
+                last_activity_at REAL,
+                last_activity_description TEXT,
+                profile_name TEXT,
+                hidden INTEGER NOT NULL DEFAULT 0,
+                archived INTEGER NOT NULL DEFAULT 0
+            );
+            CREATE TABLE messages (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT NOT NULL,
+                role TEXT NOT NULL,
+                content TEXT,
+                tool_name TEXT,
+                tool_calls TEXT,
+                display_kind TEXT,
+                timestamp REAL NOT NULL
+            );
+            CREATE TABLE session_turn_leases (
+                conversation_id TEXT PRIMARY KEY,
+                holder TEXT NOT NULL,
+                acquired_at REAL NOT NULL,
+                expires_at REAL NOT NULL
+            );
+            CREATE TABLE worker_executions (
+                execution_id TEXT PRIMARY KEY,
+                session_id TEXT NOT NULL,
+                status TEXT NOT NULL
+            );",
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn hermes_reads_profiles_leases_and_ready_sessions() {
+        let td = TestDir::new("hermes");
+        let paths = td.paths();
+        let root = paths.hermes_root.as_ref().unwrap();
+        let now_sec: f64 = 1_795_305_000.0;
+        let now_ms = (now_sec * 1000.0) as i64;
+
+        // Profil-DB med én live (lease) og én klar session
+        let pdb = root.join("profiles/ossi-research/state.db");
+        create_hermes_db(&pdb);
+        let conn = Connection::open(&pdb).unwrap();
+        conn.execute(
+            "INSERT INTO sessions (id, source, title, cwd, profile_name, started_at, last_activity_at, ended_at, hidden, archived)
+             VALUES ('s-live','local','Optimér pc','C:\\repo\\Open_Dock','ossi-research',?1,?1,NULL,0,0)",
+            [now_sec - 30.0],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO session_turn_leases VALUES ('s-live','gw',?1,?2)",
+            (now_sec - 10.0, now_sec + 60.0),
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO messages (session_id, role, tool_name, tool_calls, timestamp)
+             VALUES ('s-live','assistant','terminal','[{\"a\":1}]',?1)",
+            [now_sec - 20.0],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO sessions (id, source, title, cwd, profile_name, started_at, last_activity_at, ended_at, hidden, archived)
+             VALUES ('s-ready','desktop','Læs koden',NULL,'ossi-research',?1,?1,NULL,0,0)",
+            [now_sec - 120.0],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO messages (session_id, role, content, timestamp)
+             VALUES ('s-ready','assistant','Færdig.',?1)",
+            [now_sec - 120.0],
+        )
+        .unwrap();
+        // Skjult + subagent rækker må ikke give egne kort
+        conn.execute(
+            "INSERT INTO sessions (id, source, title, profile_name, started_at, last_activity_at, ended_at, hidden, archived)
+             VALUES ('s-hidden','desktop','Hemmelig','ossi-research',?1,?1,NULL,1,0)",
+            [now_sec - 10.0],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO sessions (id, source, title, profile_name, parent_session_id, started_at, last_activity_at, ended_at, hidden, archived)
+             VALUES ('s-sub','desktop','Underagent','ossi-research','s-live',?1,?1,NULL,0,0)",
+            [now_sec - 10.0],
+        )
+        .unwrap();
+        drop(conn);
+
+        let procs = ProcessIndex::from_exes(&["hermes.exe"]);
+        let out = sources::scan_hermes(root, &procs, now_ms);
+        assert_eq!(out.len(), 2, "skjult + subagent filtreres fra: {out:?}");
+
+        let live = out.iter().find(|s| s.id == "hermes:ossi-research:s-live").unwrap();
+        assert_eq!(live.status, AgentStatus::Working);
+        assert_eq!(live.detail.as_deref(), Some("Kører kommando"));
+        assert_eq!(live.project.as_deref(), Some("Open_Dock"));
+        assert_eq!(live.subagent_count, 1);
+
+        let ready = out.iter().find(|s| s.id == "hermes:ossi-research:s-ready").unwrap();
+        assert_eq!(ready.status, AgentStatus::Ready);
+        assert_eq!(ready.project.as_deref(), Some("ossi-research"));
+
+        // Uden kørende proces gælder kort efter stadig SHORT_ACTIVE_MS -> Working tilladt
+        let dead = ProcessIndex::empty();
+        let out_dead = sources::scan_hermes(root, &dead, now_ms);
+        let live_dead = out_dead
+            .iter()
+            .find(|s| s.id == "hermes:ossi-research:s-live")
+            .unwrap();
+        assert_eq!(live_dead.status, AgentStatus::Working);
+        // Langt senere er leasen udløbet og aktiviteten gammel -> aldrig Working
+        let later = sources::scan_hermes(root, &dead, now_ms + 10 * 60 * 1000);
+        assert!(later
+            .iter()
+            .filter(|s| s.id == "hermes:ossi-research:s-live")
+            .all(|s| s.status != AgentStatus::Working));
+    }
+
+    #[test]
+    fn grok_bot_reads_persistence_blobs_and_daemon() {
+        let td = TestDir::new("grokbot");
+        let paths = td.paths();
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as i64;
+
+        let dir = paths.grokbot_persistence.as_ref().unwrap();
+        write_file(
+            &dir.join("conv1.blob"),
+            &format!(
+                r#"{{"schemaVersion":1,"value":{{"entries":[
+                {{"kind":"message","role":"user","content":"Hej","timestampMs":{}}},
+                {{"kind":"message","role":"assistant","content":"Svar","toAgent":{{"id":"a1","name":"Cora"}},"timestampMs":{}}}
+            ],"persistedAt":{}}}}}"#,
+                now - 60_000,
+                now - 5_000,
+                now
+            ),
+        );
+        write_file(
+            &dir.join("conv2.blob"),
+            &format!(
+                r#"{{"schemaVersion":1,"value":{{"entries":[
+                {{"kind":"message","role":"assistant","content":"Ok","timestampMs":{}}},
+                {{"kind":"send-message","message":{{"type":"text","content":"Arbejder…"}},"author":{{"id":"a1","name":"Cora"}},"timestampMs":{}}}
+            ],"persistedAt":{}}}}}"#,
+                now - 60_000,
+                now - 2_000,
+                now
+            ),
+        );
+        // Daemon med aktiv computer-use opgave
+        write_file(
+            &paths.grokbot_daemon,
+            r#"{"pid":1,"startedAt":1795304800000,"inflightCount":2}"#,
+        );
+
+        let procs = ProcessIndex::from_exes(&["Grok Bot.exe"]);
+        let out = sources::scan_grok_bot(&paths, &procs, now);
+        assert_eq!(out.len(), 3, "daemon + 2 samtaler: {out:?}");
+
+        let exec = out.iter().find(|s| s.id == "grok-bot:local-exec").unwrap();
+        assert_eq!(exec.status, AgentStatus::Working);
+        assert_eq!(exec.detail.as_deref(), Some("Udfører 2 lokale handlinger"));
+
+        let ready = out.iter().find(|s| s.id == "grok-bot:conv1").unwrap();
+        assert_eq!(ready.status, AgentStatus::Ready);
+        assert_eq!(ready.title.as_deref(), Some("Cora"));
+
+        let work = out.iter().find(|s| s.id == "grok-bot:conv2").unwrap();
+        assert_eq!(work.status, AgentStatus::Working);
+
+        // Uden process -> ingen Working-tilstand
+        let dead = ProcessIndex::empty();
+        let out_dead = sources::scan_grok_bot(&paths, &dead, now + 60_000);
+        assert!(out_dead.iter().all(|s| s.status != AgentStatus::Working));
     }
 
     #[test]

@@ -37,6 +37,9 @@ const TRACKED_AGENT_EXES: &[&str] = &[
     "aider",
     "qoder",
     "freebuff",
+    "grok bot",
+    "hermes",
+    "hermes-acp",
 ];
 
 /// Indekserer kørende eksekverbare og (kun for CLI-agenten `aider`) aktive proces-sessions.
@@ -335,6 +338,8 @@ fn target_exes_for_agent(agent: &str) -> (&'static [&'static str], &str) {
         ),
         "qoder" => (&["qoder"], "qoder"),
         "freebuff" => (&["freebuff"], "freebuff"),
+        "grok-bot" => (&["grok bot"], "grok bot"),
+        "hermes" => (&["hermes"], "hermes"),
         _ => (&[], agent),
     }
 }

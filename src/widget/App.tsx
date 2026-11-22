@@ -224,6 +224,7 @@ export function WidgetApp({ id }: WidgetAppProps) {
               ...prev,
               appearance: glassState.appearance,
               effectiveEngine: glassState.effectiveEngine,
+              liveBackdrop: glassState.liveBackdrop,
             }
           : prev,
       );
@@ -397,6 +398,7 @@ export function WidgetApp({ id }: WidgetAppProps) {
   const appearance = boot?.appearance;
   const theme = instance?.themeOverride ?? appearance?.themeId ?? "aurora";
   const engine = boot?.effectiveEngine ?? "tint";
+  const liveBackdrop = boot?.liveBackdrop ?? false;
   const size = instance?.size ?? "m";
   const glassStrength = instance?.glassOverride ?? appearance?.glassStrength ?? 1.0;
 
@@ -429,8 +431,35 @@ export function WidgetApp({ id }: WidgetAppProps) {
 
   const effectiveAmbient = kind === "nowPlaying" || kind === "cluster" ? ambientColor : null;
   const effectiveHiddenIdle = (kind === "nowPlaying" || kind === "cluster") && hiddenIdle;
+  const backdropVisible = !(effectiveHiddenIdle && !isEditing);
   const activeClusterFrame = kind === "cluster" ? shellClusterFrame : null;
   const needsWeatherSprite = kind === "weather" || kind === "cluster";
+
+  const prevBackdropStateRef = useRef<{ live: boolean; visible: boolean }>({
+    live: false,
+    visible: true,
+  });
+  useEffect(() => {
+    const prev = prevBackdropStateRef.current;
+    prevBackdropStateRef.current = { live: liveBackdrop, visible: backdropVisible };
+    if (!id || !liveBackdrop) return;
+    if (!prev.live) {
+      if (!backdropVisible) {
+        void ipc.widgetSetBackdropVisible(id, false, 0).catch(() => {});
+      }
+      return;
+    }
+    if (prev.visible !== backdropVisible) {
+      const reducedMotion =
+        appearance?.motion === "off" ||
+        (typeof window !== "undefined" &&
+          typeof window.matchMedia === "function" &&
+          window.matchMedia("(prefers-reduced-motion: reduce)").matches);
+      void ipc
+        .widgetSetBackdropVisible(id, backdropVisible, reducedMotion ? 0 : 420)
+        .catch(() => {});
+    }
+  }, [id, liveBackdrop, backdropVisible, appearance?.motion]);
 
   return (
     <>
@@ -441,6 +470,7 @@ export function WidgetApp({ id }: WidgetAppProps) {
         size={size}
         theme={theme}
         engine={engine}
+        liveBackdrop={liveBackdrop}
         radius={appearance?.radius ?? "round"}
         motion={appearance?.motion ?? "full"}
         glassStrength={glassStrength}
@@ -539,6 +569,7 @@ export function WidgetApp({ id }: WidgetAppProps) {
             motion={appearance?.motion ?? "full"}
             editMode={boot?.editMode ?? false}
             pausedApp={paused}
+            liveBackdrop={liveBackdrop}
             locations={locations}
             onClusterFrameChange={setClusterFrame}
             onAmbientChange={setAmbientColor}

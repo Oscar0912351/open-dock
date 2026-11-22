@@ -7,12 +7,13 @@ use tauri::{
 use uuid::Uuid;
 use windows::Win32::{
     Foundation::HWND,
-    UI::WindowsAndMessaging::{ShowWindow, SW_HIDE},
+    UI::WindowsAndMessaging::{IsWindow, ShowWindow, SW_HIDE},
 };
 
 use crate::{
-    config::schema::{Layer, VerticalAnchor, WidgetInstance, WidgetKind},
+    config::schema::{Appearance, GlassEngine, Layer, VerticalAnchor, WidgetInstance, WidgetKind},
     desktop::{
+        backdrop::{self, BackdropSpec},
         glass,
         monitors::{self, MonitorInfo},
         styles, zorder,
@@ -245,8 +246,14 @@ pub fn ready(app: &AppHandle, id: &str) -> Result<WidgetBoot, AppError> {
         glass::is_windows_11(),
         game_overlay,
     );
-    let effective_theme = instance.theme_override.unwrap_or(appearance.theme_id);
-    glass::apply_window_glass(&window, effective_engine, effective_theme);
+    let live_backdrop = apply_widget_glass_and_backdrop(
+        app,
+        &window,
+        &instance,
+        &appearance,
+        effective_engine,
+        &monitor_infos,
+    );
 
     let edit_mode = state.edit_mode.load(Ordering::Acquire);
     if let Err(error) =
@@ -278,6 +285,7 @@ pub fn ready(app: &AppHandle, id: &str) -> Result<WidgetBoot, AppError> {
         instance,
         appearance,
         effective_engine,
+        live_backdrop,
         monitor,
         placement,
         start_delay_ms,
@@ -349,14 +357,19 @@ pub fn apply_instance_live(app: &AppHandle, instance: &WidgetInstance) {
         glass::is_windows_11(),
         game_overlay,
     );
-    let effective_theme = instance
-        .theme_override
-        .unwrap_or(config.appearance.theme_id);
-    glass::apply_window_glass(&window, effective_engine, effective_theme);
+    let live_backdrop = apply_widget_glass_and_backdrop(
+        app,
+        &window,
+        instance,
+        &config.appearance,
+        effective_engine,
+        &monitor_infos,
+    );
 
     let glass_payload = WidgetGlassState {
         appearance: config.appearance,
         effective_engine,
+        live_backdrop,
     };
     let _ = app.emit_to(&label, "widget://glass", &glass_payload);
 
@@ -372,6 +385,12 @@ pub fn reapply_glass_all(app: &AppHandle) {
     let config = state.config.get();
     let win11 = glass::is_windows_11();
     let game_overlay = state.game_overlay_active.load(Ordering::Acquire);
+    let monitor_infos: Vec<MonitorInfo> = state
+        .monitors
+        .read()
+        .iter()
+        .map(|entry| entry.info.clone())
+        .collect();
 
     for widget in &config.widgets {
         let label = widget.window_label();
@@ -385,18 +404,115 @@ pub fn reapply_glass_all(app: &AppHandle) {
             win11,
             game_overlay,
         );
-        let effective_theme = widget
-            .theme_override
-            .unwrap_or(config.appearance.theme_id);
-        glass::apply_window_glass(&window, effective_engine, effective_theme);
+        let live_backdrop = apply_widget_glass_and_backdrop(
+            app,
+            &window,
+            widget,
+            &config.appearance,
+            effective_engine,
+            &monitor_infos,
+        );
         let payload = WidgetGlassState {
             appearance: config.appearance.clone(),
             effective_engine,
+            live_backdrop,
         };
         if let Err(error) = app.emit_to(&label, "widget://glass", &payload) {
             log::warn!("Kunne ikke sende widget://glass til {label}: {error}");
         }
     }
+}
+
+fn apply_widget_glass_and_backdrop(
+    app: &AppHandle,
+    window: &WebviewWindow,
+    instance: &WidgetInstance,
+    appearance: &Appearance,
+    effective_engine: GlassEngine,
+    monitors: &[MonitorInfo],
+) -> bool {
+    let effective_theme = instance.theme_override.unwrap_or(appearance.theme_id);
+    glass::apply_window_glass(window, effective_engine, effective_theme);
+
+    let want_live = glass::should_use_live_backdrop(
+        effective_engine,
+        instance.layer,
+        glass::is_windows_11(),
+        backdrop::system_transparency_enabled(),
+    );
+    let Ok(raw_hwnd) = window.hwnd() else {
+        return false;
+    };
+    let raw = raw_hwnd.0 as isize;
+    let dpi_scale = monitors::find_target_monitor(&instance.placement.monitor, monitors)
+        .map(|m| m.scale)
+        .unwrap_or(1.0);
+    let base_width = effective_base_size(app, instance).0;
+    let spec = BackdropSpec {
+        theme: effective_theme,
+        glass_strength: instance.glass_override.unwrap_or(appearance.glass_strength),
+        radius: appearance.radius,
+        size: instance.size,
+        is_cluster: instance.kind == WidgetKind::Cluster,
+        base_width,
+        widget_scale: instance.scale,
+        dpi_scale,
+        layer: instance.layer,
+    };
+
+    match crate::desktop::run_on_ui_thread_sync(app, move || {
+        backdrop::apply(HWND(raw as _), want_live, spec)
+    }) {
+        Ok(live) => live,
+        Err(error) => {
+            log::warn!("Kunne ikke opdatere live backdrop på UI-tråden: {error}");
+            false
+        }
+    }
+}
+
+pub fn set_backdrop_visible(
+    app: &AppHandle,
+    id: &str,
+    visible: bool,
+    duration_ms: u32,
+) -> Result<(), AppError> {
+    let uuid = Uuid::parse_str(id).map_err(|_| AppError::WidgetNotFound)?;
+    let label = format!("w-{uuid}");
+    let Some(window) = app.get_webview_window(&label) else {
+        return Ok(());
+    };
+    let raw = window.hwnd()?.0 as isize;
+    let _ = app.run_on_main_thread(move || {
+        let hwnd = HWND(raw as _);
+        if unsafe { IsWindow(Some(hwnd)).as_bool() } {
+            backdrop::set_idle_visible(hwnd, visible, duration_ms);
+        }
+    });
+    Ok(())
+}
+
+pub fn animate_backdrop_box(
+    app: &AppHandle,
+    id: &str,
+    from_h_u: f64,
+    to_h_u: f64,
+    anchor: VerticalAnchor,
+    duration_ms: u32,
+) -> Result<(), AppError> {
+    let uuid = Uuid::parse_str(id).map_err(|_| AppError::WidgetNotFound)?;
+    let label = format!("w-{uuid}");
+    let Some(window) = app.get_webview_window(&label) else {
+        return Ok(());
+    };
+    let raw = window.hwnd()?.0 as isize;
+    let _ = app.run_on_main_thread(move || {
+        let hwnd = HWND(raw as _);
+        if unsafe { IsWindow(Some(hwnd)).as_bool() } {
+            backdrop::animate_cluster_box(hwnd, from_h_u, to_h_u, anchor, duration_ms);
+        }
+    });
+    Ok(())
 }
 
 pub fn reposition_all(app: AppHandle) {
@@ -547,6 +663,9 @@ pub fn cluster_set_window_size(
 
     let hwnd = HWND(window.hwnd()?.0 as _);
     zorder::set_window_rect(hwnd, phys_x, phys_y, phys_w, phys_h)?;
+    if backdrop::is_live(hwnd) {
+        backdrop::sync_from_widget(hwnd);
+    }
 
     state.cluster_sizes.write().insert(id, (clamped_w, clamped_h));
 

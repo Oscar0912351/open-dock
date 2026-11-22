@@ -1,3 +1,4 @@
+pub mod backdrop;
 pub mod drag;
 pub mod fullscreen;
 pub mod glass;
@@ -37,12 +38,16 @@ static WATCHER_HWND: AtomicIsize = AtomicIsize::new(0);
 static APP_HANDLE: OnceLock<AppHandle> = OnceLock::new();
 static UI_THREAD_ID: OnceLock<std::thread::ThreadId> = OnceLock::new();
 
+pub fn is_ui_thread() -> bool {
+    UI_THREAD_ID.get().copied() == Some(std::thread::current().id())
+}
+
 pub fn run_on_ui_thread_sync<R, F>(app: &AppHandle, f: F) -> Result<R, AppError>
 where
     R: Send + 'static,
     F: FnOnce() -> R + Send + 'static,
 {
-    if UI_THREAD_ID.get().copied() == Some(std::thread::current().id()) {
+    if is_ui_thread() {
         return Ok(f());
     }
     let (tx, rx) = std::sync::mpsc::sync_channel::<R>(1);
@@ -103,6 +108,7 @@ pub fn shutdown() {
     crate::wallpaper::shutdown();
     wallpaper::shutdown();
     showdesktop::shutdown();
+    backdrop::shutdown_all();
     let raw = WATCHER_HWND.swap(0, Ordering::AcqRel);
     if raw != 0 {
         let hwnd = HWND(raw as _);
@@ -152,6 +158,19 @@ unsafe extern "system" fn watcher_proc(
         } else if wp.0 == SPI_SETWORKAREA.0 as usize {
             log::debug!("Arbejdsområde ændret; opdaterer skærme og placering");
             wallpaper::trigger_refresh_debounced();
+        } else if wp.0 == 0
+            && lp.0 != 0
+            && unsafe { PCWSTR(lp.0 as *const u16).to_string() }
+                .map(|s| s.eq_ignore_ascii_case("ImmersiveColorSet"))
+                .unwrap_or(false)
+        {
+            log::debug!("Windows-udseende ændret (ImmersiveColorSet); genanvender glas");
+            if let Some(app) = app_handle() {
+                let app_clone = app.clone();
+                let _ = app.run_on_main_thread(move || {
+                    crate::windows::widget::reapply_glass_all(&app_clone);
+                });
+            }
         }
     } else if msg == WM_DISPLAYCHANGE || msg == WM_DPICHANGED {
         log::debug!("Skærm- eller DPI-ændring modtaget; opdaterer plader og placering");

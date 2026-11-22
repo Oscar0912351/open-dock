@@ -42,6 +42,9 @@ pub struct AgentPaths {
     pub opencode_dirs: Vec<PathBuf>,
     pub windsurf_cascade: PathBuf,
     pub appdata: Option<PathBuf>,
+    pub hermes_root: Option<PathBuf>,
+    pub grokbot_persistence: Option<PathBuf>,
+    pub grokbot_daemon: PathBuf,
 }
 
 impl AgentPaths {
@@ -51,10 +54,17 @@ impl AgentPaths {
             .map(PathBuf::from)
             .unwrap_or_else(|| PathBuf::from("C:/"));
         let appdata = std::env::var_os("APPDATA").map(PathBuf::from);
-        Self::from_roots(&home, appdata.as_deref())
+        let local_appdata = std::env::var_os("LOCALAPPDATA")
+            .map(PathBuf::from)
+            .or_else(|| {
+                appdata
+                    .as_ref()
+                    .and_then(|p| p.parent().map(|base| base.join("Local")))
+            });
+        Self::from_roots(&home, appdata.as_deref(), local_appdata.as_deref())
     }
 
-    pub fn from_roots(home: &Path, appdata: Option<&Path>) -> Self {
+    pub fn from_roots(home: &Path, appdata: Option<&Path>, local_appdata: Option<&Path>) -> Self {
         let appdata_buf = appdata.map(Path::to_path_buf);
         Self {
             agy_db: home.join(".gemini/antigravity/conversation_summaries.db"),
@@ -75,6 +85,11 @@ impl AgentPaths {
                 home.join(".config/opencode"),
             ],
             windsurf_cascade: home.join(".codeium/windsurf/cascade"),
+            hermes_root: local_appdata.map(|p| p.join("hermes")),
+            grokbot_persistence: appdata_buf
+                .as_ref()
+                .map(|p| p.join("Grok Bot/sand-client-persistence")),
+            grokbot_daemon: home.join(".grokbot/local-exec-daemon.json"),
             appdata: appdata_buf,
         }
     }
@@ -171,6 +186,8 @@ fn exes_for_cached_agent(agent: &str) -> &'static [&'static str] {
         "gemini" => &["gemini"],
         "opencode" => &["opencode"],
         "windsurf" => &["windsurf"],
+        "grok-bot" => &["grok bot"],
+        "hermes" => &["hermes", "hermes-acp"],
         _ => &[],
     }
 }
@@ -289,9 +306,18 @@ pub fn scan_all_sessions(
         &paths.windsurf_cascade,
         procs,
         now,
-        cache,
+        cache.as_deref_mut(),
     ));
     sessions.extend(scan_aider(procs, now));
+    if let Some(hermes_root) = paths.hermes_root.as_deref() {
+        sessions.extend(scan_hermes_cached(
+            hermes_root,
+            procs,
+            now,
+            cache.as_deref_mut(),
+        ));
+    }
+    sessions.extend(scan_grok_bot_cached(paths, procs, now, cache));
 
     sessions.sort_by(|a, b| {
         b.status_rank()
@@ -2069,6 +2095,491 @@ pub fn scan_aider(procs: &ProcessIndex, now: i64) -> Vec<AgentSession> {
             process_running: true,
         })
         .collect()
+}
+
+// ---------------------------------------------------------------------------
+// 8. Hermes (%LOCALAPPDATA%\hermes\state.db + profiles\*\state.db)
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+#[allow(dead_code)]
+pub fn scan_hermes(root: &Path, procs: &ProcessIndex, now: i64) -> Vec<AgentSession> {
+    scan_hermes_cached(root, procs, now, None)
+}
+
+fn scan_hermes_cached(
+    root: &Path,
+    procs: &ProcessIndex,
+    now: i64,
+    mut cache: Option<&mut SourceCache>,
+) -> Vec<AgentSession> {
+    let dir_ok = match cache.as_deref_mut() {
+        Some(c) => c.dir_exists(root, now),
+        None => root.is_dir(),
+    };
+    if !dir_ok {
+        return Vec::new();
+    }
+
+    let mut dbs: Vec<(String, PathBuf)> = Vec::new();
+    let root_db = root.join("state.db");
+    if root_db.is_file() {
+        dbs.push(("default".to_string(), root_db));
+    }
+    let profiles_dir = root.join("profiles");
+    let profiles_ok = match cache.as_deref_mut() {
+        Some(c) => c.dir_exists(&profiles_dir, now),
+        None => profiles_dir.is_dir(),
+    };
+    if profiles_ok {
+        if let Ok(entries) = fs::read_dir(&profiles_dir) {
+            for entry in entries.flatten().take(24) {
+                let db = entry.path().join("state.db");
+                if db.is_file() {
+                    let label = entry.file_name().to_string_lossy().to_string();
+                    dbs.push((label, db));
+                }
+            }
+        }
+    }
+
+    let mut out = Vec::new();
+    for (label, db) in dbs {
+        let Some(fp) = db_fingerprint(&db) else {
+            continue;
+        };
+        if let Some(cached) = cache
+            .as_deref()
+            .and_then(|c| c.get_db_if_unchanged(&db, fp, procs, now))
+        {
+            out.extend(cached);
+            continue;
+        }
+        let fresh = scan_hermes_db(&db, &label, procs, now);
+        if let Some(c) = cache.as_deref_mut() {
+            c.store_db(&db, Some(fp), &fresh);
+        }
+        out.extend(fresh);
+    }
+    out
+}
+
+struct HermesRow {
+    id: String,
+    title: String,
+    display_name: String,
+    cwd: String,
+    profile: String,
+    last_activity_at: f64,
+    last_activity_desc: String,
+    ended: bool,
+    parent_id: String,
+}
+
+fn scan_hermes_db(
+    db_path: &Path,
+    profile_label: &str,
+    procs: &ProcessIndex,
+    now: i64,
+) -> Vec<AgentSession> {
+    let Some(conn) = open_readonly(db_path) else {
+        return Vec::new();
+    };
+    let now_sec = now as f64 / 1000.0;
+
+    let mut live: HashSet<String> = HashSet::new();
+    if let Ok(mut stmt) =
+        conn.prepare("SELECT conversation_id FROM session_turn_leases WHERE expires_at > ?1")
+    {
+        if let Ok(iter) = stmt.query_map([now_sec], |r| r.get::<_, String>(0)) {
+            for id in iter.flatten() {
+                live.insert(id);
+            }
+        }
+    }
+    if let Ok(mut stmt) =
+        conn.prepare("SELECT DISTINCT session_id FROM worker_executions WHERE status = 'running'")
+    {
+        if let Ok(iter) = stmt.query_map([], |r| r.get::<_, String>(0)) {
+            for id in iter.flatten() {
+                live.insert(id);
+            }
+        }
+    }
+
+    let sub_cutoff = now_sec - (SUBAGENT_ACTIVE_MS as f64 / 1000.0);
+    let mut subagent_counts: HashMap<String, u32> = HashMap::new();
+    if let Ok(mut stmt) = conn.prepare(
+        "SELECT parent_session_id, COUNT(*) FROM sessions \
+         WHERE parent_session_id IS NOT NULL AND parent_session_id <> '' \
+           AND ended_at IS NULL AND last_activity_at >= ?1 \
+         GROUP BY parent_session_id",
+    ) {
+        if let Ok(iter) = stmt.query_map([sub_cutoff], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))
+        }) {
+            for (pid, n) in iter.flatten() {
+                subagent_counts.insert(pid, n as u32);
+            }
+        }
+    }
+
+    let mut stmt = match conn.prepare(
+        "SELECT id, COALESCE(title,''), COALESCE(display_name,''), COALESCE(cwd,''), \
+                COALESCE(profile_name,''), last_activity_at, \
+                COALESCE(last_activity_description,''), ended_at, COALESCE(parent_session_id,'') \
+         FROM sessions \
+         WHERE hidden = 0 AND archived = 0 \
+         ORDER BY last_activity_at DESC \
+         LIMIT 20",
+    ) {
+        Ok(s) => s,
+        Err(err) => {
+            log::debug!(target: "provider:agents", "Hermes SQL-fejl: {err}");
+            return Vec::new();
+        }
+    };
+
+    let rows_iter = match stmt.query_map([], |row| {
+        Ok(HermesRow {
+            id: row.get::<_, String>(0).unwrap_or_default(),
+            title: row.get::<_, String>(1).unwrap_or_default(),
+            display_name: row.get::<_, String>(2).unwrap_or_default(),
+            cwd: row.get::<_, String>(3).unwrap_or_default(),
+            profile: row.get::<_, String>(4).unwrap_or_default(),
+            last_activity_at: row.get::<_, f64>(5).unwrap_or(0.0),
+            last_activity_desc: row.get::<_, String>(6).unwrap_or_default(),
+            ended: row.get::<_, Option<f64>>(7).unwrap_or(None).is_some(),
+            parent_id: row.get::<_, String>(8).unwrap_or_default(),
+        })
+    }) {
+        Ok(it) => it,
+        Err(_) => return Vec::new(),
+    };
+
+    let hermes_running = procs.has_any(&["hermes", "hermes-acp"]);
+    let hermes_pid = procs.first_pid(&["hermes", "hermes-acp"]);
+    let mut out = Vec::new();
+
+    for row in rows_iter.flatten() {
+        if row.id.is_empty() || !row.parent_id.is_empty() {
+            continue;
+        }
+        let last_active_ms = float_epoch_to_ms(row.last_activity_at);
+        let is_live = live.contains(&row.id);
+        if !is_live && (last_active_ms <= 0 || now - last_active_ms > MAX_RECENT_MS) {
+            continue;
+        }
+
+        let last_msg: Option<(String, String, String, i64)> = conn
+            .query_row(
+                "SELECT role, COALESCE(tool_name,''), COALESCE(display_kind,''), \
+                        CASE WHEN tool_calls IS NULL OR tool_calls IN ('','[]','null') \
+                             THEN 0 ELSE 1 END \
+                 FROM messages WHERE session_id = ?1 ORDER BY id DESC LIMIT 1",
+                [&row.id],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            )
+            .ok();
+        let (role, tool_name, display_kind, has_tool_calls) = last_msg.unwrap_or_default();
+
+        let age = now - last_active_ms;
+        let allow_working = hermes_running || age <= SHORT_ACTIVE_MS;
+        let mid_turn = matches!(role.as_str(), "user" | "tool")
+            || (role == "assistant" && has_tool_calls != 0);
+
+        let (status, detail) = if is_live && allow_working {
+            let d = non_empty_trimmed(&row.last_activity_desc)
+                .or_else(|| non_empty_trimmed(&tool_name).map(|t| map_hermes_tool_name(&t)))
+                .unwrap_or_else(|| "Arbejder…".to_string());
+            (AgentStatus::Working, Some(d))
+        } else if row.ended {
+            (AgentStatus::Idle, None)
+        } else if display_kind == "failed_turn" {
+            (AgentStatus::Idle, Some("Fejlet".to_string()))
+        } else if role == "assistant" && has_tool_calls == 0 {
+            (AgentStatus::Ready, Some("Klar til svar".to_string()))
+        } else if mid_turn && allow_working && age <= WORKING_TIMEOUT_MS {
+            let d = non_empty_trimmed(&row.last_activity_desc)
+                .unwrap_or_else(|| "Tænker…".to_string());
+            (AgentStatus::Working, Some(d))
+        } else {
+            (AgentStatus::Idle, None)
+        };
+
+        let profile = non_empty_trimmed(&row.profile)
+            .unwrap_or_else(|| profile_label.to_string());
+        let project = non_empty_trimmed(&row.cwd)
+            .as_deref()
+            .and_then(project_from_path_str)
+            .or_else(|| {
+                (profile != "default" && !profile.is_empty()).then_some(profile.clone())
+            });
+
+        out.push(AgentSession {
+            id: format!("hermes:{profile}:{id}", id = row.id),
+            agent: "hermes".to_string(),
+            agent_label: "Hermes".to_string(),
+            title: non_empty_trimmed(&row.title)
+                .or_else(|| non_empty_trimmed(&row.display_name)),
+            project,
+            status,
+            last_active_ms,
+            detail,
+            subagent_count: subagent_counts.get(&row.id).copied().unwrap_or(0),
+            todo: None,
+            pid: hermes_pid,
+            process_running: hermes_running,
+        });
+    }
+
+    out
+}
+
+fn map_hermes_tool_name(name: &str) -> String {
+    match name {
+        "terminal" | "execute_code" | "bash" | "shell" | "process" | "run_command" => {
+            "Kører kommando"
+        }
+        "read_file" | "read" | "ls" | "view" | "open" => "Læser filer",
+        "write_file" | "edit_file" | "apply_patch" | "patch" | "multi_edit" | "write" => {
+            "Redigerer filer"
+        }
+        "web_search" | "search" | "browse" | "fetch" | "web" => "Søger på nettet",
+        "delegate" | "spawn_agent" | "subagent" | "task" | "dispatch" => "Kører underagent",
+        _ => "Bruger værktøj",
+    }
+    .to_string()
+}
+
+// ---------------------------------------------------------------------------
+// 9. Grok Bot (%APPDATA%\Grok Bot\sand-client-persistence + ~/.grokbot daemon)
+// ---------------------------------------------------------------------------
+
+const GROK_BLOB_MAX_BYTES: u64 = 2_000_000;
+
+#[cfg(test)]
+#[allow(dead_code)]
+pub fn scan_grok_bot(paths: &AgentPaths, procs: &ProcessIndex, now: i64) -> Vec<AgentSession> {
+    scan_grok_bot_cached(paths, procs, now, None)
+}
+
+fn scan_grok_bot_cached(
+    paths: &AgentPaths,
+    procs: &ProcessIndex,
+    now: i64,
+    mut cache: Option<&mut SourceCache>,
+) -> Vec<AgentSession> {
+    let running = procs.has_any(&["grok bot"]);
+    let pid = procs.first_pid(&["grok bot"]);
+    let mut out = Vec::new();
+
+    // Lokal eksekverings-dæmon: inflightCount > 0 betyder en computer-use opgave kører nu.
+    if let Ok(meta) = fs::metadata(&paths.grokbot_daemon) {
+        if let Some(mtime_ms) = modified_ms(&meta) {
+            if now - mtime_ms <= WORKING_TIMEOUT_MS {
+                if let Ok(raw) = fs::read_to_string(&paths.grokbot_daemon) {
+                    if let Ok(val) = serde_json::from_str::<Value>(&raw) {
+                        let inflight = val
+                            .get("inflightCount")
+                            .and_then(Value::as_i64)
+                            .unwrap_or(0);
+                        if inflight > 0 && running {
+                            out.push(AgentSession {
+                                id: "grok-bot:local-exec".to_string(),
+                                agent: "grok-bot".to_string(),
+                                agent_label: "Grok Bot".to_string(),
+                                title: None,
+                                project: None,
+                                status: AgentStatus::Working,
+                                last_active_ms: mtime_ms,
+                                detail: Some(if inflight > 1 {
+                                    format!("Udfører {inflight} lokale handlinger")
+                                } else {
+                                    "Udfører lokal handling".to_string()
+                                }),
+                                subagent_count: 0,
+                                todo: None,
+                                pid,
+                                process_running: true,
+                            });
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    let Some(persist_dir) = paths.grokbot_persistence.as_deref() else {
+        return out;
+    };
+    let dir_ok = match cache.as_deref_mut() {
+        Some(c) => c.dir_exists(persist_dir, now),
+        None => persist_dir.is_dir(),
+    };
+    if !dir_ok {
+        return out;
+    }
+
+    for (path, mtime_ms, file_len) in
+        collect_recent_files(persist_dir, &["blob"], 1, MAX_RECENT_MS, now, 10)
+    {
+        let fp = (mtime_ms, file_len);
+        let age = now - mtime_ms;
+        let allow_working = age <= WORKING_TIMEOUT_MS && (running || age <= SHORT_ACTIVE_MS);
+
+        if let Some(cached) = cache.as_deref().and_then(|c| c.get_file(&path, fp)).cloned() {
+            let mut session = cached.session;
+            if cached.raw_working_status == Some(AgentStatus::Working) && !allow_working {
+                session.status = AgentStatus::Idle;
+                session.detail = None;
+            }
+            session.pid = pid;
+            session.process_running = running;
+            out.push(session);
+            continue;
+        }
+
+        let Some(parsed) = parse_grok_blob(&path, file_len) else {
+            continue;
+        };
+
+        let (raw_status, raw_detail) = match parsed.turn {
+            GrokTurn::InFlight => (AgentStatus::Working, Some("Arbejder…".to_string())),
+            GrokTurn::Thinking => (AgentStatus::Working, Some("Tænker…".to_string())),
+            GrokTurn::Done => (AgentStatus::Ready, Some("Klar til svar".to_string())),
+        };
+        let (status, detail) = if raw_status == AgentStatus::Working && !allow_working {
+            (AgentStatus::Idle, None)
+        } else {
+            (raw_status, raw_detail.clone())
+        };
+
+        let stem = path
+            .file_stem()
+            .and_then(|n| n.to_str())
+            .unwrap_or_default()
+            .to_string();
+        let session = AgentSession {
+            id: format!("grok-bot:{stem}"),
+            agent: "grok-bot".to_string(),
+            agent_label: "Grok Bot".to_string(),
+            title: parsed.bot_name,
+            project: None,
+            status,
+            last_active_ms: parsed.last_active_ms,
+            detail,
+            subagent_count: 0,
+            todo: None,
+            pid,
+            process_running: running,
+        };
+        if let Some(c) = cache.as_deref_mut() {
+            let mut stored = session.clone();
+            stored.status = raw_status;
+            stored.detail = raw_detail.clone();
+            c.store_file(
+                path,
+                CachedFileSession {
+                    fingerprint: fp,
+                    session: stored,
+                    merge_key: None,
+                    raw_working_status: Some(raw_status),
+                    raw_working_detail: raw_detail,
+                },
+            );
+        }
+        out.push(session);
+    }
+    out
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GrokTurn {
+    /// Sidste hændelse er en afsendt besked/vedhæftning eller streamer stadig.
+    InFlight,
+    /// Sidste besked er fra brugeren — botten tænker formentlig.
+    Thinking,
+    /// Sidste besked er et færdigt svar fra botten.
+    Done,
+}
+
+struct GrokTail {
+    last_active_ms: i64,
+    turn: GrokTurn,
+    bot_name: Option<String>,
+}
+
+fn parse_grok_blob(path: &Path, file_len: u64) -> Option<GrokTail> {
+    if file_len == 0 || file_len > GROK_BLOB_MAX_BYTES {
+        return None;
+    }
+    let raw = fs::read_to_string(path).ok()?;
+    let val: Value = serde_json::from_str(&raw).ok()?;
+    let entries = val.pointer("/value/entries")?.as_array()?;
+    if entries.is_empty() {
+        return None;
+    }
+
+    let last_ts = entries
+        .iter()
+        .rev()
+        .take(8)
+        .filter_map(|e| e.get("timestampMs").and_then(Value::as_i64))
+        .max()
+        .or_else(|| {
+            val.pointer("/value/persistedAt")
+                .and_then(Value::as_i64)
+        })
+        .unwrap_or(0);
+    if last_ts <= 0 {
+        return None;
+    }
+
+    let mut turn = GrokTurn::Done;
+    for e in entries.iter().rev().take(8) {
+        match e.get("kind").and_then(Value::as_str).unwrap_or("") {
+            "message" => {
+                let streaming = e.get("isStreaming").and_then(Value::as_bool) == Some(true);
+                let role = e.get("role").and_then(Value::as_str).unwrap_or("");
+                turn = if streaming {
+                    GrokTurn::InFlight
+                } else if role == "user" {
+                    GrokTurn::Thinking
+                } else {
+                    GrokTurn::Done
+                };
+                break;
+            }
+            "send-message" | "user-attachment" => {
+                turn = GrokTurn::InFlight;
+                break;
+            }
+            _ => {}
+        }
+    }
+
+    let mut bot_name = None;
+    'outer: for e in entries.iter().rev().take(16) {
+        for key in ["toAgent", "fromAgent", "author"] {
+            if let Some(name) = e
+                .get(key)
+                .and_then(|a| a.get("name"))
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|n| !n.is_empty())
+            {
+                bot_name = Some(name.to_string());
+                break 'outer;
+            }
+        }
+    }
+
+    Some(GrokTail {
+        last_active_ms: last_ts,
+        turn,
+        bot_name,
+    })
 }
 
 // ---------------------------------------------------------------------------
