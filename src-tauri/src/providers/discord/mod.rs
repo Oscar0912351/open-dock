@@ -24,7 +24,7 @@ use ts_rs::TS;
 
 use crate::error::AppError;
 use credentials::{DiscordRpcCredentials, DEFAULT_REDIRECT_URI};
-use ipc::{DiscordIpcPipe, PipeError, RawParticipant, OP_PONG};
+use ipc::{DiscordIpcPipe, PipeError, RawParticipant, SelfUserProfile, OP_PONG};
 use wasapi::{AudioSessionMonitor, CallDetector};
 
 const IPC_IN_CALL_WAIT: Duration = Duration::from_millis(150);
@@ -90,7 +90,11 @@ pub struct DiscordRpcStatus {
     pub client_id: Option<String>,
     pub redirect_uri: String,
     pub has_secret: bool,
+    pub user_id: Option<String>,
     pub username: Option<String>,
+    pub display_name: Option<String>,
+    pub avatar_path: Option<String>,
+    pub can_control_voice: bool,
     pub last_error: Option<String>,
 }
 
@@ -103,7 +107,11 @@ impl Default for DiscordRpcStatus {
             client_id: None,
             redirect_uri: DEFAULT_REDIRECT_URI.to_string(),
             has_secret: false,
+            user_id: None,
             username: None,
+            display_name: None,
+            avatar_path: None,
+            can_control_voice: false,
             last_error: None,
         }
     }
@@ -123,7 +131,7 @@ enum WorkerMsg {
     AttachPipe {
         pipe: DiscordIpcPipe,
         can_write: bool,
-        username: Option<String>,
+        profile: SelfUserProfile,
     },
     ReloadCredentials,
     VoiceAction(DiscordVoiceAction),
@@ -255,13 +263,16 @@ impl DiscordProvider {
         }
     }
 
-    pub fn configure(&self, _app: &AppHandle) {
+    pub fn configure(&self, app: &AppHandle) {
         let cfg_dir = crate::paths::data_root();
         let cache_dir = cfg_dir.join("discord-avatars");
         *self.config_dir.lock() = Some(cfg_dir.clone());
-        *self.avatar_cache_dir.lock() = Some(cache_dir);
+        *self.avatar_cache_dir.lock() = Some(cache_dir.clone());
 
         if let Some(creds) = credentials::load_credentials(&cfg_dir) {
+            let profile = profile_from_creds(&creds);
+            let avatar_path =
+                ensure_self_avatar_cached(app, &self.rpc_status, &cache_dir, &profile);
             let mut st = self.rpc_status.lock();
             st.configured = !creds.client_id.trim().is_empty() && creds.access_token.is_some();
             st.connected = false;
@@ -273,7 +284,11 @@ impl DiscordProvider {
                 creds.redirect_uri
             };
             st.has_secret = !creds.client_secret.trim().is_empty();
-            st.username = creds.username;
+            st.user_id = profile.user_id;
+            st.username = profile.username;
+            st.display_name = profile.display_name;
+            st.avatar_path = avatar_path;
+            st.can_control_voice = false;
             st.last_error = None;
         }
     }
@@ -413,7 +428,7 @@ impl DiscordProvider {
         }
 
         let cid_auth = clean_id.clone();
-        let (code, _, initial_username, mut pipe) =
+        let (code, _, initial_profile, mut pipe) =
             match tokio::task::spawn_blocking(move || ipc::request_authorize_code(&cid_auth))
                 .await
             {
@@ -447,7 +462,7 @@ impl DiscordProvider {
 
         let cid_verify = clean_id.clone();
         let access_tok_verify = token.access_token.clone();
-        let (mut pipe, can_write, auth_username) = match tokio::task::spawn_blocking(move || {
+        let (mut pipe, can_write, auth_profile) = match tokio::task::spawn_blocking(move || {
             authenticate_or_reopen_pipe(pipe, &cid_verify, &access_tok_verify)
         })
         .await
@@ -464,7 +479,7 @@ impl DiscordProvider {
             }
         };
 
-        let username = auth_username.or(initial_username);
+        let profile = auth_profile.merged_with(&initial_profile);
         let now = unix_now_ms();
         let expires_at_ms = if token.expires_in > 0 {
             Some(now.saturating_add(token.expires_in.saturating_mul(1000)))
@@ -479,7 +494,11 @@ impl DiscordProvider {
             access_token: Some(token.access_token),
             refresh_token: token.refresh_token,
             expires_at_ms,
-            username: username.clone(),
+            user_id: profile.user_id.clone(),
+            username: profile.username.clone(),
+            display_name: profile.display_name.clone(),
+            avatar_hash: profile.avatar_hash.clone(),
+            discriminator: profile.discriminator.clone(),
             auth_via_central: false,
             proxy_url: None,
         };
@@ -491,6 +510,13 @@ impl DiscordProvider {
 
         auth_guard.finish_attached();
 
+        let cache_dir = self
+            .avatar_cache_dir
+            .lock()
+            .clone()
+            .unwrap_or_else(|| cfg_dir.join("discord-avatars"));
+        let avatar_path = ensure_self_avatar_cached(app, &self.rpc_status, &cache_dir, &profile);
+
         let status = {
             let mut st = self.rpc_status.lock();
             st.configured = true;
@@ -499,7 +525,11 @@ impl DiscordProvider {
             st.client_id = Some(clean_id);
             st.redirect_uri = effective_redirect;
             st.has_secret = true;
-            st.username = username.clone();
+            st.user_id = profile.user_id.clone();
+            st.username = profile.username.clone();
+            st.display_name = profile.display_name.clone();
+            st.avatar_path = avatar_path;
+            st.can_control_voice = can_write;
             st.last_error = None;
             st.clone()
         };
@@ -508,7 +538,7 @@ impl DiscordProvider {
             tx.send(WorkerMsg::AttachPipe {
                 pipe,
                 can_write,
-                username,
+                profile,
             })
             .is_ok()
         } else {
@@ -542,7 +572,7 @@ impl DiscordProvider {
         };
 
         let cid_auth = client_id.clone();
-        let (code, _, initial_username, mut pipe) =
+        let (code, _, initial_profile, mut pipe) =
             match tokio::task::spawn_blocking(move || ipc::request_authorize_code(&cid_auth))
                 .await
             {
@@ -569,7 +599,7 @@ impl DiscordProvider {
 
         let cid_verify = client_id.clone();
         let access_tok_verify = token.access_token.clone();
-        let (mut pipe, can_write, auth_username) = match tokio::task::spawn_blocking(move || {
+        let (mut pipe, can_write, auth_profile) = match tokio::task::spawn_blocking(move || {
             authenticate_or_reopen_pipe(pipe, &cid_verify, &access_tok_verify)
         })
         .await
@@ -586,7 +616,7 @@ impl DiscordProvider {
             }
         };
 
-        let username = auth_username.or(initial_username);
+        let profile = auth_profile.merged_with(&initial_profile);
         let now = unix_now_ms();
         let expires_at_ms = if token.expires_in > 0 {
             Some(now.saturating_add(token.expires_in.saturating_mul(1000)))
@@ -601,7 +631,11 @@ impl DiscordProvider {
             access_token: Some(token.access_token),
             refresh_token: token.refresh_token,
             expires_at_ms,
-            username: username.clone(),
+            user_id: profile.user_id.clone(),
+            username: profile.username.clone(),
+            display_name: profile.display_name.clone(),
+            avatar_hash: profile.avatar_hash.clone(),
+            discriminator: profile.discriminator.clone(),
             auth_via_central: true,
             proxy_url: Some(base),
         };
@@ -613,6 +647,13 @@ impl DiscordProvider {
 
         auth_guard.finish_attached();
 
+        let cache_dir = self
+            .avatar_cache_dir
+            .lock()
+            .clone()
+            .unwrap_or_else(|| cfg_dir.join("discord-avatars"));
+        let avatar_path = ensure_self_avatar_cached(app, &self.rpc_status, &cache_dir, &profile);
+
         let status = {
             let mut st = self.rpc_status.lock();
             st.configured = true;
@@ -621,7 +662,11 @@ impl DiscordProvider {
             st.client_id = Some(client_id);
             st.redirect_uri = redirect_uri;
             st.has_secret = false;
-            st.username = username.clone();
+            st.user_id = profile.user_id.clone();
+            st.username = profile.username.clone();
+            st.display_name = profile.display_name.clone();
+            st.avatar_path = avatar_path;
+            st.can_control_voice = can_write;
             st.last_error = None;
             st.clone()
         };
@@ -630,7 +675,7 @@ impl DiscordProvider {
             tx.send(WorkerMsg::AttachPipe {
                 pipe,
                 can_write,
-                username,
+                profile,
             })
             .is_ok()
         } else {
@@ -735,18 +780,95 @@ fn authenticate_pipe(
     Ok((can_write, data))
 }
 
-fn apply_auth_user_to_pipe(pipe: &mut DiscordIpcPipe, data: &serde_json::Value) -> Option<String> {
-    let user = data.get("user")?;
-    if let Some(uid) = ipc::non_empty_str(user.get("id")) {
-        pipe.self_user_id = Some(uid);
+fn profile_from_creds(creds: &DiscordRpcCredentials) -> SelfUserProfile {
+    SelfUserProfile {
+        user_id: creds.user_id.clone(),
+        username: creds.username.clone(),
+        display_name: creds
+            .display_name
+            .clone()
+            .or_else(|| creds.username.clone()),
+        avatar_hash: creds.avatar_hash.clone(),
+        discriminator: creds.discriminator.clone(),
     }
-    if let Some(uname) = ipc::non_empty_str(user.get("global_name"))
-        .or_else(|| ipc::non_empty_str(user.get("username")))
-    {
-        pipe.self_username = Some(uname.clone());
-        return Some(uname);
+}
+
+fn apply_profile_to_creds(creds: &mut DiscordRpcCredentials, profile: &SelfUserProfile) -> bool {
+    let mut changed = false;
+    if profile.user_id.is_some() && creds.user_id != profile.user_id {
+        creds.user_id = profile.user_id.clone();
+        changed = true;
     }
-    pipe.self_username.clone()
+    if profile.username.is_some() && creds.username != profile.username {
+        creds.username = profile.username.clone();
+        changed = true;
+    }
+    if profile.display_name.is_some() && creds.display_name != profile.display_name {
+        creds.display_name = profile.display_name.clone();
+        changed = true;
+    }
+    if profile.avatar_hash.is_some() && creds.avatar_hash != profile.avatar_hash {
+        creds.avatar_hash = profile.avatar_hash.clone();
+        changed = true;
+    }
+    if profile.discriminator.is_some() && creds.discriminator != profile.discriminator {
+        creds.discriminator = profile.discriminator.clone();
+        changed = true;
+    }
+    changed
+}
+
+fn ensure_self_avatar_cached(
+    app: &AppHandle,
+    rpc_status: &Arc<Mutex<DiscordRpcStatus>>,
+    cache_dir: &Path,
+    profile: &SelfUserProfile,
+) -> Option<String> {
+    let uid = profile.user_id.as_deref()?;
+    if let Some(existing) = avatars::cached_avatar_path(
+        cache_dir,
+        uid,
+        profile.avatar_hash.as_deref(),
+        profile.discriminator.as_deref(),
+    ) {
+        return Some(existing);
+    }
+
+    let dir = cache_dir.to_path_buf();
+    let uid_owned = uid.to_string();
+    let hash = profile.avatar_hash.clone();
+    let disc = profile.discriminator.clone();
+    let status_ref = Arc::clone(rpc_status);
+    let app_handle = app.clone();
+    tauri::async_runtime::spawn(async move {
+        if let Some(path) =
+            avatars::fetch_and_cache_avatar(dir, uid_owned.clone(), hash, disc).await
+        {
+            let updated = {
+                let mut st = status_ref.lock();
+                if st.user_id.as_deref() == Some(uid_owned.as_str())
+                    && st.avatar_path.as_deref() != Some(path.as_str())
+                {
+                    st.avatar_path = Some(path);
+                    Some(st.clone())
+                } else {
+                    None
+                }
+            };
+            if let Some(st) = updated {
+                emit_rpc_status(&app_handle, &st);
+            }
+        }
+    });
+    None
+}
+
+fn apply_auth_user_to_pipe(pipe: &mut DiscordIpcPipe, data: &serde_json::Value) -> SelfUserProfile {
+    if let Some(user) = data.get("user") {
+        let parsed = SelfUserProfile::from_user_value(user);
+        pipe.self_profile.merge_from(&parsed);
+    }
+    pipe.self_profile.clone()
 }
 
 /// Autentificerer direkte på den eksisterende `AUTHORIZE`-pipe for at undgå pipe-churn og
@@ -756,11 +878,11 @@ fn authenticate_or_reopen_pipe(
     mut pipe: DiscordIpcPipe,
     client_id: &str,
     access_token: &str,
-) -> Result<(DiscordIpcPipe, bool, Option<String>), String> {
+) -> Result<(DiscordIpcPipe, bool, SelfUserProfile), String> {
     match authenticate_pipe(&mut pipe, access_token) {
         Ok((can_write, data)) => {
-            let uname = apply_auth_user_to_pipe(&mut pipe, &data);
-            Ok((pipe, can_write, uname))
+            let profile = apply_auth_user_to_pipe(&mut pipe, &data);
+            Ok((pipe, can_write, profile))
         }
         Err(AuthPipeError::TokenRejected(msg)) => {
             pipe.close();
@@ -777,8 +899,8 @@ fn authenticate_or_reopen_pipe(
             let mut fresh = ipc::connect_and_handshake(client_id)?;
             match authenticate_pipe(&mut fresh, access_token) {
                 Ok((can_write, data)) => {
-                    let uname = apply_auth_user_to_pipe(&mut fresh, &data);
-                    Ok((fresh, can_write, uname))
+                    let profile = apply_auth_user_to_pipe(&mut fresh, &data);
+                    Ok((fresh, can_write, profile))
                 }
                 Err(err) => {
                     fresh.close();
@@ -1008,7 +1130,7 @@ fn refresh_credentials_token(
 fn try_open_and_auth_rpc(
     config_dir: &Path,
     creds: &mut DiscordRpcCredentials,
-) -> Result<(DiscordIpcPipe, bool, Option<String>), AuthPipeError> {
+) -> Result<(DiscordIpcPipe, bool, SelfUserProfile), AuthPipeError> {
     let now = unix_now_ms();
     if creds
         .expires_at_ms
@@ -1042,14 +1164,12 @@ fn try_open_and_auth_rpc(
     let mut pipe = ipc::connect_and_handshake(&creds.client_id).map_err(AuthPipeError::Transport)?;
     match authenticate_pipe(&mut pipe, &token) {
         Ok((can_write, data)) => {
-            if let Some(uname) = apply_auth_user_to_pipe(&mut pipe, &data) {
-                if creds.username.as_deref() != Some(uname.as_str()) {
-                    creds.username = Some(uname);
-                    let _ = credentials::save_credentials(config_dir, creds);
-                }
+            let auth_profile = apply_auth_user_to_pipe(&mut pipe, &data);
+            let final_profile = auth_profile.merged_with(&profile_from_creds(creds));
+            if apply_profile_to_creds(creds, &final_profile) {
+                let _ = credentials::save_credentials(config_dir, creds);
             }
-            let uname = pipe.self_username.clone().or_else(|| creds.username.clone());
-            Ok((pipe, can_write, uname))
+            Ok((pipe, can_write, final_profile))
         }
         Err(AuthPipeError::Transport(err)) => {
             // Transport-fejl (fx timeout eller afbrudt pipe): forny aldrig token og genbrug aldrig pipen.
@@ -1073,17 +1193,14 @@ fn try_open_and_auth_rpc(
             }
             let _ = credentials::save_credentials(config_dir, creds);
 
-            let (pipe, can_write, uname) =
+            let (pipe, can_write, auth_profile) =
                 authenticate_or_reopen_pipe(pipe, &creds.client_id, &new_tok.access_token)
                     .map_err(AuthPipeError::TokenRejected)?;
-            if let Some(ref u) = uname {
-                if creds.username.as_deref() != Some(u.as_str()) {
-                    creds.username = Some(u.clone());
-                    let _ = credentials::save_credentials(config_dir, creds);
-                }
+            let final_profile = auth_profile.merged_with(&profile_from_creds(creds));
+            if apply_profile_to_creds(creds, &final_profile) {
+                let _ = credentials::save_credentials(config_dir, creds);
             }
-            let final_uname = uname.or_else(|| creds.username.clone());
-            Ok((pipe, can_write, final_uname))
+            Ok((pipe, can_write, final_profile))
         }
     }
 }
@@ -1145,13 +1262,36 @@ fn run_discord_thread(
         }
     };
 
-    let set_rpc_connected = |connected: bool, username: Option<String>, last_error: Option<String>| {
+    let set_rpc_connected = |connected: bool,
+                             can_control_voice: bool,
+                             profile: Option<&SelfUserProfile>,
+                             last_error: Option<String>| {
+        let avatar_path = profile
+            .and_then(|p| ensure_self_avatar_cached(&app, &rpc_status, &cache_dir, p));
         let mut st = rpc_status.lock();
-        let next_user = username.or_else(|| st.username.clone());
-        let changed =
-            st.connected != connected || st.username != next_user || st.last_error != last_error;
+        let next_uid = profile
+            .and_then(|p| p.user_id.clone())
+            .or_else(|| st.user_id.clone());
+        let next_user = profile
+            .and_then(|p| p.username.clone())
+            .or_else(|| st.username.clone());
+        let next_display = profile
+            .and_then(|p| p.display_name.clone())
+            .or_else(|| st.display_name.clone());
+        let next_avatar = avatar_path.or_else(|| st.avatar_path.clone());
+        let changed = st.connected != connected
+            || st.can_control_voice != can_control_voice
+            || st.user_id != next_uid
+            || st.username != next_user
+            || st.display_name != next_display
+            || st.avatar_path != next_avatar
+            || st.last_error != last_error;
         st.connected = connected;
+        st.can_control_voice = can_control_voice;
+        st.user_id = next_uid;
         st.username = next_user;
+        st.display_name = next_display;
+        st.avatar_path = next_avatar;
         st.last_error = last_error;
         if changed {
             let clone = st.clone();
@@ -1163,7 +1303,7 @@ fn run_discord_thread(
     while !stop.load(Ordering::Acquire) {
         // 1. Dræn eventuelle beskeder (pause/attach/reload, voice-mute/deafen, avatar-ready).
         let mut pause_for_auth = false;
-        let mut attached_pipe: Option<(DiscordIpcPipe, bool, Option<String>)> = None;
+        let mut attached_pipe: Option<(DiscordIpcPipe, bool, SelfUserProfile)> = None;
         let mut reload_requested = false;
         let mut avatar_updated = false;
         let mut pending_actions: Vec<DiscordVoiceAction> = Vec::new();
@@ -1178,9 +1318,10 @@ fn run_discord_thread(
                 WorkerMsg::AttachPipe {
                     pipe,
                     can_write,
-                    username,
+                    profile,
                 } => {
-                    if let Some((mut prev, _, _)) = attached_pipe.replace((pipe, can_write, username)) {
+                    if let Some((mut prev, _, _)) = attached_pipe.replace((pipe, can_write, profile))
+                    {
                         prev.close();
                     }
                     pause_for_auth = false;
@@ -1204,16 +1345,20 @@ fn run_discord_thread(
             consecutive_transport_errors = 0;
         }
 
-        if let Some((mut pipe, can_write, uname)) = attached_pipe {
+        if let Some((mut pipe, can_write, profile)) = attached_pipe {
             cached_creds = credentials::load_credentials(&config_dir);
             close_active_pipe(&mut active_pipe);
             subscribe_initial_events(&mut pipe);
-            let self_uid = pipe.self_user_id.clone();
+            let self_uid = pipe
+                .self_profile
+                .user_id
+                .clone()
+                .or_else(|| profile.user_id.clone());
             let state = RpcSessionState::new(can_write, self_uid);
             active_pipe = Some((pipe, state));
             detector.reset();
             consecutive_transport_errors = 0;
-            set_rpc_connected(true, uname, None);
+            set_rpc_connected(true, can_write, Some(&profile), None);
         } else if reload_requested {
             cached_creds = credentials::load_credentials(&config_dir);
             close_active_pipe(&mut active_pipe);
@@ -1222,7 +1367,7 @@ fn run_discord_thread(
             next_rpc_attempt = Instant::now();
             next_audio_poll = Instant::now();
             if cached_creds.is_none() {
-                set_rpc_connected(false, None, None);
+                set_rpc_connected(false, false, None, None);
             }
         }
 
@@ -1236,15 +1381,19 @@ fn run_discord_thread(
                     let pids = wasapi::discord_process_ids();
                     if !pids.is_empty() {
                         match try_open_and_auth_rpc(&config_dir, creds) {
-                            Ok((mut pipe, can_write, uname)) => {
+                            Ok((mut pipe, can_write, profile)) => {
                                 subscribe_initial_events(&mut pipe);
-                                let self_uid = pipe.self_user_id.clone();
+                                let self_uid = pipe
+                                    .self_profile
+                                    .user_id
+                                    .clone()
+                                    .or_else(|| profile.user_id.clone());
                                 let state = RpcSessionState::new(can_write, self_uid);
                                 active_pipe = Some((pipe, state));
                                 detector.reset();
                                 consecutive_transport_errors = 0;
                                 log::info!(target: "provider:discord", "Discord RPC forbundet");
-                                set_rpc_connected(true, uname, None);
+                                set_rpc_connected(true, can_write, Some(&profile), None);
                             }
                             Err(AuthPipeError::Transport(err)) => {
                                 consecutive_transport_errors =
@@ -1264,7 +1413,7 @@ fn run_discord_thread(
                                 } else {
                                     None
                                 };
-                                set_rpc_connected(false, None, ui_err);
+                                set_rpc_connected(false, false, None, ui_err);
                                 next_rpc_attempt = Instant::now() + backoff;
                             }
                             Err(AuthPipeError::TokenRejected(err)) => {
@@ -1273,7 +1422,7 @@ fn run_discord_thread(
                                     "Discord RPC afviste token: {err}"
                                 );
                                 consecutive_transport_errors = 0;
-                                set_rpc_connected(false, None, Some(err));
+                                set_rpc_connected(false, false, None, Some(err));
                                 next_rpc_attempt = Instant::now() + IPC_RECONNECT_BACKOFF;
                             }
                         }
@@ -1365,7 +1514,7 @@ fn run_discord_thread(
 
             if broken {
                 log::info!(target: "provider:discord", "Discord RPC-forbindelse afbrudt; planlægger genforbindelse");
-                set_rpc_connected(false, None, None);
+                set_rpc_connected(false, false, None, None);
                 next_rpc_attempt = Instant::now() + Duration::from_secs(2);
                 next_audio_poll = Instant::now();
             } else {

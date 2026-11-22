@@ -70,17 +70,78 @@ pub struct TokenResponse {
     pub expires_in: i64,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SelfUserProfile {
+    pub user_id: Option<String>,
+    pub username: Option<String>,
+    pub display_name: Option<String>,
+    pub avatar_hash: Option<String>,
+    pub discriminator: Option<String>,
+}
+
+impl SelfUserProfile {
+    pub fn from_user_value(user: &Value) -> Self {
+        let user_id = non_empty_str(user.get("id"));
+        let username = non_empty_str(user.get("username"));
+        let display_name = non_empty_str(user.get("global_name")).or_else(|| username.clone());
+        let avatar_hash = non_empty_str(user.get("avatar"));
+        let discriminator = non_empty_str(user.get("discriminator"));
+        Self {
+            user_id,
+            username,
+            display_name,
+            avatar_hash,
+            discriminator,
+        }
+    }
+
+    pub fn merge_from(&mut self, other: &Self) {
+        if other.user_id.is_some() {
+            self.user_id = other.user_id.clone();
+        }
+        if other.username.is_some() {
+            self.username = other.username.clone();
+        }
+        if other.display_name.is_some() {
+            self.display_name = other.display_name.clone();
+        }
+        if other.avatar_hash.is_some() {
+            self.avatar_hash = other.avatar_hash.clone();
+        }
+        if other.discriminator.is_some() {
+            self.discriminator = other.discriminator.clone();
+        }
+    }
+
+    pub fn merged_with(mut self, fallback: &Self) -> Self {
+        if self.user_id.is_none() {
+            self.user_id = fallback.user_id.clone();
+        }
+        if self.username.is_none() {
+            self.username = fallback.username.clone();
+        }
+        if self.display_name.is_none() {
+            self.display_name = fallback.display_name.clone();
+        }
+        if self.avatar_hash.is_none() {
+            self.avatar_hash = fallback.avatar_hash.clone();
+        }
+        if self.discriminator.is_none() {
+            self.discriminator = fallback.discriminator.clone();
+        }
+        self
+    }
+}
+
 pub struct DiscordIpcPipe {
     file: File,
-    pub self_user_id: Option<String>,
-    pub self_username: Option<String>,
+    pub self_profile: SelfUserProfile,
 }
 
 impl std::fmt::Debug for DiscordIpcPipe {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("DiscordIpcPipe")
-            .field("self_user_id", &self.self_user_id)
-            .field("self_username", &self.self_username)
+            .field("self_profile", &self.self_profile)
             .finish()
     }
 }
@@ -138,8 +199,7 @@ impl DiscordIpcPipe {
                     Ok(file) => {
                         return Ok(Self {
                             file,
-                            self_user_id: None,
-                            self_username: None,
+                            self_profile: SelfUserProfile::default(),
                         });
                     }
                     Err(err) if err.kind() == io::ErrorKind::NotFound => continue,
@@ -272,8 +332,7 @@ pub fn connect_and_handshake(client_id: &str) -> Result<DiscordIpcPipe, String> 
             any_pipe = true;
             let mut pipe = DiscordIpcPipe {
                 file,
-                self_user_id: None,
-                self_username: None,
+                self_profile: SelfUserProfile::default(),
             };
             let handshake = json!({
                 "v": 1,
@@ -287,10 +346,7 @@ pub fn connect_and_handshake(client_id: &str) -> Result<DiscordIpcPipe, String> 
                 Ok((_, val)) => {
                     if val.get("evt").and_then(|v| v.as_str()) == Some("READY") {
                         if let Some(user) = val.get("data").and_then(|d| d.get("user")) {
-                            pipe.self_user_id =
-                                user.get("id").and_then(|v| v.as_str()).map(String::from);
-                            pipe.self_username = non_empty_str(user.get("global_name"))
-                                .or_else(|| non_empty_str(user.get("username")));
+                            pipe.self_profile = SelfUserProfile::from_user_value(user);
                         }
                         return Ok(pipe);
                     }
@@ -332,9 +388,9 @@ pub fn extract_rpc_error(val: &Value) -> Option<String> {
 
 pub fn request_authorize_code(
     client_id: &str,
-) -> Result<(String, bool, Option<String>, DiscordIpcPipe), String> {
+) -> Result<(String, bool, SelfUserProfile, DiscordIpcPipe), String> {
     let mut pipe = connect_and_handshake(client_id)?;
-    let initial_username = pipe.self_username.clone();
+    let initial_profile = pipe.self_profile.clone();
 
     let write_scopes = json!(["rpc", "rpc.voice.read", "rpc.voice.write"]);
     let nonce = pipe
@@ -386,7 +442,7 @@ pub fn request_authorize_code(
                     return Err("Discord returnerede ingen autorisationskode".to_string());
                 }
             };
-            return Ok((code, false, initial_username, pipe));
+            return Ok((code, false, initial_profile, pipe));
         }
         pipe.close();
         return Err(err_msg);
@@ -404,7 +460,7 @@ pub fn request_authorize_code(
             return Err("Discord returnerede ingen autorisationskode".to_string());
         }
     };
-    Ok((code, true, initial_username, pipe))
+    Ok((code, true, initial_profile, pipe))
 }
 
 pub fn url_encode(input: &str) -> String {

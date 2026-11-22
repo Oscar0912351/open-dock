@@ -4,7 +4,7 @@ use std::{
     path::{Path, PathBuf},
     process::Command,
     sync::atomic::{AtomicBool, Ordering},
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use parking_lot::Mutex;
@@ -20,6 +20,9 @@ const MANIFEST_URL: &str =
     "https://github.com/Oscar0912351/open-dock/releases/latest/download/latest.json";
 const USER_AGENT: &str = "Open-Dock/0.1";
 const STARTUP_CHECK_DELAY: Duration = Duration::from_secs(15);
+/// Installeren er lille nok til at downloade på under et sekund — hold
+/// download-staten synlig lidt, så indikatoren ikke blinker forbi uset.
+const MIN_DOWNLOAD_DISPLAY: Duration = Duration::from_millis(1800);
 
 /// Cached result of the last update check, managed as Tauri state.
 pub struct UpdateTracker {
@@ -274,8 +277,13 @@ async fn run_cycle(app: &AppHandle) -> Result<UpdateStatus, AppError> {
 
     status.state = UpdateCheckState::Downloading;
     set_status(app, &status);
+    let download_started = Instant::now();
     match download_installer(app, &manifest).await {
         Ok(path) => {
+            let elapsed = download_started.elapsed();
+            if elapsed < MIN_DOWNLOAD_DISPLAY {
+                tokio::time::sleep(MIN_DOWNLOAD_DISPLAY - elapsed).await;
+            }
             log::info!(target: "update", "Opdatering b{} hentet til {:?}", manifest.build_id, path);
             *tracker.staged.lock() = Some((manifest.build_id, path));
             status.state = UpdateCheckState::Ready;
@@ -294,8 +302,9 @@ async fn run_cycle(app: &AppHandle) -> Result<UpdateStatus, AppError> {
 }
 
 /// Genstarter appen ind i den nye version: kører den verificerede installer
-/// silent (/S — ingen "allerede installeret"-dialog ved samme versionsnummer),
-/// og lader en frakoblet cmd-kæde vente, installere og starte appen igen.
+/// silent (/S — ingen "allerede installeret"-dialog ved samme versionsnummer)
+/// via et frakoblet script der viser en statusboks undervejs og starter appen
+/// igen bagefter.
 pub async fn install(app: &AppHandle) -> Result<(), AppError> {
     if local_build_id().is_none() {
         return Err(AppError::Other(
@@ -334,8 +343,11 @@ pub async fn install(app: &AppHandle) -> Result<(), AppError> {
     result
 }
 
-/// Starter en frakoblet cmd-kæde: kort pause (så appen når at lukke), derefter
-/// NSIS silent-install og til sidst genstart af det installerede build.
+/// Starter den frakoblede opdateringskæde: et midlertidigt PowerShell-script
+/// viser en lille statusboks på skærmen, venter på at appen lukker, kører NSIS
+/// silent (/S — ingen "allerede installeret"-dialog ved samme versionsnummer)
+/// og genstarter det installerede build. Fejler statusboksen, kører
+/// installationen stadig som før.
 fn spawn_silent_install(installer: &Path) -> Result<(), AppError> {
     use std::os::windows::process::CommandExt;
     const CREATE_NO_WINDOW: u32 = 0x0800_0000;
@@ -359,24 +371,136 @@ fn spawn_silent_install(installer: &Path) -> Result<(), AppError> {
         None => app_exe.clone(),
     };
 
+    let temp_dir = std::env::temp_dir();
+    let splash_path = temp_dir.join("open-dock-update-splash.ps1");
+    let script_path = temp_dir.join("open-dock-update.ps1");
+    fs::write(&splash_path, format!("\u{feff}{SPLASH_SCRIPT}"))
+        .map_err(|err| AppError::Other(format!("Kunne ikke skrive opdateringsscript: {err}")))?;
+    let script = update_script(installer, &relaunch, std::process::id(), &splash_path);
+    fs::write(&script_path, script)
+        .map_err(|err| AppError::Other(format!("Kunne ikke skrive opdateringsscript: {err}")))?;
+
     log::info!(
         target: "update",
         "Silent install {:?} og genstart af {:?}",
         installer,
         relaunch
     );
-    Command::new("cmd")
-        .arg("/c")
-        .raw_arg(format!(
-            "ping 127.0.0.1 -n 3 >nul & \"{}\" /S & \"{}\"",
-            installer.display(),
-            relaunch.display()
-        ))
+    Command::new("powershell")
+        .args([
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-WindowStyle",
+            "Hidden",
+            "-File",
+        ])
+        .arg(&script_path)
         .creation_flags(CREATE_NO_WINDOW)
         .spawn()
         .map_err(|err| AppError::Other(format!("Kunne ikke starte installationsprogrammet: {err}")))?;
     Ok(())
 }
+
+/// Bygger PowerShell-scriptet til opdateringskæden. UTF-8 BOM præfikses så
+/// Windows PowerShell 5.1 parser danske tegn korrekt.
+fn update_script(installer: &Path, relaunch: &Path, app_pid: u32, splash: &Path) -> String {
+    let esc = |p: &Path| p.display().to_string().replace('\'', "''");
+    let body = UPDATE_SCRIPT
+        .replace("__APP_PID__", &app_pid.to_string())
+        .replace("__INSTALLER__", &esc(installer))
+        .replace("__RELAUNCH__", &esc(relaunch))
+        .replace("__SPLASH__", &esc(splash));
+    format!("\u{feff}{body}")
+}
+
+/// Statusboksen der vises mens opdateringen installeres. Kører som sin egen
+/// powershell-proces — den kan derfor altid dræbes hårdt med Stop-Process,
+/// og den lukker desuden selv efter 3 min hvis alt andet skulle fejle.
+const SPLASH_SCRIPT: &str = r#"$ErrorActionPreference = 'SilentlyContinue'
+Add-Type -AssemblyName PresentationFramework,PresentationCore,WindowsBase
+function Brush($a,$r,$g,$b) {
+    New-Object System.Windows.Media.SolidColorBrush(
+        [System.Windows.Media.Color]::FromArgb($a,$r,$g,$b))
+}
+$win = New-Object System.Windows.Window
+$win.Width = 330; $win.Height = 120
+$win.WindowStyle = 'None'
+$win.ResizeMode = 'NoResize'
+$win.AllowsTransparency = $true
+$win.Background = [System.Windows.Media.Brushes]::Transparent
+$win.Topmost = $true
+$win.ShowInTaskbar = $false
+$win.WindowStartupLocation = 'CenterScreen'
+
+$card = New-Object System.Windows.Controls.Border
+$card.CornerRadius = New-Object System.Windows.CornerRadius(14)
+$card.Background = Brush 242 18 19 24
+$card.BorderBrush = Brush 30 255 255 255
+$card.BorderThickness = New-Object System.Windows.Thickness(1)
+$card.Padding = New-Object System.Windows.Thickness(24)
+
+$stack = New-Object System.Windows.Controls.StackPanel
+$stack.VerticalAlignment = 'Center'
+
+$title = New-Object System.Windows.Controls.TextBlock
+$title.Text = 'Open Dock opdateres'
+$title.Foreground = Brush 255 245 245 247
+$title.FontSize = 14
+$title.FontWeight = [System.Windows.FontWeights]::SemiBold
+$title.HorizontalAlignment = 'Center'
+
+$sub = New-Object System.Windows.Controls.TextBlock
+$sub.Text = 'Appen starter igen om lidt'
+$sub.Foreground = Brush 255 158 160 168
+$sub.FontSize = 11.5
+$sub.HorizontalAlignment = 'Center'
+$sub.Margin = New-Object System.Windows.Thickness(0,5,0,0)
+
+$bar = New-Object System.Windows.Controls.ProgressBar
+$bar.IsIndeterminate = $true
+$bar.Height = 3
+$bar.Margin = New-Object System.Windows.Thickness(0,18,0,0)
+$bar.Foreground = Brush 255 235 236 240
+$bar.Background = Brush 36 255 255 255
+$bar.BorderThickness = New-Object System.Windows.Thickness(0)
+
+$null = $stack.Children.Add($title)
+$null = $stack.Children.Add($sub)
+$null = $stack.Children.Add($bar)
+$card.Child = $stack
+$win.Content = $card
+
+$life = New-Object System.Windows.Threading.DispatcherTimer
+$life.Interval = [TimeSpan]::FromMinutes(3)
+$life.Add_Tick({ $win.Close() })
+$life.Start()
+
+$null = $win.ShowDialog()
+"#;
+
+const UPDATE_SCRIPT: &str = r#"$ErrorActionPreference = 'SilentlyContinue'
+$installer = '__INSTALLER__'
+$relaunch  = '__RELAUNCH__'
+$splashPs1 = '__SPLASH__'
+$appPid    = __APP_PID__
+
+$splashProc = $null
+try {
+    $splashProc = Start-Process -FilePath 'powershell.exe' -PassThru -WindowStyle Hidden -ArgumentList @(
+        '-NoProfile','-ExecutionPolicy','Bypass','-WindowStyle','Hidden','-File',$splashPs1
+    )
+} catch {}
+
+try { Wait-Process -Id $appPid -Timeout 15 } catch {}
+Start-Sleep -Milliseconds 600
+try { Start-Process -FilePath $installer -ArgumentList '/S' -Wait } catch {}
+try { if ($splashProc) { Stop-Process -Id $splashProc.Id -Force } } catch {}
+Start-Sleep -Milliseconds 300
+try { Start-Process -FilePath $relaunch } catch {}
+try { Remove-Item -LiteralPath $splashPs1 -Force } catch {}
+try { Remove-Item -LiteralPath $PSCommandPath -Force } catch {}
+"#;
 
 /// Kører ét opdateringstjek kort efter opstart (kun release-builds med build-id).
 /// Nye builds downloades automatisk; notifikationen kommer først når filen er

@@ -23,7 +23,15 @@ pub struct DiscordRpcCredentials {
     #[serde(default)]
     pub expires_at_ms: Option<i64>,
     #[serde(default)]
+    pub user_id: Option<String>,
+    #[serde(default)]
     pub username: Option<String>,
+    #[serde(default)]
+    pub display_name: Option<String>,
+    #[serde(default)]
+    pub avatar_hash: Option<String>,
+    #[serde(default)]
+    pub discriminator: Option<String>,
     #[serde(default)]
     pub auth_via_central: bool,
     #[serde(default)]
@@ -204,7 +212,11 @@ mod tests {
             access_token: Some("tok-a".into()),
             refresh_token: Some("tok-r".into()),
             expires_at_ms: Some(1_900_000_000_000),
-            username: Some("Oscar".into()),
+            user_id: Some("1234567890".into()),
+            username: Some("oscar".into()),
+            display_name: Some("Oscar".into()),
+            avatar_hash: Some("abc123".into()),
+            discriminator: Some("0".into()),
             auth_via_central: true,
             proxy_url: Some("https://ossidev.dk".into()),
         };

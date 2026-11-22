@@ -9,7 +9,7 @@ import type { UpdateStatus } from "../../shared/bindings/UpdateStatus";
 import { getDateTimeFormatter } from "../../shared/format";
 import { t } from "../../shared/i18n";
 import { DockLogo } from "../../shared/icons/DockLogo";
-import { ipc, on } from "../../shared/ipc";
+import { ipc, on, toAssetUrl } from "../../shared/ipc";
 import { Button } from "../components/Button";
 import { Card, SettingRow } from "../components/Card";
 import { ConfirmDialog } from "../components/Drawer";
@@ -27,6 +27,14 @@ function formatError(err: unknown): string {
   return String(err);
 }
 
+function DiscordGlyph({ size = 20 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+      <path d="M20.317 4.37a19.791 19.791 0 0 0-4.885-1.515.074.074 0 0 0-.079.037c-.21.375-.444.864-.608 1.25a18.27 18.27 0 0 0-5.487 0 12.64 12.64 0 0 0-.617-1.25.077.077 0 0 0-.079-.037A19.736 19.736 0 0 0 3.677 4.37a.07.07 0 0 0-.032.027C.533 9.046-.32 13.58.099 18.057a.082.082 0 0 0 .031.057 19.9 19.9 0 0 0 5.993 3.03.078.078 0 0 0 .084-.028 14.09 14.09 0 0 0 1.226-1.994.076.076 0 0 0-.041-.106 13.107 13.107 0 0 1-1.872-.892.077.077 0 0 1-.008-.128 10.2 10.2 0 0 0 .372-.292.074.074 0 0 1 .077-.01c3.928 1.793 8.18 1.793 12.062 0a.074.074 0 0 1 .078.01c.12.098.246.198.373.292a.077.077 0 0 1-.006.127 12.299 12.299 0 0 1-1.873.892.077.077 0 0 0-.041.107c.36.698.772 1.362 1.225 1.993a.076.076 0 0 0 .084.028 19.839 19.839 0 0 0 6.002-3.03.077.077 0 0 0 .032-.054c.5-5.177-.838-9.864-3.549-13.66a.061.061 0 0 0-.031-.03zM8.02 15.33c-1.183 0-2.157-1.085-2.157-2.419 0-1.333.956-2.419 2.157-2.419 1.21 0 2.176 1.096 2.157 2.42 0 1.333-.956 2.418-2.157 2.418zm7.975 0c-1.183 0-2.157-1.085-2.157-2.419 0-1.333.955-2.419 2.157-2.419 1.21 0 2.176 1.096 2.157 2.42 0 1.333-.946 2.418-2.157 2.418z" />
+    </svg>
+  );
+}
+
 export function Settings() {
   useControlStore((s) => s.locale);
   const config = useControlStore((s) => s.config);
@@ -40,6 +48,7 @@ export function Settings() {
   const [discordStatus, setDiscordStatus] = useState<DiscordRpcStatus | null>(null);
   const [discordBusy, setDiscordBusy] = useState<"connect" | "disconnect" | null>(null);
   const [discordError, setDiscordError] = useState<string | null>(null);
+  const [failedDiscordAvatar, setFailedDiscordAvatar] = useState<string | null>(null);
 
   const [updateInfo, setUpdateInfo] = useState<UpdateStatus | null>(null);
   const [updateBusy, setUpdateBusy] = useState<"check" | "install" | null>(null);
@@ -161,6 +170,7 @@ export function Settings() {
     if (discordBusy !== null) return;
     setDiscordBusy("connect");
     setDiscordError(null);
+    setFailedDiscordAvatar(null);
     try {
       const next = await ipc.discordRpcConnectCentral();
       setDiscordStatus(next);
@@ -175,6 +185,7 @@ export function Settings() {
     if (discordBusy !== null) return;
     setDiscordBusy("disconnect");
     setDiscordError(null);
+    setFailedDiscordAvatar(null);
     try {
       const next = await ipc.discordRpcDisconnect();
       setDiscordStatus(next);
@@ -488,67 +499,146 @@ export function Settings() {
       <section className="cc-section">
         <span className="cc-section-label">{t("discord.rpcSection")}</span>
         <Card compact>
-          <SettingRow
-            title={t("discord.rpcTitle")}
-            help={
-              discordStatus?.connected
-                ? t("discord.rpcHelpConnected")
-                : t("discord.rpcViaCentralHelp")
-            }
-            meta={
-              <span
-                className={`cc-sensor-state is-${
-                  discordStatus?.connected
-                    ? "live"
-                    : discordStatus?.configured
-                      ? "warn"
-                      : "muted"
-                }`}
-              >
-                <span className="cc-sensor-dot" aria-hidden="true" />
-                {discordStatus?.connected
-                  ? t("discord.rpcStatusConnected", {
-                      user: discordStatus.username || "Discord",
-                    })
-                  : discordStatus?.configured
-                    ? t("discord.rpcStatusReady")
-                    : t("discord.rpcStatusFallback")}
-              </span>
-            }
-          >
-            <div className="cc-sensor-actions">
-              {discordStatus?.configured ? (
-                <>
-                  <Button
-                    variant="secondary"
-                    disabled={discordBusy !== null}
-                    onClick={() => void handleDiscordConnectCentral()}
-                  >
-                    {discordBusy === "connect"
-                      ? t("discord.rpcConnecting")
-                      : t("discord.rpcReconnect")}
-                  </Button>
-                  <Button
-                    variant="secondary"
-                    disabled={discordBusy !== null}
-                    onClick={() => void handleDiscordDisconnect()}
-                  >
-                    {t("discord.rpcDisconnect")}
-                  </Button>
-                </>
-              ) : (
-                <Button
-                  variant="primary"
-                  disabled={discordBusy !== null}
-                  onClick={() => void handleDiscordConnectCentral()}
-                >
-                  {discordBusy === "connect"
-                    ? t("discord.rpcConnecting")
-                    : t("discord.rpcConnect")}
-                </Button>
-              )}
-            </div>
-          </SettingRow>
+          {(() => {
+            const discordLinked = Boolean(discordStatus?.configured);
+            const discordConnected = Boolean(discordStatus?.connected);
+            const discordTone: "live" | "warn" | "muted" = discordConnected
+              ? "live"
+              : discordLinked
+                ? "warn"
+                : "muted";
+            const discordDisplayName =
+              discordStatus?.displayName?.trim() ||
+              discordStatus?.username?.trim() ||
+              t("discord.rpcTitle");
+            const rawHandle = discordStatus?.username?.trim() || "";
+            const discordHandle =
+              rawHandle && rawHandle.toLowerCase() !== discordDisplayName.toLowerCase()
+                ? `@${rawHandle}`
+                : null;
+            const avatarPath = discordStatus?.avatarPath ?? null;
+            const avatarSrc =
+              avatarPath && avatarPath !== failedDiscordAvatar ? toAssetUrl(avatarPath) : "";
+            const avatarInitial = discordDisplayName.charAt(0).toLocaleUpperCase("da-DK") || "D";
+
+            return (
+              <div className={`cc-discord-card is-${discordTone}`}>
+                <div className="cc-discord-hero">
+                  {discordLinked ? (
+                    <div
+                      className={`cc-discord-avatar-wrap is-${discordTone}${avatarSrc ? "" : " is-fallback"}`}
+                    >
+                      {avatarSrc ? (
+                        <img
+                          className="cc-discord-avatar"
+                          src={avatarSrc}
+                          alt={discordDisplayName}
+                          draggable={false}
+                          onError={() => setFailedDiscordAvatar(avatarPath)}
+                        />
+                      ) : (
+                        <span className="cc-discord-avatar-fallback" aria-hidden="true">
+                          {avatarInitial}
+                        </span>
+                      )}
+                      <span className="cc-discord-avatar-badge" aria-hidden="true">
+                        <DiscordGlyph size={10} />
+                      </span>
+                      <span className="cc-discord-presence-dot" aria-hidden="true" />
+                    </div>
+                  ) : (
+                    <div className="cc-discord-mark" aria-hidden="true">
+                      <DiscordGlyph size={22} />
+                    </div>
+                  )}
+
+                  <div className="cc-discord-copy">
+                    <div className="cc-discord-name-row">
+                      <span className="cc-discord-name">
+                        {discordLinked ? discordDisplayName : t("discord.rpcTitle")}
+                      </span>
+                      {discordLinked && discordHandle && (
+                        <span className="cc-discord-handle">{discordHandle}</span>
+                      )}
+                      <span className={`cc-discord-presence is-${discordTone}`}>
+                        <span className="cc-discord-presence-dot" aria-hidden="true" />
+                        <span>
+                          {discordConnected
+                            ? t("discord.rpcStatusConnectedShort")
+                            : discordLinked
+                              ? t("discord.rpcStatusWaitingShort")
+                              : t("discord.rpcStatusDisconnectedShort")}
+                        </span>
+                      </span>
+                    </div>
+
+                    <p className="cc-discord-desc">
+                      {discordConnected
+                        ? t("discord.rpcHelpConnected")
+                        : discordLinked
+                          ? t("discord.rpcHelpWaiting")
+                          : t("discord.rpcViaCentralHelp")}
+                    </p>
+
+                    <div className="cc-discord-chips">
+                      {discordLinked ? (
+                        <>
+                          <span className={`cc-discord-chip${discordConnected ? " is-active" : ""}`}>
+                            {t("discord.rpcChipParticipants")}
+                          </span>
+                          {discordConnected && (
+                            <span className="cc-discord-chip is-active">
+                              {discordStatus?.canControlVoice
+                                ? t("discord.rpcChipVoiceControl")
+                                : t("discord.rpcChipVoiceReadOnly")}
+                            </span>
+                          )}
+                          {discordStatus?.viaCentral && (
+                            <span className="cc-discord-chip">{t("discord.rpcChipCentral")}</span>
+                          )}
+                        </>
+                      ) : (
+                        <span className="cc-discord-chip">{t("discord.rpcChipAudioFallback")}</span>
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="cc-discord-card-actions">
+                    {discordLinked ? (
+                      <>
+                        <Button
+                          variant="secondary"
+                          disabled={discordBusy !== null}
+                          onClick={() => void handleDiscordConnectCentral()}
+                        >
+                          {discordBusy === "connect"
+                            ? t("discord.rpcConnecting")
+                            : t("discord.rpcReconnect")}
+                        </Button>
+                        <Button
+                          variant="secondary"
+                          disabled={discordBusy !== null}
+                          onClick={() => void handleDiscordDisconnect()}
+                        >
+                          {t("discord.rpcDisconnect")}
+                        </Button>
+                      </>
+                    ) : (
+                      <Button
+                        variant="primary"
+                        disabled={discordBusy !== null || discordStatus === null}
+                        onClick={() => void handleDiscordConnectCentral()}
+                      >
+                        {discordBusy === "connect"
+                          ? t("discord.rpcConnecting")
+                          : t("discord.rpcConnect")}
+                      </Button>
+                    )}
+                  </div>
+                </div>
+              </div>
+            );
+          })()}
 
           {(discordError || discordStatus?.lastError) && (
             <div className="cc-sensor-error" role="alert">

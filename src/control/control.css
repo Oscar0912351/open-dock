@@ -27,6 +27,9 @@
 
   --c-accent: #FFFFFF;
   --c-accent-ink: #000000;
+  --c-ok: #4ADE80;
+  --c-ok-bg: rgba(74, 222, 128, 0.12);
+  --c-ok-line: rgba(74, 222, 128, 0.28);
   --c-warn: #FFB340;
   --c-danger: #FF453A;
   --c-danger-bg: rgba(255, 69, 58, 0.12);
@@ -88,6 +91,9 @@
 
   --c-accent: #09090B;
   --c-accent-ink: #FFFFFF;
+  --c-ok: #16A34A;
+  --c-ok-bg: rgba(22, 163, 74, 0.10);
+  --c-ok-line: rgba(22, 163, 74, 0.26);
   --c-warn: #D97706;
   --c-danger: #DC2626;
   --c-danger-bg: rgba(220, 38, 38, 0.08);
@@ -2802,75 +2808,197 @@ button.cc-titlebar-update:focus-visible {
   line-height: 1.4;
 }
 
-.cc-discord-setup {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-  padding: 12px 16px 14px;
-  border-top: 1px solid var(--c-line);
+/* Settings Discord integration profile card */
+.cc-discord-card {
+  padding: 16px;
 }
 
-.cc-discord-guide {
+.cc-discord-hero {
   display: flex;
-  flex-direction: column;
-  gap: 4px;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+}
+
+.cc-discord-mark,
+.cc-discord-avatar-wrap {
+  width: 44px;
+  height: 44px;
+  border-radius: 10px;
+  position: relative;
+  flex: none;
+}
+
+.cc-discord-mark {
+  display: grid;
+  place-items: center;
+  border: 1px solid var(--c-line);
+  background: var(--c-surface-2);
+  color: var(--c-ink-2);
+}
+
+.cc-discord-avatar-wrap {
+  border: 1px solid var(--c-line-2);
+  background: var(--c-surface-2);
+}
+
+.cc-discord-avatar-wrap.is-fallback {
+  display: grid;
+  place-items: center;
+}
+
+.cc-discord-avatar {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  border-radius: 9px;
+  display: block;
+}
+
+.cc-discord-avatar-fallback {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--c-ink-1);
+  user-select: none;
+}
+
+.cc-discord-avatar-badge {
+  position: absolute;
+  left: -4px;
+  bottom: -4px;
+  width: 18px;
+  height: 18px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  border: 2px solid var(--c-surface-1);
+  background: var(--c-surface-2);
+  color: var(--c-ink-2);
+}
+
+.cc-discord-avatar-wrap .cc-discord-presence-dot {
+  position: absolute;
+  right: -3px;
+  bottom: -3px;
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  border: 2px solid var(--c-surface-1);
+  background: var(--c-ink-3);
+}
+
+.cc-discord-avatar-wrap.is-live .cc-discord-presence-dot {
+  background: var(--c-ok);
+}
+
+.cc-discord-avatar-wrap.is-warn .cc-discord-presence-dot {
+  background: var(--c-warn);
+}
+
+.cc-discord-copy {
+  flex: 1 1 220px;
+  min-width: 0;
+}
+
+.cc-discord-name-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.cc-discord-name {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--c-ink-1);
+  line-height: 1.25;
+}
+
+.cc-discord-handle {
+  font-family: var(--ff-mono);
   font-size: 11.5px;
+  color: var(--c-ink-3);
+  line-height: 1.25;
+}
+
+.cc-discord-presence {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 7px;
+  border-radius: 999px;
+  border: 1px solid var(--c-line);
+  background: var(--c-surface-2);
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--c-ink-3);
+  line-height: 1.3;
+}
+
+.cc-discord-presence .cc-discord-presence-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--c-ink-3);
+  flex: none;
+}
+
+.cc-discord-presence.is-live {
+  color: var(--c-ok);
+  border-color: var(--c-ok-line);
+  background: var(--c-ok-bg);
+}
+
+.cc-discord-presence.is-live .cc-discord-presence-dot {
+  background: var(--c-ok);
+}
+
+.cc-discord-presence.is-warn {
+  color: var(--c-warn);
+}
+
+.cc-discord-presence.is-warn .cc-discord-presence-dot {
+  background: var(--c-warn);
+}
+
+.cc-discord-desc {
+  margin: 4px 0 0;
+  font-size: 12px;
   line-height: 1.45;
   color: var(--c-ink-2);
 }
 
-.cc-discord-redirect-row {
+.cc-discord-chips {
   display: flex;
   align-items: center;
-  flex-wrap: wrap;
   gap: 6px;
+  flex-wrap: wrap;
+  margin-top: 8px;
 }
 
-.cc-discord-uri {
-  padding: 2px 6px;
-  border-radius: var(--c-r-xs);
-  border: 1px solid var(--c-line-2);
-  background: var(--c-surface-2);
-  color: var(--c-ink-1);
-  font-family: var(--ff-mono);
-  font-size: 11px;
-}
-
-.cc-discord-copy {
+.cc-discord-chip {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
-  height: 22px;
-  padding: 0 8px;
+  padding: 2px 7px;
   border-radius: var(--c-r-xs);
-  border: 1px solid var(--c-line-2);
+  border: 1px solid var(--c-line);
   background: var(--c-surface-2);
+  color: var(--c-ink-3);
+  font-family: var(--ff-mono);
+  font-size: 10.5px;
+  line-height: 1.4;
+}
+
+.cc-discord-chip.is-active {
   color: var(--c-ink-2);
-  font-size: 11px;
-  cursor: pointer;
-  transition: color var(--d-fast) var(--e-soft), border-color var(--d-fast) var(--e-soft);
+  border-color: var(--c-line-2);
 }
 
-.cc-discord-copy:hover {
-  color: var(--c-ink-1);
-  border-color: var(--c-line-strong);
-}
-
-.cc-discord-fields {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 10px;
-}
-
-.cc-discord-field {
-  display: flex;
-  flex-direction: column;
-  gap: 5px;
-}
-
-.cc-discord-actions {
-  display: flex;
-  justify-content: flex-end;
+.cc-discord-card-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
 }
 
 /* Settings About Plaque */
