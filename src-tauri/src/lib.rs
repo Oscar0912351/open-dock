@@ -3,6 +3,7 @@ pub mod config;
 pub mod desktop;
 pub mod elevation;
 pub mod error;
+mod paths;
 pub mod providers;
 mod shortcuts;
 mod state;
@@ -133,6 +134,7 @@ pub fn run() {
             if let Ok(resource_dir) = app.path().resource_dir() {
                 providers::cpu_sensor::configure(resource_dir);
             }
+            paths::migrate_storage();
             log::info!(
                 "Open Dock starter (elevated={})",
                 elevation::process_is_elevated()

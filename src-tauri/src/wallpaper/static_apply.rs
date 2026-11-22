@@ -186,12 +186,12 @@ pub fn apply_static_wallpaper(
 }
 
 fn prepare_lossless_png(
-    app: &AppHandle,
+    _app: &AppHandle,
     source_path: &Path,
     target_rect: Option<RectI>,
     fit: WallpaperFit,
 ) -> Result<PathBuf, AppError> {
-    let applied_dir = app.path().app_cache_dir()?.join("wallpapers").join("applied");
+    let applied_dir = crate::paths::data_root().join("wallpapers").join("applied");
     fs::create_dir_all(&applied_dir).map_err(AppError::ConfigWrite)?;
 
     let ext = source_path

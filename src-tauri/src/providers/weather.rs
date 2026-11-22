@@ -459,10 +459,8 @@ fn build_snapshot(location_id: &str, raw: OpenMeteoResponse) -> WeatherSnapshot 
     }
 }
 
-fn cache_dir_for(app: &AppHandle) -> PathBuf {
-    app.path()
-        .app_cache_dir()
-        .unwrap_or_else(|_| PathBuf::from("."))
+fn cache_dir_for(_app: &AppHandle) -> PathBuf {
+    crate::paths::data_root()
 }
 
 fn cache_path(cache_dir: &Path, location_id: &str) -> PathBuf {

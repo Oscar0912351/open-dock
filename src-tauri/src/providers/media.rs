@@ -44,6 +44,8 @@ const MAX_DURATION_CACHE_ENTRIES: usize = 128;
 const GRACE_PERIOD: Duration = Duration::from_secs(2);
 const EPOCH_DIFF_100NS: i64 = 116_444_736_000_000_000;
 const TIMELINE_HYDRATE_DELAYS_MS: [u64; 4] = [250, 1_000, 3_000, 5_000];
+const ART_HYDRATE_DELAYS_MS: [u64; 4] = [300, 900, 2_000, 4_000];
+const CONTENT_ART_PREFIX: &str = "c-";
 
 #[derive(Debug, Clone)]
 struct TrackFallbackTimer {
@@ -364,12 +366,9 @@ impl MediaProvider {
         // and we stop/join the thread on stop(). We still use an Arc<Mutex<Option<MediaSnapshot>>> via AppState/Scheduler instead!
         let _ = latest_ptr;
 
-        let art_dir = app
-            .path()
-            .app_cache_dir()
-            .unwrap_or_else(|_| PathBuf::from("."))
-            .join("art");
+        let art_dir = crate::paths::data_root().join("art");
         let _ = fs::create_dir_all(&art_dir);
+        purge_legacy_art_files(&art_dir);
 
         let latest_snapshot_sink = app_handle.clone();
         match std::thread::Builder::new()
@@ -547,6 +546,7 @@ fn run_media_thread(
     let mut color_cache: HashMap<u64, Option<[u8; 3]>> = HashMap::new();
     let mut source_name_cache: HashMap<String, String> = HashMap::new();
     let mut fallback_timers: HashMap<String, TrackFallbackTimer> = HashMap::new();
+    let mut last_track_by_source: HashMap<String, (String, Option<String>)> = HashMap::new();
     let duration_lookup = Arc::new(Mutex::new(DurationLookupState::default()));
     let mut last_emitted: Option<MediaSnapshot> = None;
     let mut lost_since: Option<Instant> = None;
@@ -554,6 +554,10 @@ fn run_media_thread(
     let mut hydrate_key: Option<String> = None;
     let mut hydrate_step: usize = 0;
     let mut next_hydrate_at: Option<Instant> = None;
+    let mut art_hydrate_track: Option<String> = None;
+    let mut art_hydrate_stale_url: Option<String> = None;
+    let mut art_hydrate_step: usize = 0;
+    let mut next_art_hydrate_at: Option<Instant> = None;
 
     let _ = tx.send(Cmd::Rescan);
 
@@ -575,6 +579,9 @@ fn run_media_thread(
         if let Some(deadline) = next_hydrate_at {
             timeout = timeout.min(deadline.saturating_duration_since(Instant::now()));
         }
+        if let Some(deadline) = next_art_hydrate_at {
+            timeout = timeout.min(deadline.saturating_duration_since(Instant::now()));
+        }
 
         let mut should_rescan = false;
         let mut should_refresh = false;
@@ -594,6 +601,12 @@ fn run_media_thread(
                 if next_hydrate_at.is_some_and(|deadline| now_inst >= deadline) {
                     next_hydrate_at = None;
                     hydrate_step = hydrate_step.saturating_add(1);
+                    should_refresh = true;
+                    handled = true;
+                }
+                if next_art_hydrate_at.is_some_and(|deadline| now_inst >= deadline) {
+                    next_art_hydrate_at = None;
+                    art_hydrate_step = art_hydrate_step.saturating_add(1);
                     should_refresh = true;
                     handled = true;
                 }
@@ -704,10 +717,64 @@ fn run_media_thread(
                     sessions,
                 ) {
                     lost_since = None;
+                    let full_track_key =
+                        format!("{}|{}|{}", snapshot.source, snapshot.title, snapshot.artist);
+                    let source_track_key = format!("{}|{}", snapshot.title, snapshot.artist);
+
+                    // Browsers (Firefox/Chrome) often update GSMTC Title/Artist before
+                    // downloading the new cover image, leaving the previous track's
+                    // thumbnail in GSMTC briefly. Schedule short re-checks until the
+                    // thumbnail content hash changes (or retries expire).
+                    let prev_for_source = last_track_by_source.get(&snapshot.source).cloned();
+                    let track_changed = prev_for_source
+                        .as_ref()
+                        .is_none_or(|(prev_key, _)| prev_key != &source_track_key);
+                    if track_changed {
+                        let prev_art = prev_for_source.and_then(|(_, art)| art);
+                        let art_looks_stale = snapshot.art_url.is_none()
+                            || (prev_art.is_some() && snapshot.art_url == prev_art);
+                        if art_looks_stale
+                            && (!snapshot.title.is_empty() || !snapshot.artist.is_empty())
+                        {
+                            art_hydrate_track = Some(full_track_key.clone());
+                            art_hydrate_stale_url = prev_art;
+                            art_hydrate_step = 0;
+                            next_art_hydrate_at = Some(
+                                Instant::now() + Duration::from_millis(ART_HYDRATE_DELAYS_MS[0]),
+                            );
+                        } else {
+                            art_hydrate_track = None;
+                            art_hydrate_stale_url = None;
+                            art_hydrate_step = 0;
+                            next_art_hydrate_at = None;
+                        }
+                    } else if art_hydrate_track.as_deref() == Some(full_track_key.as_str()) {
+                        let art_resolved = snapshot.art_url.is_some()
+                            && snapshot.art_url != art_hydrate_stale_url;
+                        if art_resolved {
+                            art_hydrate_track = None;
+                            art_hydrate_stale_url = None;
+                            art_hydrate_step = 0;
+                            next_art_hydrate_at = None;
+                        } else if next_art_hydrate_at.is_none() {
+                            if let Some(&delay_ms) = ART_HYDRATE_DELAYS_MS.get(art_hydrate_step) {
+                                next_art_hydrate_at =
+                                    Some(Instant::now() + Duration::from_millis(delay_ms));
+                            } else {
+                                art_hydrate_track = None;
+                                art_hydrate_stale_url = None;
+                                art_hydrate_step = 0;
+                            }
+                        }
+                    }
+                    last_track_by_source.insert(
+                        snapshot.source.clone(),
+                        (source_track_key, snapshot.art_url.clone()),
+                    );
+
                     if snapshot.status == PlaybackStatus::Playing && snapshot.duration_ms == 0 {
-                        let key = format!("{}|{}|{}", snapshot.source, snapshot.title, snapshot.artist);
-                        if hydrate_key.as_deref() != Some(key.as_str()) {
-                            hydrate_key = Some(key);
+                        if hydrate_key.as_deref() != Some(full_track_key.as_str()) {
+                            hydrate_key = Some(full_track_key);
                             hydrate_step = 0;
                             next_hydrate_at = None;
                         }
@@ -731,6 +798,10 @@ fn run_media_thread(
                     hydrate_key = None;
                     hydrate_step = 0;
                     next_hydrate_at = None;
+                    art_hydrate_track = None;
+                    art_hydrate_stale_url = None;
+                    art_hydrate_step = 0;
+                    next_art_hydrate_at = None;
                     if lost_since.is_none() {
                         lost_since = Some(Instant::now());
                     }
@@ -739,6 +810,10 @@ fn run_media_thread(
                 hydrate_key = None;
                 hydrate_step = 0;
                 next_hydrate_at = None;
+                art_hydrate_track = None;
+                art_hydrate_stale_url = None;
+                art_hydrate_step = 0;
+                next_art_hydrate_at = None;
                 if lost_since.is_none() {
                     lost_since = Some(Instant::now());
                 }
@@ -751,6 +826,11 @@ fn run_media_thread(
                 hydrate_key = None;
                 hydrate_step = 0;
                 next_hydrate_at = None;
+                art_hydrate_track = None;
+                art_hydrate_stale_url = None;
+                art_hydrate_step = 0;
+                next_art_hydrate_at = None;
+                last_track_by_source.clear();
                 let sessions = collect_sessions(
                     &manager,
                     &mut source_name_cache,
@@ -1019,7 +1099,7 @@ fn read_session_snapshot(
     };
 
     let (art_url, art_color) =
-        resolve_artwork(&props, &title, &artist, &album, art_dir, color_cache);
+        resolve_artwork(&props, &title, &artist, art_dir, color_cache);
 
     let can_play_pause = controls
         .as_ref()
@@ -1129,7 +1209,6 @@ fn resolve_artwork(
     props: &windows::Media::Control::GlobalSystemMediaTransportControlsSessionMediaProperties,
     title: &str,
     artist: &str,
-    album: &str,
     art_dir: &Path,
     color_cache: &mut HashMap<u64, Option<[u8; 3]>>,
 ) -> (Option<String>, Option<[u8; 3]>) {
@@ -1137,8 +1216,52 @@ fn resolve_artwork(
         return (None, None);
     }
 
-    let key = fnv1a_64(&format!("{title}|{artist}|{album}"));
-    let file_path = art_dir.join(format!("{key:016x}.jpg"));
+    let Some(bytes) = read_thumbnail_bytes(props) else {
+        return (None, None);
+    };
+
+    resolve_artwork_from_bytes(&bytes, art_dir, color_cache)
+}
+
+fn read_thumbnail_bytes(
+    props: &windows::Media::Control::GlobalSystemMediaTransportControlsSessionMediaProperties,
+) -> Option<Vec<u8>> {
+    let thumb_ref = props.Thumbnail().ok()?;
+    let stream = thumb_ref.OpenReadAsync().and_then(|op| op.join()).ok()?;
+    let size_u64 = stream.Size().ok()?;
+    if size_u64 == 0 || size_u64 > 16 * 1024 * 1024 {
+        return None;
+    }
+    let size = size_u64 as u32;
+    let input = stream.GetInputStreamAt(0).ok()?;
+    let reader = DataReader::CreateDataReader(&input).ok()?;
+    let _ = reader.SetInputStreamOptions(InputStreamOptions::ReadAhead);
+    let loaded = reader.LoadAsync(size).and_then(|op| op.join()).ok()?;
+    if loaded == 0 {
+        return None;
+    }
+    let mut bytes = vec![0u8; loaded as usize];
+    reader.ReadBytes(&mut bytes).ok()?;
+    Some(bytes)
+}
+
+/// Content-addressed artwork cache keyed by a hash of the raw thumbnail bytes
+/// rather than `(title, artist, album)`. Browsers like Firefox/Chrome update
+/// GSMTC Title/Artist immediately on track change before downloading the new
+/// cover art, so metadata-keyed caches permanently poison track B with track
+/// A's thumbnail. Hashing the bytes ensures the file path (and frontend URL)
+/// changes the moment the new thumbnail arrives.
+fn resolve_artwork_from_bytes(
+    bytes: &[u8],
+    art_dir: &Path,
+    color_cache: &mut HashMap<u64, Option<[u8; 3]>>,
+) -> (Option<String>, Option<[u8; 3]>) {
+    if bytes.is_empty() {
+        return (None, None);
+    }
+
+    let key = fnv1a_64_bytes(bytes);
+    let file_path = art_dir.join(format!("{CONTENT_ART_PREFIX}{key:016x}.jpg"));
     if file_path.exists() {
         let color = if let Some(cached) = color_cache.get(&key) {
             *cached
@@ -1152,35 +1275,7 @@ fn resolve_artwork(
         return (Some(file_path.to_string_lossy().into_owned()), color);
     }
 
-    let Ok(thumb_ref) = props.Thumbnail() else {
-        return (None, None);
-    };
-    let Ok(stream) = thumb_ref.OpenReadAsync().and_then(|op| op.join()) else {
-        return (None, None);
-    };
-    let Ok(size_u64) = stream.Size() else {
-        return (None, None);
-    };
-    if size_u64 == 0 || size_u64 > 16 * 1024 * 1024 {
-        return (None, None);
-    }
-    let size = size_u64 as u32;
-    let Ok(input) = stream.GetInputStreamAt(0) else {
-        return (None, None);
-    };
-    let Ok(reader) = DataReader::CreateDataReader(&input) else {
-        return (None, None);
-    };
-    let _ = reader.SetInputStreamOptions(InputStreamOptions::ReadAhead);
-    if reader.LoadAsync(size).and_then(|op| op.join()).is_err() {
-        return (None, None);
-    }
-    let mut bytes = vec![0u8; size as usize];
-    if reader.ReadBytes(&mut bytes).is_err() {
-        return (None, None);
-    }
-
-    let Ok(decoded) = image::load_from_memory(&bytes) else {
+    let Ok(decoded) = image::load_from_memory(bytes) else {
         return (None, None);
     };
     let cropped = crop_square_320(&decoded);
@@ -1195,6 +1290,24 @@ fn resolve_artwork(
     color_cache.insert(key, ambient);
 
     (Some(file_path.to_string_lossy().into_owned()), ambient)
+}
+
+fn purge_legacy_art_files(dir: &Path) {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+            continue;
+        };
+        if name.ends_with(".jpg") && !name.starts_with(CONTENT_ART_PREFIX) {
+            let _ = fs::remove_file(path);
+        }
+    }
 }
 
 fn crop_square_320(img: &image::DynamicImage) -> image::DynamicImage {
@@ -1784,9 +1897,9 @@ fn snapshots_differ(prev: Option<&MediaSnapshot>, next: &MediaSnapshot) -> bool 
     true
 }
 
-fn fnv1a_64(input: &str) -> u64 {
+fn fnv1a_64_bytes(bytes: &[u8]) -> u64 {
     let mut hash: u64 = 0xcbf29ce484222325;
-    for byte in input.as_bytes() {
+    for byte in bytes {
         hash ^= *byte as u64;
         hash = hash.wrapping_mul(0x100000001b3);
     }

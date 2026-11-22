@@ -38,8 +38,8 @@ pub struct WallpaperDirs {
     pub custom: PathBuf,
 }
 
-pub fn wallpaper_dirs(app: &AppHandle) -> Result<WallpaperDirs, AppError> {
-    let root = app.path().app_cache_dir()?.join("wallpapers");
+pub fn wallpaper_dirs(_app: &AppHandle) -> Result<WallpaperDirs, AppError> {
+    let root = crate::paths::data_root().join("wallpapers");
     let dirs = WallpaperDirs {
         thumbs: root.join("thumbs"),
         cache: root.join("cache"),

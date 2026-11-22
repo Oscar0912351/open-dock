@@ -10,7 +10,7 @@ use std::{
 };
 
 use parking_lot::{Mutex, RwLock};
-use tauri::{AppHandle, Emitter, Manager};
+use tauri::{AppHandle, Emitter};
 
 use crate::{desktop::monitors::MonitorInfo, error::AppError};
 
@@ -37,10 +37,7 @@ pub struct ConfigStore {
 
 impl ConfigStore {
     pub fn load(app: &AppHandle, primary_monitor: Option<&MonitorInfo>) -> Arc<Self> {
-        let dir = app
-            .path()
-            .app_config_dir()
-            .unwrap_or_else(|_| PathBuf::from("."));
+        let dir = crate::paths::data_root();
         let store = Arc::new(Self::load_from_dir(dir, Some(app.clone()), primary_monitor));
         if let Some(message) = store.peek_restore_notice() {
             let _ = app.emit("config://restored", &message);

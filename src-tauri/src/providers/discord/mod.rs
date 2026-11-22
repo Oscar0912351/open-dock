@@ -187,16 +187,9 @@ impl DiscordProvider {
         }
     }
 
-    pub fn configure(&self, app: &AppHandle) {
-        let cfg_dir = app
-            .path()
-            .app_config_dir()
-            .unwrap_or_else(|_| PathBuf::from("."));
-        let cache_dir = app
-            .path()
-            .app_cache_dir()
-            .unwrap_or_else(|_| cfg_dir.clone())
-            .join("discord-avatars");
+    pub fn configure(&self, _app: &AppHandle) {
+        let cfg_dir = crate::paths::data_root();
+        let cache_dir = cfg_dir.join("discord-avatars");
         *self.config_dir.lock() = Some(cfg_dir.clone());
         *self.avatar_cache_dir.lock() = Some(cache_dir);
 
@@ -233,21 +226,12 @@ impl DiscordProvider {
             let guard = self.config_dir.lock();
             guard.clone()
         }
-        .unwrap_or_else(|| {
-            app.path()
-                .app_config_dir()
-                .unwrap_or_else(|_| PathBuf::from("."))
-        });
+        .unwrap_or_else(crate::paths::data_root);
         let cache_dir = {
             let guard = self.avatar_cache_dir.lock();
             guard.clone()
         }
-        .unwrap_or_else(|| {
-            app.path()
-                .app_cache_dir()
-                .unwrap_or_else(|_| cfg_dir.clone())
-                .join("discord-avatars")
-        });
+        .unwrap_or_else(|| cfg_dir.join("discord-avatars"));
 
         log::info!(target: "provider:discord", "Starter discord-provider (RPC + WASAPI fallback)");
         let stop = Arc::new(AtomicBool::new(false));
@@ -312,11 +296,7 @@ impl DiscordProvider {
             .config_dir
             .lock()
             .clone()
-            .unwrap_or_else(|| {
-                app.path()
-                    .app_config_dir()
-                    .unwrap_or_else(|_| PathBuf::from("."))
-            });
+            .unwrap_or_else(crate::paths::data_root);
 
         let clean_id = client_id.trim().to_string();
         if clean_id.is_empty() {
@@ -423,11 +403,7 @@ impl DiscordProvider {
             .config_dir
             .lock()
             .clone()
-            .unwrap_or_else(|| {
-                app.path()
-                    .app_config_dir()
-                    .unwrap_or_else(|_| PathBuf::from("."))
-            });
+            .unwrap_or_else(crate::paths::data_root);
         let base = ipc::central_base_url();
 
         let (client_id, redirect_uri) = match ipc::fetch_central_rpc_config(&base).await {
@@ -509,11 +485,7 @@ impl DiscordProvider {
             .config_dir
             .lock()
             .clone()
-            .unwrap_or_else(|| {
-                app.path()
-                    .app_config_dir()
-                    .unwrap_or_else(|_| PathBuf::from("."))
-            });
+            .unwrap_or_else(crate::paths::data_root);
         credentials::delete_credentials(&cfg_dir).map_err(AppError::Other)?;
 
         let status = {

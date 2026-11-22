@@ -222,13 +222,7 @@ fn compose_if_changed(
         return;
     }
 
-    let plates_dir = match app.path().app_cache_dir() {
-        Ok(dir) => dir.join("plates"),
-        Err(error) => {
-            log::error!("Kunne ikke finde cache-mappe til tapetplader: {error}");
-            return;
-        }
-    };
+    let plates_dir = crate::paths::data_root().join("plates");
 
     let entries = compose_entries(
         &plates_dir,

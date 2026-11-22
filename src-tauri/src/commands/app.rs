@@ -207,8 +207,8 @@ pub async fn app_stats(app: AppHandle) -> Result<AppStats, AppError> {
 #[tauri::command]
 pub fn app_open_folder(app: AppHandle, kind: String) -> Result<(), AppError> {
     let dir = match kind.as_str() {
-        "logs" => app.path().app_log_dir()?,
-        "data" => app.path().app_config_dir()?,
+        "logs" => crate::paths::logs_dir(),
+        "data" => crate::paths::data_root(),
         _ => return Err(AppError::Other("Ukendt mappetype".into())),
     };
     fs::create_dir_all(&dir).map_err(AppError::ConfigWrite)?;
