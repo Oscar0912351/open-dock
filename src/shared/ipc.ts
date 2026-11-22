@@ -29,6 +29,8 @@ import type { ProviderKind } from "./bindings/ProviderKind";
 import type { ProviderSnapshot } from "./bindings/ProviderSnapshot";
 import type { SystemCaps } from "./bindings/SystemCaps";
 import type { SystemSample } from "./bindings/SystemSample";
+import type { UpdateProgress } from "./bindings/UpdateProgress";
+import type { UpdateStatus } from "./bindings/UpdateStatus";
 import type { VerticalAnchor } from "./bindings/VerticalAnchor";
 import type { WallpaperEngineSettingsPatch } from "./bindings/WallpaperEngineSettingsPatch";
 import type { WallpaperEngineStatus } from "./bindings/WallpaperEngineStatus";
@@ -146,6 +148,9 @@ export const ipc = {
   discordRpcDisconnect: () => invoke<DiscordRpcStatus>("discord_rpc_disconnect"),
   discordVoiceAction: (action: DiscordVoiceAction) =>
     invoke<void>("discord_voice_action", { action }),
+  updateCheck: () => invoke<UpdateStatus>("update_check"),
+  updateStatus: () => invoke<UpdateStatus | null>("update_status"),
+  updateInstall: () => invoke<void>("update_install"),
 };
 
 export const on = {
@@ -195,6 +200,10 @@ export const on = {
     listen<WallpaperEngineStatus>("wallpaper://status", (event) => callback(event.payload)),
   wallpaperThumbsReady: (callback: () => void) =>
     listen<void>("wallpaper://thumbs-ready", () => callback()),
+  updateStatus: (callback: (status: UpdateStatus) => void) =>
+    listen<UpdateStatus>("update://status", (event) => callback(event.payload)),
+  updateProgress: (callback: (progress: UpdateProgress) => void) =>
+    listen<UpdateProgress>("update://progress", (event) => callback(event.payload)),
 };
 
 export const windowControls = {

@@ -4,6 +4,9 @@ import type { ControlTheme } from "../../shared/bindings/ControlTheme";
 import type { CpuSensorStatus } from "../../shared/bindings/CpuSensorStatus";
 import type { DiscordRpcStatus } from "../../shared/bindings/DiscordRpcStatus";
 import type { Language } from "../../shared/bindings/Language";
+import type { UpdateProgress } from "../../shared/bindings/UpdateProgress";
+import type { UpdateStatus } from "../../shared/bindings/UpdateStatus";
+import { getDateTimeFormatter } from "../../shared/format";
 import { t } from "../../shared/i18n";
 import { DockLogo } from "../../shared/icons/DockLogo";
 import { ipc, on } from "../../shared/ipc";
@@ -38,6 +41,11 @@ export function Settings() {
   const [discordBusy, setDiscordBusy] = useState<"connect" | "disconnect" | null>(null);
   const [discordError, setDiscordError] = useState<string | null>(null);
 
+  const [updateInfo, setUpdateInfo] = useState<UpdateStatus | null>(null);
+  const [updateBusy, setUpdateBusy] = useState<"check" | "install" | null>(null);
+  const [updateDl, setUpdateDl] = useState<UpdateProgress | null>(null);
+  const [updateError, setUpdateError] = useState<string | null>(null);
+
   useEffect(() => {
     let cancelled = false;
     void ipc
@@ -57,6 +65,13 @@ export function Settings() {
       })
       .catch(() => {});
 
+    void ipc
+      .updateStatus()
+      .then((status) => {
+        if (!cancelled) setUpdateInfo(status);
+      })
+      .catch(() => {});
+
     let unlisten: (() => void) | null = null;
     void on
       .discordRpcStatus((st) => {
@@ -71,9 +86,39 @@ export function Settings() {
         }
       });
 
+    let unlistenUpdate: (() => void) | null = null;
+    void on
+      .updateStatus((st) => {
+        if (cancelled) return;
+        setUpdateInfo(st);
+      })
+      .then((fn) => {
+        if (cancelled) {
+          fn();
+        } else {
+          unlistenUpdate = fn;
+        }
+      });
+
+    let unlistenProgress: (() => void) | null = null;
+    void on
+      .updateProgress((p) => {
+        if (cancelled) return;
+        setUpdateDl(p);
+      })
+      .then((fn) => {
+        if (cancelled) {
+          fn();
+        } else {
+          unlistenProgress = fn;
+        }
+      });
+
     return () => {
       cancelled = true;
       unlisten?.();
+      unlistenUpdate?.();
+      unlistenProgress?.();
     };
   }, []);
 
@@ -137,6 +182,35 @@ export function Settings() {
     }
   };
 
+  const handleCheckUpdate = async () => {
+    if (updateBusy !== null) return;
+    setUpdateBusy("check");
+    setUpdateError(null);
+    try {
+      const next = await ipc.updateCheck();
+      setUpdateInfo(next);
+    } catch (err) {
+      setUpdateError(formatError(err));
+    } finally {
+      setUpdateBusy(null);
+    }
+  };
+
+  const handleInstallUpdate = async () => {
+    if (updateBusy !== null) return;
+    setUpdateBusy("install");
+    setUpdateError(null);
+    setUpdateDl(null);
+    try {
+      // Appen lukker sig selv når installeren starter.
+      await ipc.updateInstall();
+    } catch (err) {
+      setUpdateError(formatError(err));
+      setUpdateBusy(null);
+      setUpdateDl(null);
+    }
+  };
+
   const sensorTone: "live" | "warn" | "muted" = !sensorStatus
     ? "muted"
     : sensorStatus.state === "running" && sensorStatus.driverInstalled && !sensorStatus.outdated
@@ -196,6 +270,56 @@ export function Settings() {
         : sensorStatus?.outdated
           ? t("settings.cpuSensorUpdate")
           : t("settings.cpuSensorInstall");
+
+  const updateState = updateInfo?.state ?? null;
+  const updateTone: "live" | "warn" | "muted" =
+    updateBusy === "install" || updateState === "available"
+      ? "warn"
+      : updateState === "upToDate"
+        ? "live"
+        : "muted";
+
+  const updateLabel =
+    updateBusy === "check"
+      ? t("settings.updateChecking")
+      : updateState === "available"
+        ? t("settings.updateStatusAvailable")
+        : updateState === "upToDate"
+          ? t("settings.updateStatusUpToDate")
+          : updateState === "dev"
+            ? t("settings.updateStatusDev")
+            : t("settings.updateStatusUnchecked");
+
+  const buildDateFmt = getDateTimeFormatter("da-DK", "update-build", {
+    day: "numeric",
+    month: "short",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+  const updateHelp =
+    updateBusy === "check"
+      ? t("settings.updateChecking")
+      : updateState === "dev"
+        ? t("settings.updateHelpDev")
+        : updateState === "available" && updateInfo?.latest
+          ? t("settings.updateHelpAvailable", {
+              version: updateInfo.latest.version,
+              date: buildDateFmt.format(new Date(updateInfo.latest.buildId * 1000)),
+            })
+          : updateState === "upToDate"
+            ? t("settings.updateHelpUpToDate")
+            : t("settings.updateHelpUnchecked");
+
+  const downloadPct =
+    updateDl && updateDl.total > 0
+      ? Math.min(100, Math.round((updateDl.downloaded / updateDl.total) * 100))
+      : null;
+  const installLabel =
+    downloadPct !== null && downloadPct < 100
+      ? t("settings.updateDownloading", { pct: downloadPct })
+      : downloadPct === 100
+        ? t("settings.updateVerifying")
+        : t("settings.updateInstall");
 
   return (
     <div className="cc-route is-narrow">
@@ -473,6 +597,43 @@ export function Settings() {
               </div>
             </div>
           </div>
+          <SettingRow
+            title={t("settings.update")}
+            help={updateHelp}
+            meta={
+              <span className={`cc-sensor-state is-${updateTone}`}>
+                <span className="cc-sensor-dot" aria-hidden="true" />
+                {updateLabel}
+              </span>
+            }
+          >
+            <div className="cc-sensor-actions">
+              {updateState === "available" ? (
+                <Button
+                  variant="primary"
+                  disabled={updateBusy !== null}
+                  onClick={() => void handleInstallUpdate()}
+                >
+                  {installLabel}
+                </Button>
+              ) : updateState !== "dev" ? (
+                <Button
+                  variant="secondary"
+                  disabled={updateBusy !== null}
+                  onClick={() => void handleCheckUpdate()}
+                >
+                  {updateBusy === "check"
+                    ? t("settings.updateChecking")
+                    : t("settings.updateCheck")}
+                </Button>
+              ) : null}
+            </div>
+          </SettingRow>
+          {updateError && (
+            <div className="cc-sensor-error" role="alert">
+              {updateError}
+            </div>
+          )}
         </Card>
       </section>
 

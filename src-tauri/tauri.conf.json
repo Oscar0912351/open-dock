@@ -30,7 +30,7 @@
     },
     "windows": {
       "nsis": { "installMode": "currentUser" },
-      "webviewInstallMode": { "type": "downloadBootstrapper" }
+      "webviewInstallMode": { "type": "embedBootstrapper" }
     }
   }
 }

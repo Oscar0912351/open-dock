@@ -8,7 +8,6 @@
 
 Built with **Rust**, **Tauri v2**, **Win32 Subclassing**, and **Direct3D 11 + DirectComposition**.
 
-[![CI](https://github.com/Oscar0912351/open-dock/actions/workflows/ci.yml/badge.svg)](https://github.com/Oscar0912351/open-dock/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-7FE3C1.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/Windows-10%20%2F%2011%20x64-0D1C23.svg)](#prerequisites)
 

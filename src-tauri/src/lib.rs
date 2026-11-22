@@ -7,6 +7,7 @@ pub mod providers;
 mod shortcuts;
 mod state;
 mod tray;
+pub mod update;
 pub mod wallpaper;
 mod windows;
 
@@ -99,6 +100,9 @@ pub fn run() {
             commands::media::media_select_source,
             commands::system::system_history,
             commands::system::system_caps,
+            commands::update::update_check,
+            commands::update::update_status,
+            commands::update::update_install,
             commands::system::cpu_sensor_status,
             commands::system::cpu_sensor_install,
             commands::system::cpu_sensor_uninstall,
@@ -162,6 +166,7 @@ pub fn run() {
             let onboarded = initial_cfg.onboarded;
             let initial_autostart = initial_cfg.general.autostart;
             app.manage(AppState::new(config_store, Vec::new()));
+            app.manage(update::UpdateTracker::default());
             let scheduler = providers::scheduler::Scheduler::new(app.handle().clone());
             scheduler.discord().configure(app.handle());
             app.manage(scheduler);
@@ -171,6 +176,7 @@ pub fn run() {
             tray::install(app.handle())?;
             shortcuts::install(app.handle());
             windows::widget::spawn_all(app.handle())?;
+            update::install_background_check(app.handle());
 
             let launched_via_autostart = std::env::args().any(|arg| arg == "--autostart");
             if onboarded && (launched_via_autostart || !cfg!(debug_assertions)) {

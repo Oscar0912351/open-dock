@@ -1,5 +1,6 @@
 fn main() {
     build_cpu_sensor();
+    println!("cargo:rerun-if-env-changed=OPEN_DOCK_BUILD_ID");
     tauri_build::build();
 
     #[cfg(target_os = "windows")]

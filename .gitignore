@@ -4,5 +4,6 @@ src-tauri/target/
 src-tauri/gen/schemas/
 *.log
 artifacts/
+release/
 design/teaser/*.mp4
 design/teaser/*.webm

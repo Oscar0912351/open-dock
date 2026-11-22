@@ -316,5 +316,9 @@ mod tests {
         AgentTodoProgress::export_all(&config).unwrap();
         AgentSession::export_all(&config).unwrap();
         AgentsSnapshot::export_all(&config).unwrap();
+        crate::update::ReleaseManifest::export_all(&config).unwrap();
+        crate::update::UpdateCheckState::export_all(&config).unwrap();
+        crate::update::UpdateStatus::export_all(&config).unwrap();
+        crate::update::UpdateProgress::export_all(&config).unwrap();
     }
 }
