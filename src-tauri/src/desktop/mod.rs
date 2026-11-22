@@ -1,4 +1,5 @@
 pub mod backdrop;
+pub mod backdrop_capture;
 pub mod drag;
 pub mod fullscreen;
 pub mod glass;
@@ -11,7 +12,7 @@ pub mod wallpaper;
 pub mod zorder;
 
 use std::sync::{
-    atomic::{AtomicIsize, AtomicU32, Ordering},
+    atomic::{AtomicBool, AtomicIsize, AtomicU32, Ordering},
     OnceLock,
 };
 
@@ -35,6 +36,7 @@ use crate::error::AppError;
 const WATCHER_CLASS_NAME: PCWSTR = w!("OpenDockDesktopWatcher");
 static TASKBAR_CREATED: AtomicU32 = AtomicU32::new(0);
 static WATCHER_HWND: AtomicIsize = AtomicIsize::new(0);
+static LAST_TRANSPARENCY: AtomicBool = AtomicBool::new(true);
 static APP_HANDLE: OnceLock<AppHandle> = OnceLock::new();
 static UI_THREAD_ID: OnceLock<std::thread::ThreadId> = OnceLock::new();
 
@@ -60,6 +62,7 @@ where
 
 pub fn install(app: &AppHandle) -> Result<(), AppError> {
     let _ = UI_THREAD_ID.set(std::thread::current().id());
+    LAST_TRANSPARENCY.store(backdrop::system_transparency_enabled(), Ordering::Release);
     if APP_HANDLE.set(app.clone()).is_err() {
         log::warn!("Desktop-overvågning blev installeret mere end én gang");
     }
@@ -158,23 +161,41 @@ unsafe extern "system" fn watcher_proc(
         } else if wp.0 == SPI_SETWORKAREA.0 as usize {
             log::debug!("Arbejdsområde ændret; opdaterer skærme og placering");
             wallpaper::trigger_refresh_debounced();
-        } else if wp.0 == 0
-            && lp.0 != 0
-            && unsafe { PCWSTR(lp.0 as *const u16).to_string() }
-                .map(|s| s.eq_ignore_ascii_case("ImmersiveColorSet"))
-                .unwrap_or(false)
-        {
-            log::debug!("Windows-udseende ændret (ImmersiveColorSet); genanvender glas");
-            if let Some(app) = app_handle() {
-                let app_clone = app.clone();
-                let _ = app.run_on_main_thread(move || {
-                    crate::windows::widget::reapply_glass_all(&app_clone);
-                });
+        } else {
+            let now_transparency = backdrop::system_transparency_enabled();
+            let transparency_changed =
+                LAST_TRANSPARENCY.swap(now_transparency, Ordering::AcqRel) != now_transparency;
+            let is_immersive_color = wp.0 == 0
+                && lp.0 != 0
+                && unsafe { PCWSTR(lp.0 as *const u16).to_string() }
+                    .map(|s| s.eq_ignore_ascii_case("ImmersiveColorSet"))
+                    .unwrap_or(false);
+
+            if transparency_changed {
+                log::info!(
+                    "Windows gennemsigtighedseffekter ændret -> {}; skifter glas-motor",
+                    if now_transparency { "til" } else { "fra" }
+                );
+                if let Some(app) = app_handle() {
+                    let app_clone = app.clone();
+                    let _ = app.run_on_main_thread(move || {
+                        crate::windows::widget::reapply_glass_all(&app_clone);
+                    });
+                }
+            } else if is_immersive_color {
+                log::debug!("Windows-udseende ændret (ImmersiveColorSet); genanvender glas");
+                if let Some(app) = app_handle() {
+                    let app_clone = app.clone();
+                    let _ = app.run_on_main_thread(move || {
+                        crate::windows::widget::reapply_glass_all(&app_clone);
+                    });
+                }
             }
         }
     } else if msg == WM_DISPLAYCHANGE || msg == WM_DPICHANGED {
         log::debug!("Skærm- eller DPI-ændring modtaget; opdaterer plader og placering");
         wallpaper::trigger_refresh_now();
+        backdrop_capture::notify_display_change();
         if let Some(app) = app_handle() {
             crate::wallpaper::notify_monitors_changed(app);
         }

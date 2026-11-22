@@ -434,10 +434,11 @@ fn apply_widget_glass_and_backdrop(
     let effective_theme = instance.theme_override.unwrap_or(appearance.theme_id);
     glass::apply_window_glass(window, effective_engine, effective_theme);
 
-    let want_live = glass::should_use_live_backdrop(
+    let mode = glass::resolve_live_backdrop_mode(
         effective_engine,
         instance.layer,
         glass::is_windows_11(),
+        glass::is_windows_10_2004_or_newer(),
         backdrop::system_transparency_enabled(),
     );
     let Ok(raw_hwnd) = window.hwnd() else {
@@ -461,7 +462,7 @@ fn apply_widget_glass_and_backdrop(
     };
 
     match crate::desktop::run_on_ui_thread_sync(app, move || {
-        backdrop::apply(HWND(raw as _), want_live, spec)
+        backdrop::apply(HWND(raw as _), mode, spec)
     }) {
         Ok(live) => live,
         Err(error) => {

@@ -30,10 +30,10 @@ extern "system" {
     fn RtlGetVersion(lp_version_information: *mut OsVersionInfoW) -> i32;
 }
 
-static IS_WIN11: OnceLock<bool> = OnceLock::new();
+static OS_BUILD: OnceLock<u32> = OnceLock::new();
 
-pub fn is_windows_11() -> bool {
-    *IS_WIN11.get_or_init(|| {
+pub fn os_build_number() -> u32 {
+    *OS_BUILD.get_or_init(|| {
         let mut info = OsVersionInfoW {
             dw_os_version_info_size: size_of::<OsVersionInfoW>() as u32,
             dw_major_version: 0,
@@ -43,8 +43,20 @@ pub fn is_windows_11() -> bool {
             sz_csd_version: [0; 128],
         };
         let status = unsafe { RtlGetVersion(&mut info) };
-        status == 0 && info.dw_major_version >= 10 && info.dw_build_number >= 22000
+        if status == 0 && info.dw_major_version >= 10 {
+            info.dw_build_number
+        } else {
+            0
+        }
     })
+}
+
+pub fn is_windows_11() -> bool {
+    os_build_number() >= 22000
+}
+
+pub fn is_windows_10_2004_or_newer() -> bool {
+    os_build_number() >= 19041
 }
 
 pub fn effective_engine(
@@ -73,16 +85,30 @@ pub fn effective_engine_in_context(
     effective_engine(preferred, widget_override, size, windows_11)
 }
 
-pub fn should_use_live_backdrop(
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LiveBackdropMode {
+    Off,
+    NativeHostBackdrop,
+    CaptureD2d,
+}
+
+pub fn resolve_live_backdrop_mode(
     engine: GlassEngine,
     layer: Layer,
     windows_11: bool,
+    windows_10_2004: bool,
     transparency_enabled: bool,
-) -> bool {
-    engine == GlassEngine::Wallpaper
-        && layer != Layer::Desktop
-        && windows_11
-        && transparency_enabled
+) -> LiveBackdropMode {
+    if engine != GlassEngine::Wallpaper || layer == Layer::Desktop {
+        return LiveBackdropMode::Off;
+    }
+    if windows_11 && transparency_enabled {
+        LiveBackdropMode::NativeHostBackdrop
+    } else if windows_10_2004 {
+        LiveBackdropMode::CaptureD2d
+    } else {
+        LiveBackdropMode::Off
+    }
 }
 
 /// SWCA-acrylic-tint per tema. Lav alpha med vilje: det rigtige indhold under
@@ -256,13 +282,42 @@ mod tests {
     }
 
     #[test]
-    fn live_backdrop_activates_for_floating_wallpaper_widgets_on_win11() {
-        assert!(should_use_live_backdrop(GlassEngine::Wallpaper, Layer::Top, true, true));
-        assert!(should_use_live_backdrop(GlassEngine::Wallpaper, Layer::Normal, true, true));
-        assert!(!should_use_live_backdrop(GlassEngine::Wallpaper, Layer::Desktop, true, true));
-        assert!(!should_use_live_backdrop(GlassEngine::Wallpaper, Layer::Top, false, true));
-        assert!(!should_use_live_backdrop(GlassEngine::Wallpaper, Layer::Top, true, false));
-        assert!(!should_use_live_backdrop(GlassEngine::Acrylic, Layer::Top, true, true));
-        assert!(!should_use_live_backdrop(GlassEngine::Tint, Layer::Top, true, true));
+    fn live_backdrop_mode_selects_native_capture_or_off() {
+        assert_eq!(
+            resolve_live_backdrop_mode(GlassEngine::Wallpaper, Layer::Top, true, true, true),
+            LiveBackdropMode::NativeHostBackdrop
+        );
+        assert_eq!(
+            resolve_live_backdrop_mode(GlassEngine::Wallpaper, Layer::Normal, true, true, true),
+            LiveBackdropMode::NativeHostBackdrop
+        );
+        assert_eq!(
+            resolve_live_backdrop_mode(GlassEngine::Wallpaper, Layer::Top, true, true, false),
+            LiveBackdropMode::CaptureD2d
+        );
+        assert_eq!(
+            resolve_live_backdrop_mode(GlassEngine::Wallpaper, Layer::Normal, false, true, true),
+            LiveBackdropMode::CaptureD2d
+        );
+        assert_eq!(
+            resolve_live_backdrop_mode(GlassEngine::Wallpaper, Layer::Top, false, true, false),
+            LiveBackdropMode::CaptureD2d
+        );
+        assert_eq!(
+            resolve_live_backdrop_mode(GlassEngine::Wallpaper, Layer::Top, false, false, true),
+            LiveBackdropMode::Off
+        );
+        assert_eq!(
+            resolve_live_backdrop_mode(GlassEngine::Wallpaper, Layer::Desktop, true, true, true),
+            LiveBackdropMode::Off
+        );
+        assert_eq!(
+            resolve_live_backdrop_mode(GlassEngine::Acrylic, Layer::Top, true, true, true),
+            LiveBackdropMode::Off
+        );
+        assert_eq!(
+            resolve_live_backdrop_mode(GlassEngine::Tint, Layer::Top, true, true, true),
+            LiveBackdropMode::Off
+        );
     }
 }

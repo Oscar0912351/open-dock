@@ -13,8 +13,9 @@ use windows::{
     Graphics::Effects::{IGraphicsEffect, IGraphicsEffectSource, IGraphicsEffectSource_Impl, IGraphicsEffect_Impl},
     System::{DispatcherQueue, DispatcherQueueController},
     UI::Composition::{
-        CompositionBackdropBrush, CompositionEffectBrush, CompositionGeometry,
-        CompositionPath, CompositionRoundedRectangleGeometry, Compositor, SpriteVisual,
+        CompositionBackdropBrush, CompositionBitmapInterpolationMode, CompositionEffectBrush,
+        CompositionGeometry, CompositionPath, CompositionRoundedRectangleGeometry,
+        CompositionStretch, CompositionSurfaceBrush, Compositor, SpriteVisual,
         Desktop::DesktopWindowTarget,
     },
     Win32::{
@@ -33,6 +34,7 @@ use windows::{
                 DWMWA_TRANSITIONS_FORCEDISABLED, DWMWA_USE_HOSTBACKDROPBRUSH,
                 DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_DONOTROUND,
             },
+            Dxgi::IDXGISwapChain1,
             Gdi::HBRUSH,
         },
         System::{
@@ -41,7 +43,7 @@ use windows::{
             Registry::{RegGetValueW, HKEY_CURRENT_USER, RRF_RT_REG_DWORD},
             WinRT::{
                 CreateDispatcherQueueController,
-                Composition::ICompositorDesktopInterop,
+                Composition::{ICompositorDesktopInterop, ICompositorInterop},
                 DispatcherQueueOptions,
                 Graphics::Direct2D::{
                     IGeometrySource2DInterop, IGeometrySource2DInterop_Impl,
@@ -54,11 +56,12 @@ use windows::{
         },
         UI::WindowsAndMessaging::{
             CreateWindowExW, DefWindowProcW, DestroyWindow, GetWindow, GetWindowLongPtrW,
-            GetWindowRect, IsWindow, IsWindowVisible, RegisterClassExW, SetWindowPos, ShowWindow,
-            GWL_EXSTYLE, GW_HWNDNEXT, HWND_NOTOPMOST, HWND_TOPMOST, SWP_HIDEWINDOW,
-            SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SWP_SHOWWINDOW, SW_HIDE,
-            WNDCLASSEXW, WS_EX_NOACTIVATE, WS_EX_NOREDIRECTIONBITMAP,
-            WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_POPUP,
+            GetWindowRect, IsWindow, IsWindowVisible, RegisterClassExW, SetWindowDisplayAffinity,
+            SetWindowPos, ShowWindow, GWL_EXSTYLE, GW_HWNDNEXT, HWND_NOTOPMOST, HWND_TOPMOST,
+            SWP_HIDEWINDOW, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SWP_SHOWWINDOW,
+            SW_HIDE, WDA_EXCLUDEFROMCAPTURE, WDA_NONE, WNDCLASSEXW, WS_EX_NOACTIVATE,
+            WS_EX_NOREDIRECTIONBITMAP, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT,
+            WS_POPUP,
         },
     },
 };
@@ -67,7 +70,11 @@ use windows_numerics::Vector2;
 
 use crate::config::schema::{Layer, RadiusPreset, ThemeId, VerticalAnchor, WidgetSize};
 
-use super::plate;
+use super::{
+    backdrop_capture::{self, CaptureTargetSpec, SendSwapChain},
+    glass::{self, LiveBackdropMode},
+    plate,
+};
 
 const BACKDROP_CLASS_NAME: PCWSTR = w!("OpenDockGlassBackdrop");
 
@@ -476,9 +483,12 @@ struct BackdropEntry {
     target: DesktopWindowTarget,
     visual: SpriteVisual,
     spec: BackdropSpec,
+    mode: LiveBackdropMode,
+    window_rect: RECT,
     phys_size: (i32, i32),
     sigma_sat: (i32, i32),
     clip_key: (i32, i32, u8, u8, u8, bool, i32),
+    window_visible: bool,
     hidden_idle: bool,
     animating_clip: Option<CompositionRoundedRectangleGeometry>,
 }
@@ -551,7 +561,28 @@ fn init_runtime() -> windows_core::Result<BackdropRuntime> {
     })
 }
 
-fn create_backdrop_hwnd(rect: RECT, topmost: bool) -> windows_core::Result<HWND> {
+fn set_exclude_from_capture(hwnd: HWND, exclude: bool) -> windows_core::Result<()> {
+    let affinity = if exclude { WDA_EXCLUDEFROMCAPTURE } else { WDA_NONE };
+    unsafe { SetWindowDisplayAffinity(hwnd, affinity) }
+}
+
+fn build_surface_brush(
+    compositor: &Compositor,
+    swap_chain: &IDXGISwapChain1,
+) -> windows_core::Result<CompositionSurfaceBrush> {
+    let interop: ICompositorInterop = compositor.cast()?;
+    let surface = unsafe { interop.CreateCompositionSurfaceForSwapChain(swap_chain)? };
+    let brush = compositor.CreateSurfaceBrushWithSurface(&surface)?;
+    brush.SetStretch(CompositionStretch::Fill)?;
+    brush.SetBitmapInterpolationMode(CompositionBitmapInterpolationMode::Linear)?;
+    Ok(brush)
+}
+
+fn create_backdrop_hwnd(
+    rect: RECT,
+    topmost: bool,
+    use_host_backdrop: bool,
+) -> windows_core::Result<HWND> {
     let hinstance = unsafe { GetModuleHandleW(None)? };
     let w = (rect.right - rect.left).max(1);
     let h = (rect.bottom - rect.top).max(1);
@@ -577,19 +608,21 @@ fn create_backdrop_hwnd(rect: RECT, topmost: bool) -> windows_core::Result<HWND>
         )?
     };
 
-    let enable = BOOL(1);
-    if let Err(err) = unsafe {
-        DwmSetWindowAttribute(
-            hwnd,
-            DWMWA_USE_HOSTBACKDROPBRUSH,
-            &enable as *const BOOL as *const _,
-            size_of::<BOOL>() as u32,
-        )
-    } {
-        unsafe {
-            let _ = DestroyWindow(hwnd);
+    if use_host_backdrop {
+        let enable = BOOL(1);
+        if let Err(err) = unsafe {
+            DwmSetWindowAttribute(
+                hwnd,
+                DWMWA_USE_HOSTBACKDROPBRUSH,
+                &enable as *const BOOL as *const _,
+                size_of::<BOOL>() as u32,
+            )
+        } {
+            unsafe {
+                let _ = DestroyWindow(hwnd);
+            }
+            return Err(err);
         }
-        return Err(err);
     }
 
     let corner = DWMWCP_DONOTROUND;
@@ -813,64 +846,58 @@ fn align_backdrop_to_widget(widget_hwnd: HWND, backdrop_hwnd: HWND, hidden_idle:
     }
 }
 
-pub fn apply(widget_hwnd: HWND, enabled: bool, spec: BackdropSpec) -> bool {
-    if !enabled || !unsafe { IsWindow(Some(widget_hwnd)).as_bool() } {
-        detach(widget_hwnd);
-        return false;
+fn remove_entry_locked(rt: &mut BackdropRuntime, key: isize, widget_hwnd: HWND) {
+    BACKDROP_MAP.lock().remove(&key);
+    backdrop_capture::unregister(key);
+    unsafe {
+        if IsWindow(Some(widget_hwnd)).as_bool() {
+            let _ = set_exclude_from_capture(widget_hwnd, false);
+        }
     }
-
-    let mut rect = RECT::default();
-    if unsafe { GetWindowRect(widget_hwnd, &mut rect) }.is_err() {
-        detach(widget_hwnd);
-        return false;
-    }
-    let phys_w = (rect.right - rect.left).max(1);
-    let phys_h = (rect.bottom - rect.top).max(1);
-    let (sigma, sat) = compute_blur_and_saturation(spec.theme, spec.glass_strength, spec.dpi_scale);
-    let sigma_sat = ((sigma * 10.0).round() as i32, (sat * 100.0).round() as i32);
-    let ckey = spec_clip_key(&spec, phys_w, phys_h);
-
-    RUNTIME.with(|cell| {
-        let mut slot = cell.borrow_mut();
-        if slot.is_none() {
-            match init_runtime() {
-                Ok(rt) => *slot = Some(rt),
-                Err(err) => {
-                    log::warn!("Live liquid glass kunne ikke initialiseres: {err}");
-                    return false;
-                }
+    if let Some(old) = rt.entries.remove(&key) {
+        drop(old.visual);
+        drop(old.target);
+        unsafe {
+            if IsWindow(Some(old.backdrop_hwnd)).as_bool() {
+                let _ = DestroyWindow(old.backdrop_hwnd);
             }
         }
-        let Some(rt) = slot.as_mut() else {
-            return false;
-        };
+    }
+}
 
-        let key = widget_hwnd.0 as isize;
-        let existing_valid = rt
-            .entries
-            .get(&key)
-            .map(|e| unsafe { IsWindow(Some(e.backdrop_hwnd)).as_bool() })
-            .unwrap_or(false);
+#[allow(clippy::too_many_arguments)]
+fn create_entry_for_mode(
+    rt: &BackdropRuntime,
+    widget_hwnd: HWND,
+    mode: LiveBackdropMode,
+    spec: BackdropSpec,
+    rect: RECT,
+    phys_w: i32,
+    phys_h: i32,
+    sigma: f32,
+    sat: f32,
+    sigma_sat: (i32, i32),
+    ckey: (i32, i32, u8, u8, u8, bool, i32),
+    w_visible: bool,
+) -> Option<BackdropEntry> {
+    let key = widget_hwnd.0 as isize;
+    let topmost = widget_is_topmost(widget_hwnd);
 
-        if !existing_valid {
-            if let Some(old) = rt.entries.remove(&key) {
-                BACKDROP_MAP.lock().remove(&key);
-                unsafe {
-                    if IsWindow(Some(old.backdrop_hwnd)).as_bool() {
-                        let _ = DestroyWindow(old.backdrop_hwnd);
-                    }
+    match mode {
+        LiveBackdropMode::Off => None,
+        LiveBackdropMode::NativeHostBackdrop => {
+            unsafe {
+                if IsWindow(Some(widget_hwnd)).as_bool() {
+                    let _ = set_exclude_from_capture(widget_hwnd, false);
                 }
             }
-
-            let topmost = widget_is_topmost(widget_hwnd);
-            let backdrop_hwnd = match create_backdrop_hwnd(rect, topmost) {
+            let backdrop_hwnd = match create_backdrop_hwnd(rect, topmost, true) {
                 Ok(h) => h,
                 Err(err) => {
                     log::warn!("DWM HostBackdrop kunne ikke aktiveres på backdrop-vindue: {err}");
-                    return false;
+                    return None;
                 }
             };
-
             let target = match rt.compositor.cast::<ICompositorDesktopInterop>().and_then(|interop| {
                 unsafe { interop.CreateDesktopWindowTarget(backdrop_hwnd, true) }
             }) {
@@ -880,18 +907,18 @@ pub fn apply(widget_hwnd: HWND, enabled: bool, spec: BackdropSpec) -> bool {
                     unsafe {
                         let _ = DestroyWindow(backdrop_hwnd);
                     }
-                    return false;
+                    return None;
                 }
             };
-
             let visual = match rt.compositor.CreateSpriteVisual() {
                 Ok(v) => v,
                 Err(err) => {
                     log::warn!("CreateSpriteVisual fejlede: {err}");
+                    drop(target);
                     unsafe {
                         let _ = DestroyWindow(backdrop_hwnd);
                     }
-                    return false;
+                    return None;
                 }
             };
 
@@ -913,53 +940,281 @@ pub fn apply(widget_hwnd: HWND, enabled: bool, spec: BackdropSpec) -> bool {
 
             if let Err(err) = res {
                 log::warn!("Opsætning af live liquid glass-graf fejlede: {err}");
+                drop(visual);
                 drop(target);
                 unsafe {
                     let _ = DestroyWindow(backdrop_hwnd);
                 }
-                return false;
+                return None;
             }
 
             BACKDROP_MAP.lock().insert(key, backdrop_hwnd.0 as isize);
             align_backdrop_to_widget(widget_hwnd, backdrop_hwnd, false);
+            log::info!("Levende glas aktivt (NativeHostBackdrop) for widget {key}");
 
-            rt.entries.insert(
-                key,
-                BackdropEntry {
-                    backdrop_hwnd,
-                    target,
-                    visual,
-                    spec,
-                    phys_size: (phys_w, phys_h),
-                    sigma_sat,
-                    clip_key: ckey,
-                    hidden_idle: false,
-                    animating_clip: None,
-                },
-            );
-            return true;
+            Some(BackdropEntry {
+                backdrop_hwnd,
+                target,
+                visual,
+                spec,
+                mode: LiveBackdropMode::NativeHostBackdrop,
+                window_rect: rect,
+                phys_size: (phys_w, phys_h),
+                sigma_sat,
+                clip_key: ckey,
+                window_visible: w_visible,
+                hidden_idle: false,
+                animating_clip: None,
+            })
+        }
+        LiveBackdropMode::CaptureD2d => {
+            let backdrop_hwnd = match create_backdrop_hwnd(rect, topmost, false) {
+                Ok(h) => h,
+                Err(err) => {
+                    log::warn!("Capture backdrop-vindue kunne ikke oprettes: {err}");
+                    return None;
+                }
+            };
+            if let Err(err) = set_exclude_from_capture(widget_hwnd, true)
+                .and_then(|_| set_exclude_from_capture(backdrop_hwnd, true))
+            {
+                log::warn!("SetWindowDisplayAffinity(WDA_EXCLUDEFROMCAPTURE) fejlede: {err}");
+                unsafe {
+                    let _ = set_exclude_from_capture(widget_hwnd, false);
+                    let _ = DestroyWindow(backdrop_hwnd);
+                }
+                return None;
+            }
+
+            let sc = match backdrop_capture::register_sync(CaptureTargetSpec {
+                widget_hwnd: key,
+                rect,
+                sigma,
+                sat,
+                paused: false,
+            }) {
+                Ok(Some(sc)) => sc,
+                Ok(None) => {
+                    log::warn!("Capture register_sync returnerede ingen swapchain for ny widget");
+                    unsafe {
+                        let _ = set_exclude_from_capture(widget_hwnd, false);
+                        let _ = DestroyWindow(backdrop_hwnd);
+                    }
+                    return None;
+                }
+                Err(reason) => {
+                    log::warn!("Capture live glass kunne ikke startes: {reason}");
+                    unsafe {
+                        let _ = set_exclude_from_capture(widget_hwnd, false);
+                        let _ = DestroyWindow(backdrop_hwnd);
+                    }
+                    return None;
+                }
+            };
+
+            let target = match rt.compositor.cast::<ICompositorDesktopInterop>().and_then(|interop| {
+                unsafe { interop.CreateDesktopWindowTarget(backdrop_hwnd, true) }
+            }) {
+                Ok(t) => t,
+                Err(err) => {
+                    log::warn!("CreateDesktopWindowTarget (capture) fejlede: {err}");
+                    backdrop_capture::unregister(key);
+                    unsafe {
+                        let _ = set_exclude_from_capture(widget_hwnd, false);
+                        let _ = DestroyWindow(backdrop_hwnd);
+                    }
+                    return None;
+                }
+            };
+
+            let visual = match rt.compositor.CreateSpriteVisual() {
+                Ok(v) => v,
+                Err(err) => {
+                    log::warn!("CreateSpriteVisual (capture) fejlede: {err}");
+                    drop(target);
+                    backdrop_capture::unregister(key);
+                    unsafe {
+                        let _ = set_exclude_from_capture(widget_hwnd, false);
+                        let _ = DestroyWindow(backdrop_hwnd);
+                    }
+                    return None;
+                }
+            };
+
+            let res: windows_core::Result<()> = (|| {
+                visual.SetSize(Vector2::new(phys_w as f32, phys_h as f32))?;
+                let brush = build_surface_brush(&rt.compositor, &sc.0)?;
+                visual.SetBrush(&brush)?;
+                let clip = build_clip(
+                    &rt.compositor,
+                    &rt.d2d_factory,
+                    &spec,
+                    phys_w as f32,
+                    phys_h as f32,
+                )?;
+                visual.SetClip(&clip)?;
+                target.SetRoot(&visual)?;
+                Ok(())
+            })();
+
+            if let Err(err) = res {
+                log::warn!("Opsætning af CaptureD2d liquid glass-graf fejlede: {err}");
+                drop(visual);
+                drop(target);
+                backdrop_capture::unregister(key);
+                unsafe {
+                    let _ = set_exclude_from_capture(widget_hwnd, false);
+                    let _ = DestroyWindow(backdrop_hwnd);
+                }
+                return None;
+            }
+
+            if !w_visible {
+                backdrop_capture::set_paused(key, true);
+            }
+
+            BACKDROP_MAP.lock().insert(key, backdrop_hwnd.0 as isize);
+            align_backdrop_to_widget(widget_hwnd, backdrop_hwnd, false);
+            log::info!("Levende glas aktivt (CaptureD2d) for widget {key}");
+
+            Some(BackdropEntry {
+                backdrop_hwnd,
+                target,
+                visual,
+                spec,
+                mode: LiveBackdropMode::CaptureD2d,
+                window_rect: rect,
+                phys_size: (phys_w, phys_h),
+                sigma_sat,
+                clip_key: ckey,
+                window_visible: w_visible,
+                hidden_idle: false,
+                animating_clip: None,
+            })
+        }
+    }
+}
+
+pub fn apply(widget_hwnd: HWND, requested_mode: LiveBackdropMode, spec: BackdropSpec) -> bool {
+    if requested_mode == LiveBackdropMode::Off || !unsafe { IsWindow(Some(widget_hwnd)).as_bool() }
+    {
+        detach(widget_hwnd);
+        return false;
+    }
+
+    let mut rect = RECT::default();
+    if unsafe { GetWindowRect(widget_hwnd, &mut rect) }.is_err() {
+        detach(widget_hwnd);
+        return false;
+    }
+    let phys_w = (rect.right - rect.left).max(1);
+    let phys_h = (rect.bottom - rect.top).max(1);
+    let (sigma, sat) = compute_blur_and_saturation(spec.theme, spec.glass_strength, spec.dpi_scale);
+    let sigma_sat = ((sigma * 10.0).round() as i32, (sat * 100.0).round() as i32);
+    let ckey = spec_clip_key(&spec, phys_w, phys_h);
+    let w_visible = unsafe { IsWindowVisible(widget_hwnd).as_bool() };
+
+    RUNTIME.with(|cell| {
+        let mut slot = cell.borrow_mut();
+        if slot.is_none() {
+            match init_runtime() {
+                Ok(rt) => *slot = Some(rt),
+                Err(err) => {
+                    log::warn!("Live liquid glass kunne ikke initialiseres: {err}");
+                    return false;
+                }
+            }
+        }
+        let Some(rt) = slot.as_mut() else {
+            return false;
+        };
+
+        let key = widget_hwnd.0 as isize;
+        let existing_same_mode = rt
+            .entries
+            .get(&key)
+            .map(|e| unsafe { IsWindow(Some(e.backdrop_hwnd)).as_bool() } && e.mode == requested_mode)
+            .unwrap_or(false);
+
+        if !existing_same_mode {
+            remove_entry_locked(rt, key, widget_hwnd);
+
+            let created = create_entry_for_mode(
+                rt,
+                widget_hwnd,
+                requested_mode,
+                spec,
+                rect,
+                phys_w,
+                phys_h,
+                sigma,
+                sat,
+                sigma_sat,
+                ckey,
+                w_visible,
+            )
+            .or_else(|| {
+                if requested_mode == LiveBackdropMode::NativeHostBackdrop
+                    && glass::is_windows_10_2004_or_newer()
+                {
+                    log::warn!("Native HostBackdrop fejlede; falder tilbage til CaptureD2d");
+                    create_entry_for_mode(
+                        rt,
+                        widget_hwnd,
+                        LiveBackdropMode::CaptureD2d,
+                        spec,
+                        rect,
+                        phys_w,
+                        phys_h,
+                        sigma,
+                        sat,
+                        sigma_sat,
+                        ckey,
+                        w_visible,
+                    )
+                } else {
+                    None
+                }
+            });
+
+            if let Some(new_entry) = created {
+                rt.entries.insert(key, new_entry);
+                return true;
+            }
+            return false;
         }
 
         let Some(entry) = rt.entries.get_mut(&key) else {
             return false;
         };
 
-        if entry.sigma_sat != sigma_sat {
-            match build_effect_brush(&rt.compositor, sigma, sat) {
-                Ok(brush) => {
-                    if let Err(err) = entry.visual.SetBrush(&brush) {
-                        log::warn!("Opdatering af backdrop-brush fejlede: {err}");
-                    } else {
-                        entry.sigma_sat = sigma_sat;
+        let size_changed = entry.phys_size != (phys_w, phys_h);
+        let rect_changed = entry.window_rect != rect;
+        let vis_changed = entry.window_visible != w_visible;
+
+        if entry.mode == LiveBackdropMode::NativeHostBackdrop {
+            if entry.sigma_sat != sigma_sat {
+                match build_effect_brush(&rt.compositor, sigma, sat) {
+                    Ok(brush) => {
+                        if let Err(err) = entry.visual.SetBrush(&brush) {
+                            log::warn!("Opdatering af backdrop-brush fejlede: {err}");
+                        } else {
+                            entry.sigma_sat = sigma_sat;
+                        }
+                    }
+                    Err(err) => {
+                        log::warn!("Kunne ikke bygge opdateret backdrop-brush: {err}");
                     }
                 }
-                Err(err) => {
-                    log::warn!("Kunne ikke bygge opdateret backdrop-brush: {err}");
-                }
             }
+        } else if entry.sigma_sat != sigma_sat && !size_changed && !rect_changed && !vis_changed {
+            backdrop_capture::update_params_nonblocking(key, sigma, sat);
+            entry.sigma_sat = sigma_sat;
+        } else if entry.sigma_sat != sigma_sat {
+            entry.sigma_sat = sigma_sat;
         }
 
-        if entry.phys_size != (phys_w, phys_h) {
+        if size_changed {
             let _ = entry.visual.SetSize(Vector2::new(phys_w as f32, phys_h as f32));
             entry.phys_size = (phys_w, phys_h);
         }
@@ -985,11 +1240,62 @@ pub fn apply(widget_hwnd: HWND, enabled: bool, spec: BackdropSpec) -> bool {
         }
 
         entry.spec = spec;
+        entry.window_rect = rect;
+        entry.window_visible = w_visible;
+        if entry.mode == LiveBackdropMode::CaptureD2d && (size_changed || rect_changed || vis_changed)
+        {
+            backdrop_capture::update_nonblocking(CaptureTargetSpec {
+                widget_hwnd: key,
+                rect,
+                sigma,
+                sat,
+                paused: !(w_visible && !entry.hidden_idle),
+            });
+        }
+
         let b_hwnd = entry.backdrop_hwnd;
         let hidden_idle = entry.hidden_idle;
         align_backdrop_to_widget(widget_hwnd, b_hwnd, hidden_idle);
         true
     })
+}
+
+pub fn attach_capture_swapchain(
+    widget_hwnd: HWND,
+    generation: u64,
+    swap_chain: SendSwapChain,
+) {
+    if !super::is_ui_thread() {
+        return;
+    }
+    let key = widget_hwnd.0 as isize;
+    if !backdrop_capture::is_generation_current(key, generation) {
+        return;
+    }
+    RUNTIME.with(|cell| {
+        let slot = cell.borrow();
+        let Some(rt) = slot.as_ref() else {
+            return;
+        };
+        let Some(entry) = rt.entries.get(&key) else {
+            return;
+        };
+        if entry.mode != LiveBackdropMode::CaptureD2d
+            || !unsafe { IsWindow(Some(entry.backdrop_hwnd)).as_bool() }
+        {
+            return;
+        }
+        match build_surface_brush(&rt.compositor, &swap_chain.0) {
+            Ok(brush) => {
+                if let Err(err) = entry.visual.SetBrush(&brush) {
+                    log::debug!("Kunne ikke binde opdateret capture-brush: {err}");
+                }
+            }
+            Err(err) => {
+                log::debug!("Kunne ikke bygge capture SurfaceBrush: {err}");
+            }
+        }
+    });
 }
 
 pub fn sync_from_widget(widget_hwnd: HWND) {
@@ -1017,8 +1323,7 @@ pub fn sync_from_widget(widget_hwnd: HWND) {
             return;
         };
         if !unsafe { IsWindow(Some(entry.backdrop_hwnd)).as_bool() } {
-            BACKDROP_MAP.lock().remove(&key);
-            rt.entries.remove(&key);
+            remove_entry_locked(rt, key, widget_hwnd);
             return;
         }
 
@@ -1028,8 +1333,12 @@ pub fn sync_from_widget(widget_hwnd: HWND) {
         }
         let phys_w = (rect.right - rect.left).max(1);
         let phys_h = (rect.bottom - rect.top).max(1);
+        let w_visible = unsafe { IsWindowVisible(widget_hwnd).as_bool() };
+        let size_changed = entry.phys_size != (phys_w, phys_h);
+        let rect_changed = entry.window_rect != rect;
+        let vis_changed = entry.window_visible != w_visible;
 
-        if entry.phys_size != (phys_w, phys_h) {
+        if size_changed {
             let _ = entry.visual.SetSize(Vector2::new(phys_w as f32, phys_h as f32));
             entry.phys_size = (phys_w, phys_h);
             entry.animating_clip = None;
@@ -1047,6 +1356,28 @@ pub fn sync_from_widget(widget_hwnd: HWND) {
             }
         }
 
+        if entry.mode == LiveBackdropMode::CaptureD2d
+            && (size_changed || rect_changed || vis_changed)
+        {
+            entry.window_rect = rect;
+            entry.window_visible = w_visible;
+            let (sigma, sat) = compute_blur_and_saturation(
+                entry.spec.theme,
+                entry.spec.glass_strength,
+                entry.spec.dpi_scale,
+            );
+            backdrop_capture::update_nonblocking(CaptureTargetSpec {
+                widget_hwnd: key,
+                rect,
+                sigma,
+                sat,
+                paused: !(w_visible && !entry.hidden_idle),
+            });
+        } else {
+            entry.window_rect = rect;
+            entry.window_visible = w_visible;
+        }
+
         align_backdrop_to_widget(widget_hwnd, entry.backdrop_hwnd, entry.hidden_idle);
     });
 
@@ -1059,14 +1390,18 @@ pub fn set_window_visible(widget_hwnd: HWND, visible: bool) {
     }
 
     RUNTIME.with(|cell| {
-        let slot = cell.borrow();
-        let Some(rt) = slot.as_ref() else {
+        let mut slot = cell.borrow_mut();
+        let Some(rt) = slot.as_mut() else {
             return;
         };
         let key = widget_hwnd.0 as isize;
-        let Some(entry) = rt.entries.get(&key) else {
+        let Some(entry) = rt.entries.get_mut(&key) else {
             return;
         };
+        entry.window_visible = visible;
+        if entry.mode == LiveBackdropMode::CaptureD2d {
+            backdrop_capture::set_paused(key, !(entry.window_visible && !entry.hidden_idle));
+        }
         let b_hwnd = entry.backdrop_hwnd;
         if !unsafe { IsWindow(Some(b_hwnd)).as_bool() } {
             return;
@@ -1095,10 +1430,18 @@ pub fn set_idle_visible(widget_hwnd: HWND, visible: bool, duration_ms: u32) {
         let Some(entry) = rt.entries.get_mut(&key) else {
             return;
         };
+        let w_visible = unsafe { IsWindowVisible(widget_hwnd).as_bool() };
+        entry.window_visible = w_visible;
         if entry.hidden_idle == !visible {
+            if entry.mode == LiveBackdropMode::CaptureD2d {
+                backdrop_capture::set_paused(key, !(w_visible && !entry.hidden_idle));
+            }
             return;
         }
         entry.hidden_idle = !visible;
+        if entry.mode == LiveBackdropMode::CaptureD2d {
+            backdrop_capture::set_paused(key, !(w_visible && !entry.hidden_idle));
+        }
         let b_hwnd = entry.backdrop_hwnd;
 
         if visible {
@@ -1276,6 +1619,12 @@ pub fn animate_cluster_box(
 pub fn detach(widget_hwnd: HWND) {
     let key = widget_hwnd.0 as isize;
     BACKDROP_MAP.lock().remove(&key);
+    backdrop_capture::unregister(key);
+    unsafe {
+        if IsWindow(Some(widget_hwnd)).as_bool() {
+            let _ = set_exclude_from_capture(widget_hwnd, false);
+        }
+    }
     if !super::is_ui_thread() {
         return;
     }
@@ -1297,11 +1646,18 @@ pub fn detach(widget_hwnd: HWND) {
 }
 
 pub fn shutdown_all() {
-    let stale: Vec<isize> = BACKDROP_MAP.lock().drain().map(|(_, b)| b).collect();
+    backdrop_capture::shutdown_all();
+    let stale: Vec<(isize, isize)> = BACKDROP_MAP.lock().drain().collect();
     if super::is_ui_thread() {
         RUNTIME.with(|cell| {
             if let Some(mut rt) = cell.borrow_mut().take() {
-                for (_, entry) in rt.entries.drain() {
+                for (w_raw, entry) in rt.entries.drain() {
+                    let w_hwnd = HWND(w_raw as _);
+                    unsafe {
+                        if IsWindow(Some(w_hwnd)).as_bool() {
+                            let _ = set_exclude_from_capture(w_hwnd, false);
+                        }
+                    }
                     drop(entry.visual);
                     drop(entry.target);
                     unsafe {
@@ -1313,12 +1669,20 @@ pub fn shutdown_all() {
             }
         });
     }
-    for raw in stale {
-        if raw != 0 {
-            let hwnd = HWND(raw as _);
+    for (w_raw, b_raw) in stale {
+        if w_raw != 0 {
+            let w_hwnd = HWND(w_raw as _);
             unsafe {
-                if IsWindow(Some(hwnd)).as_bool() {
-                    let _ = DestroyWindow(hwnd);
+                if IsWindow(Some(w_hwnd)).as_bool() {
+                    let _ = set_exclude_from_capture(w_hwnd, false);
+                }
+            }
+        }
+        if b_raw != 0 {
+            let b_hwnd = HWND(b_raw as _);
+            unsafe {
+                if IsWindow(Some(b_hwnd)).as_bool() {
+                    let _ = DestroyWindow(b_hwnd);
                 }
             }
         }
