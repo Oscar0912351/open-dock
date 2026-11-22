@@ -189,12 +189,12 @@ fn reconcile_cached_sessions(
             item.pid = procs.first_pid(exes);
         }
         let age = now - item.last_active_ms;
-        if matches!(item.status, AgentStatus::Working | AgentStatus::Waiting) {
-            if !item.process_running || age > WORKING_TIMEOUT_MS {
-                item.status = AgentStatus::Idle;
-                item.detail = None;
-                item.subagent_count = 0;
-            }
+        if matches!(item.status, AgentStatus::Working | AgentStatus::Waiting)
+            && (!item.process_running || age > WORKING_TIMEOUT_MS)
+        {
+            item.status = AgentStatus::Idle;
+            item.detail = None;
+            item.subagent_count = 0;
         }
         let still_active = matches!(item.status, AgentStatus::Working | AgentStatus::Waiting);
         if still_active || (item.last_active_ms > 0 && age <= MAX_RECENT_MS) {
@@ -289,7 +289,7 @@ pub fn scan_all_sessions(
         &paths.windsurf_cascade,
         procs,
         now,
-        cache.as_deref_mut(),
+        cache,
     ));
     sessions.extend(scan_aider(procs, now));
 

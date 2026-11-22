@@ -97,15 +97,9 @@ pub fn discord_process_ids() -> Vec<u32> {
 /// Genbrugelig COM-wrapper omkring `IMMDeviceEnumerator` på worker-tråden så vi undgår
 /// `CoCreateInstance` ved hvert poll.
 #[cfg(windows)]
+#[derive(Default)]
 pub struct AudioSessionMonitor {
     enumerator: Option<windows::Win32::Media::Audio::IMMDeviceEnumerator>,
-}
-
-#[cfg(windows)]
-impl Default for AudioSessionMonitor {
-    fn default() -> Self {
-        Self { enumerator: None }
-    }
 }
 
 #[cfg(windows)]

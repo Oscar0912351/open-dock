@@ -346,20 +346,21 @@ impl DiscordProvider {
             .unwrap_or_else(|| DEFAULT_REDIRECT_URI.to_string());
 
         let cid_auth = clean_id.clone();
-        let (code, _) = match tokio::task::spawn_blocking(move || ipc::request_authorize_code(&cid_auth))
-            .await
-        {
-            Ok(Ok(res)) => res,
-            Ok(Err(msg)) => {
-                self.record_rpc_error(app, Some(clean_id), effective_redirect, msg.clone());
-                return Err(AppError::Other(msg));
-            }
-            Err(join_err) => {
-                let msg = format!("Intern opgavefejl under Discord-godkendelse: {join_err}");
-                self.record_rpc_error(app, Some(clean_id), effective_redirect, msg.clone());
-                return Err(AppError::Other(msg));
-            }
-        };
+        let (code, _, username) =
+            match tokio::task::spawn_blocking(move || ipc::request_authorize_code(&cid_auth))
+                .await
+            {
+                Ok(Ok(res)) => res,
+                Ok(Err(msg)) => {
+                    self.record_rpc_error(app, Some(clean_id), effective_redirect, msg.clone());
+                    return Err(AppError::Other(msg));
+                }
+                Err(join_err) => {
+                    let msg = format!("Intern opgavefejl under Discord-godkendelse: {join_err}");
+                    self.record_rpc_error(app, Some(clean_id), effective_redirect, msg.clone());
+                    return Err(AppError::Other(msg));
+                }
+            };
 
         let token = match ipc::exchange_code_for_token(
             &clean_id,
@@ -382,26 +383,6 @@ impl DiscordProvider {
         } else {
             None
         };
-
-        // Hurtig én-skuds AUTHENTICATE verificerer token og henter brugernavnet med det samme.
-        let verify_cid = clean_id.clone();
-        let verify_tok = token.access_token.clone();
-        let verified = tokio::task::spawn_blocking(move || {
-            let mut pipe = ipc::connect_and_handshake(&verify_cid).ok()?;
-            let (_, auth_data) = authenticate_pipe(&mut pipe, &verify_tok).ok()?;
-            let uname = auth_data
-                .get("user")
-                .and_then(|u| {
-                    ipc::non_empty_str(u.get("global_name"))
-                        .or_else(|| ipc::non_empty_str(u.get("username")))
-                });
-            Some(uname)
-        })
-        .await
-        .ok()
-        .flatten();
-
-        let username = verified.flatten();
 
         let creds = DiscordRpcCredentials {
             client_id: clean_id.clone(),
@@ -458,20 +439,21 @@ impl DiscordProvider {
         };
 
         let cid_auth = client_id.clone();
-        let (code, _) = match tokio::task::spawn_blocking(move || ipc::request_authorize_code(&cid_auth))
-            .await
-        {
-            Ok(Ok(res)) => res,
-            Ok(Err(msg)) => {
-                self.record_rpc_error(app, Some(client_id), redirect_uri, msg.clone());
-                return Err(AppError::Other(msg));
-            }
-            Err(join_err) => {
-                let msg = format!("Intern opgavefejl under Discord-godkendelse: {join_err}");
-                self.record_rpc_error(app, Some(client_id), redirect_uri, msg.clone());
-                return Err(AppError::Other(msg));
-            }
-        };
+        let (code, _, username) =
+            match tokio::task::spawn_blocking(move || ipc::request_authorize_code(&cid_auth))
+                .await
+            {
+                Ok(Ok(res)) => res,
+                Ok(Err(msg)) => {
+                    self.record_rpc_error(app, Some(client_id), redirect_uri, msg.clone());
+                    return Err(AppError::Other(msg));
+                }
+                Err(join_err) => {
+                    let msg = format!("Intern opgavefejl under Discord-godkendelse: {join_err}");
+                    self.record_rpc_error(app, Some(client_id), redirect_uri, msg.clone());
+                    return Err(AppError::Other(msg));
+                }
+            };
 
         let token = match ipc::exchange_code_via_central(&base, &code).await {
             Ok(t) => t,
@@ -487,23 +469,6 @@ impl DiscordProvider {
         } else {
             None
         };
-
-        let verify_cid = client_id.clone();
-        let verify_tok = token.access_token.clone();
-        let verified = tokio::task::spawn_blocking(move || {
-            let mut pipe = ipc::connect_and_handshake(&verify_cid).ok()?;
-            let (_, auth_data) = authenticate_pipe(&mut pipe, &verify_tok).ok()?;
-            let uname = auth_data.get("user").and_then(|u| {
-                ipc::non_empty_str(u.get("global_name"))
-                    .or_else(|| ipc::non_empty_str(u.get("username")))
-            });
-            Some(uname)
-        })
-        .await
-        .ok()
-        .flatten();
-
-        let username = verified.flatten();
 
         let creds = DiscordRpcCredentials {
             client_id: client_id.clone(),

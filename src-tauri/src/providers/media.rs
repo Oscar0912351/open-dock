@@ -1,8 +1,11 @@
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     fs,
     path::{Path, PathBuf},
-    sync::mpsc::{self, RecvTimeoutError, Sender},
+    sync::{
+        mpsc::{self, RecvTimeoutError, Sender},
+        Arc,
+    },
     thread::JoinHandle,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
@@ -37,9 +40,100 @@ use windows::{
 };
 
 const MAX_ART_FILES: usize = 60;
+const MAX_DURATION_CACHE_ENTRIES: usize = 128;
 const GRACE_PERIOD: Duration = Duration::from_secs(2);
 const EPOCH_DIFF_100NS: i64 = 116_444_736_000_000_000;
 const TIMELINE_HYDRATE_DELAYS_MS: [u64; 4] = [250, 1_000, 3_000, 5_000];
+
+#[derive(Debug, Clone)]
+struct TrackFallbackTimer {
+    track_key: String,
+    accumulated_ms: u64,
+    playing_since_ms: Option<i64>,
+}
+
+impl TrackFallbackTimer {
+    fn update_and_get(
+        &mut self,
+        track_key: &str,
+        status: PlaybackStatus,
+        now_ms: i64,
+        known_pos_ms: Option<u64>,
+    ) -> u64 {
+        if self.track_key != track_key {
+            self.track_key.clear();
+            self.track_key.push_str(track_key);
+            self.accumulated_ms = known_pos_ms.unwrap_or(0);
+            self.playing_since_ms = (status == PlaybackStatus::Playing).then_some(now_ms);
+            return self.accumulated_ms;
+        }
+
+        if let Some(pos) = known_pos_ms {
+            self.accumulated_ms = pos;
+            self.playing_since_ms = (status == PlaybackStatus::Playing).then_some(now_ms);
+            return pos;
+        }
+
+        match status {
+            PlaybackStatus::Playing => {
+                if self.playing_since_ms.is_none() {
+                    self.playing_since_ms = Some(now_ms);
+                }
+            }
+            PlaybackStatus::Paused => {
+                if let Some(since) = self.playing_since_ms.take() {
+                    let delta = (now_ms - since).max(0) as u64;
+                    self.accumulated_ms = self.accumulated_ms.saturating_add(delta);
+                }
+            }
+            PlaybackStatus::Stopped | PlaybackStatus::None => {
+                self.accumulated_ms = 0;
+                self.playing_since_ms = None;
+            }
+        }
+
+        match self.playing_since_ms {
+            Some(since) => {
+                let delta = (now_ms - since).max(0) as u64;
+                self.accumulated_ms.saturating_add(delta)
+            }
+            None => self.accumulated_ms,
+        }
+    }
+
+    fn reset(&mut self, status: PlaybackStatus, now_ms: i64, pos_ms: u64) {
+        self.accumulated_ms = pos_ms;
+        self.playing_since_ms = (status == PlaybackStatus::Playing).then_some(now_ms);
+    }
+}
+
+fn update_fallback_timer(
+    timers: &mut HashMap<String, TrackFallbackTimer>,
+    source: &str,
+    title: &str,
+    artist: &str,
+    status: PlaybackStatus,
+    now_ms: i64,
+    known_pos_ms: Option<u64>,
+) -> u64 {
+    if source.is_empty() || (title.is_empty() && artist.is_empty()) {
+        timers.remove(source);
+        return known_pos_ms.unwrap_or(0);
+    }
+    let track_key = format!("{}|{}", title.trim(), artist.trim());
+    let entry = timers.entry(source.to_string()).or_insert_with(|| TrackFallbackTimer {
+        track_key: track_key.clone(),
+        accumulated_ms: known_pos_ms.unwrap_or(0),
+        playing_since_ms: (status == PlaybackStatus::Playing).then_some(now_ms),
+    });
+    entry.update_and_get(&track_key, status, now_ms, known_pos_ms)
+}
+
+#[derive(Default)]
+struct DurationLookupState {
+    resolved: HashMap<String, Option<u64>>,
+    in_flight: HashSet<String>,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
@@ -191,10 +285,12 @@ impl MediaProvider {
                         MediaAction::PlayPause => {
                             if current.status == PlaybackStatus::Playing {
                                 let elapsed = (now - current.updated_at).max(0) as u64;
-                                current.position_ms = current
-                                    .position_ms
-                                    .saturating_add(elapsed)
-                                    .min(current.duration_ms.max(current.position_ms));
+                                let next_pos = current.position_ms.saturating_add(elapsed);
+                                current.position_ms = if current.duration_ms > 0 {
+                                    next_pos.min(current.duration_ms)
+                                } else {
+                                    next_pos
+                                };
                                 current.status = PlaybackStatus::Paused;
                             } else {
                                 current.status = PlaybackStatus::Playing;
@@ -450,6 +546,8 @@ fn run_media_thread(
     let mut bg_hooks: Vec<BgSessionHook> = Vec::new();
     let mut color_cache: HashMap<u64, Option<[u8; 3]>> = HashMap::new();
     let mut source_name_cache: HashMap<String, String> = HashMap::new();
+    let mut fallback_timers: HashMap<String, TrackFallbackTimer> = HashMap::new();
+    let duration_lookup = Arc::new(Mutex::new(DurationLookupState::default()));
     let mut last_emitted: Option<MediaSnapshot> = None;
     let mut lost_since: Option<Instant> = None;
     let mut pending_reconcile: Option<Instant> = None;
@@ -496,7 +594,6 @@ fn run_media_thread(
                 if next_hydrate_at.is_some_and(|deadline| now_inst >= deadline) {
                     next_hydrate_at = None;
                     hydrate_step = hydrate_step.saturating_add(1);
-                    should_rescan = true;
                     should_refresh = true;
                     handled = true;
                 }
@@ -528,6 +625,32 @@ fn run_media_thread(
                         select_session(&manager, target_source.as_deref(), &mut source_name_cache)
                             .or_else(|| active_hooks.as_ref().map(|h| h.session.clone()));
                     if let Some(session) = target_session {
+                        let session_source = session
+                            .SourceAppUserModelId()
+                            .ok()
+                            .map(|s| {
+                                resolve_source_name(&s.to_string_lossy(), &mut source_name_cache)
+                            })
+                            .unwrap_or_default();
+                        let now_ms = unix_now_ms();
+                        match &action {
+                            MediaAction::Next | MediaAction::Previous => {
+                                if let Some(timer) = fallback_timers.get_mut(&session_source) {
+                                    timer.reset(PlaybackStatus::Playing, now_ms, 0);
+                                }
+                            }
+                            MediaAction::Seek { ms } => {
+                                if let Some(timer) = fallback_timers.get_mut(&session_source) {
+                                    let cur_status = if timer.playing_since_ms.is_some() {
+                                        PlaybackStatus::Playing
+                                    } else {
+                                        PlaybackStatus::Paused
+                                    };
+                                    timer.reset(cur_status, now_ms, *ms);
+                                }
+                            }
+                            _ => {}
+                        }
                         let ok = execute_media_control(&session, action);
                         should_refresh = true;
                         if !ok {
@@ -565,12 +688,19 @@ fn run_media_thread(
 
         if should_refresh {
             if let Some(hooks) = active_hooks.as_ref() {
-                let sessions = collect_sessions(&manager, &mut source_name_cache);
+                let sessions = collect_sessions(
+                    &manager,
+                    &mut source_name_cache,
+                    &mut fallback_timers,
+                );
                 if let Some(snapshot) = read_session_snapshot(
                     &hooks.session,
                     &art_dir,
                     &mut color_cache,
                     &mut source_name_cache,
+                    &mut fallback_timers,
+                    &duration_lookup,
+                    &tx,
                     sessions,
                 ) {
                     lost_since = None;
@@ -621,7 +751,11 @@ fn run_media_thread(
                 hydrate_key = None;
                 hydrate_step = 0;
                 next_hydrate_at = None;
-                let sessions = collect_sessions(&manager, &mut source_name_cache);
+                let sessions = collect_sessions(
+                    &manager,
+                    &mut source_name_cache,
+                    &mut fallback_timers,
+                );
                 let empty = MediaSnapshot {
                     available_sources: sessions.iter().map(|s| s.source.clone()).collect(),
                     sessions,
@@ -672,11 +806,13 @@ fn emit_snapshot(app: &AppHandle, snapshot: &MediaSnapshot) {
 fn collect_sessions(
     manager: &GsmtcManager,
     source_name_cache: &mut HashMap<String, String>,
+    fallback_timers: &mut HashMap<String, TrackFallbackTimer>,
 ) -> Vec<MediaSessionInfo> {
     let mut out: Vec<MediaSessionInfo> = Vec::new();
     let Ok(sessions) = manager.GetSessions() else {
         return out;
     };
+    let now_ms = unix_now_ms();
     let count = sessions.Size().unwrap_or(0);
     for i in 0..count {
         let Ok(session) = sessions.GetAt(i) else {
@@ -711,8 +847,10 @@ fn collect_sessions(
             })
             .unwrap_or_default();
         if status == PlaybackStatus::None && title.is_empty() && artist.is_empty() {
+            fallback_timers.remove(&label);
             continue;
         }
+        update_fallback_timer(fallback_timers, &label, &title, &artist, status, now_ms, None);
         out.push(MediaSessionInfo {
             source: label,
             title,
@@ -774,11 +912,15 @@ fn is_session_playing(session: &Session) -> bool {
         .unwrap_or(false)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn read_session_snapshot(
     session: &Session,
     art_dir: &Path,
     color_cache: &mut HashMap<u64, Option<[u8; 3]>>,
     source_name_cache: &mut HashMap<String, String>,
+    fallback_timers: &mut HashMap<String, TrackFallbackTimer>,
+    duration_lookup: &Arc<Mutex<DurationLookupState>>,
+    tx: &Sender<Cmd>,
     sessions: Vec<MediaSessionInfo>,
 ) -> Option<MediaSnapshot> {
     let props = session.TryGetMediaPropertiesAsync().ok()?.join().ok()?;
@@ -815,7 +957,7 @@ fn read_session_snapshot(
     }
 
     let now_ms = unix_now_ms();
-    let (position_ms, duration_ms) = if let Some(tl) = timeline {
+    let (gsmtc_pos_ms, gsmtc_dur_ms) = if let Some(tl) = timeline {
         let start_ms = tl
             .StartTime()
             .map(|t| (t.Duration / 10_000).max(0) as u64)
@@ -854,6 +996,28 @@ fn read_session_snapshot(
         (0, 0)
     };
 
+    let gsmtc_has_timeline = gsmtc_dur_ms > 0 || gsmtc_pos_ms > 0;
+    let duration_ms = if gsmtc_dur_ms > 0 {
+        gsmtc_dur_ms
+    } else {
+        resolve_fallback_duration_ms(duration_lookup, tx, &title, &artist)
+    };
+
+    let raw_position_ms = update_fallback_timer(
+        fallback_timers,
+        &source,
+        &title,
+        &artist,
+        status,
+        now_ms,
+        gsmtc_has_timeline.then_some(gsmtc_pos_ms),
+    );
+    let position_ms = if duration_ms > 0 {
+        raw_position_ms.min(duration_ms)
+    } else {
+        raw_position_ms
+    };
+
     let (art_url, art_color) =
         resolve_artwork(&props, &title, &artist, &album, art_dir, color_cache);
 
@@ -869,10 +1033,11 @@ fn read_session_snapshot(
         .as_ref()
         .and_then(|c| c.IsPreviousEnabled().ok())
         .unwrap_or(false);
-    let can_seek = controls
-        .as_ref()
-        .and_then(|c| c.IsPlaybackPositionEnabled().ok())
-        .unwrap_or(false);
+    let can_seek = gsmtc_has_timeline
+        && controls
+            .as_ref()
+            .and_then(|c| c.IsPlaybackPositionEnabled().ok())
+            .unwrap_or(false);
 
     let shuffle = info
         .IsShuffleActive()
@@ -1207,6 +1372,14 @@ pub fn compute_timeline_ms(
         (raw_pos_ms, effective_end)
     };
 
+    // Browsers like Firefox on Windows do not report GSMTC timeline properties
+    // (EndTime=0, MaxSeekTime=0, Position=0), yet Windows GSMTC still refreshes
+    // LastUpdatedTime every ~60s. Ignoring LastUpdatedTime when both dur and pos
+    // are 0 prevents fabricating a 0..60s timer that resets every minute.
+    if dur == 0 && pos == 0 {
+        return (0, 0);
+    }
+
     let adjusted = if status == PlaybackStatus::Playing && last_updated_ms > 0 && now_ms > last_updated_ms {
         let delta = (now_ms - last_updated_ms) as u64;
         pos.saturating_add(delta)
@@ -1216,6 +1389,270 @@ pub fn compute_timeline_ms(
 
     let clamped = if dur > 0 { adjusted.min(dur) } else { adjusted };
     (clamped, dur)
+}
+
+fn resolve_fallback_duration_ms(
+    cache: &Arc<Mutex<DurationLookupState>>,
+    tx: &Sender<Cmd>,
+    title: &str,
+    artist: &str,
+) -> u64 {
+    let cleaned_title = clean_media_title(title);
+    if cleaned_title.chars().count() < 2 {
+        return 0;
+    }
+    let cleaned_artist = artist.trim().to_string();
+    let cache_key = format!("{}|{}", cleaned_title, cleaned_artist);
+
+    {
+        let mut guard = cache.lock();
+        if let Some(&cached) = guard.resolved.get(&cache_key) {
+            return cached.unwrap_or(0);
+        }
+        if guard.in_flight.contains(&cache_key) || guard.in_flight.len() >= 4 {
+            return 0;
+        }
+        guard.in_flight.insert(cache_key.clone());
+    }
+
+    let cache_clone = Arc::clone(cache);
+    let tx_clone = tx.clone();
+    tauri::async_runtime::spawn(async move {
+        let result = fetch_youtube_duration_ms(&cleaned_title, &cleaned_artist).await;
+        {
+            let mut guard = cache_clone.lock();
+            guard.in_flight.remove(&cache_key);
+            if guard.resolved.len() >= MAX_DURATION_CACHE_ENTRIES {
+                guard.resolved.clear();
+            }
+            guard.resolved.insert(cache_key, result);
+        }
+        if result.is_some() {
+            let _ = tx_clone.send(Cmd::Refresh);
+        }
+    });
+
+    0
+}
+
+async fn fetch_youtube_duration_ms(title: &str, artist: &str) -> Option<u64> {
+    let query = if artist.trim().is_empty() {
+        title.to_string()
+    } else {
+        format!("{} {}", title, artist.trim())
+    };
+
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(4))
+        .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) OpenDock/0.1")
+        .build()
+        .ok()?;
+
+    let payload = serde_json::json!({
+        "context": {
+            "client": {
+                "clientName": "WEB",
+                "clientVersion": "2.20241120.01.00"
+            }
+        },
+        "query": query
+    });
+
+    let resp = client
+        .post("https://www.youtube.com/youtubei/v1/search?prettyPrint=false")
+        .json(&payload)
+        .send()
+        .await
+        .ok()?;
+    if !resp.status().is_success() {
+        return None;
+    }
+    let json: serde_json::Value = resp.json().await.ok()?;
+    extract_matching_youtube_duration_ms(&json, title, artist)
+}
+
+pub fn clean_media_title(raw: &str) -> String {
+    let mut s = raw.trim();
+    if let Some(rest) = s.strip_prefix('(') {
+        if let Some((digits, after)) = rest.split_once(')') {
+            if !digits.is_empty() && digits.chars().all(|c| c.is_ascii_digit()) {
+                s = after.trim_start();
+            }
+        }
+    }
+    for suffix in [
+        " - YouTube Music",
+        " — YouTube Music",
+        " - YouTube",
+        " — YouTube",
+    ] {
+        if let Some(stripped) = s.strip_suffix(suffix) {
+            s = stripped.trim_end();
+            break;
+        }
+    }
+    s.to_string()
+}
+
+fn normalize_for_match(input: &str) -> String {
+    input
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_lowercase()
+}
+
+pub fn parse_duration_text(text: &str) -> Option<u64> {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let parts: Vec<&str> = trimmed.split([':', '.']).collect();
+    let total_secs = match parts.as_slice() {
+        [mm, ss] => {
+            let m: u64 = mm.trim().parse().ok()?;
+            let s: u64 = ss.trim().parse().ok()?;
+            if s >= 60 {
+                return None;
+            }
+            m.checked_mul(60)?.checked_add(s)?
+        }
+        [hh, mm, ss] => {
+            let h: u64 = hh.trim().parse().ok()?;
+            let m: u64 = mm.trim().parse().ok()?;
+            let s: u64 = ss.trim().parse().ok()?;
+            if m >= 60 || s >= 60 {
+                return None;
+            }
+            h.checked_mul(3600)?
+                .checked_add(m.checked_mul(60)?)?
+                .checked_add(s)?
+        }
+        _ => return None,
+    };
+    (total_secs > 0).then(|| total_secs.saturating_mul(1000))
+}
+
+fn extract_yt_text(node: &serde_json::Value) -> String {
+    if let Some(simple) = node.get("simpleText").and_then(|v| v.as_str()) {
+        return simple.to_string();
+    }
+    if let Some(runs) = node.get("runs").and_then(|v| v.as_array()) {
+        let mut out = String::new();
+        for run in runs {
+            if let Some(t) = run.get("text").and_then(|v| v.as_str()) {
+                out.push_str(t);
+            }
+        }
+        return out;
+    }
+    String::new()
+}
+
+fn collect_video_renderers<'a>(
+    node: &'a serde_json::Value,
+    out: &mut Vec<&'a serde_json::Value>,
+) {
+    if out.len() >= 15 {
+        return;
+    }
+    match node {
+        serde_json::Value::Object(map) => {
+            if let Some(vr) = map.get("videoRenderer") {
+                out.push(vr);
+            }
+            for val in map.values() {
+                collect_video_renderers(val, out);
+            }
+        }
+        serde_json::Value::Array(arr) => {
+            for val in arr {
+                collect_video_renderers(val, out);
+            }
+        }
+        _ => {}
+    }
+}
+
+pub fn extract_matching_youtube_duration_ms(
+    json: &serde_json::Value,
+    target_title: &str,
+    target_artist: &str,
+) -> Option<u64> {
+    let norm_title = normalize_for_match(&clean_media_title(target_title));
+    if norm_title.is_empty() {
+        return None;
+    }
+    let norm_artist = normalize_for_match(target_artist);
+
+    let mut renderers = Vec::new();
+    collect_video_renderers(json, &mut renderers);
+
+    struct Candidate {
+        title: String,
+        author: String,
+        duration_ms: u64,
+    }
+
+    let mut candidates = Vec::new();
+    for vr in renderers {
+        let Some(len_node) = vr.get("lengthText") else {
+            continue;
+        };
+        let Some(duration_ms) = parse_duration_text(&extract_yt_text(len_node)) else {
+            continue;
+        };
+        let title = vr
+            .get("title")
+            .map(extract_yt_text)
+            .map(|t| normalize_for_match(&t))
+            .unwrap_or_default();
+        if title.is_empty() {
+            continue;
+        }
+        let author = vr
+            .get("ownerText")
+            .or_else(|| vr.get("longBylineText"))
+            .or_else(|| vr.get("shortBylineText"))
+            .map(extract_yt_text)
+            .map(|a| normalize_for_match(&a))
+            .unwrap_or_default();
+        candidates.push(Candidate {
+            title,
+            author,
+            duration_ms,
+        });
+    }
+
+    let artist_matches = |c: &Candidate| -> bool {
+        norm_artist.is_empty()
+            || (!c.author.is_empty()
+                && (c.author == norm_artist
+                    || c.author.contains(&norm_artist)
+                    || norm_artist.contains(&c.author)))
+            || c.title.contains(&norm_artist)
+    };
+
+    // Pass 1: exact title + artist match.
+    for c in &candidates {
+        if c.title == norm_title && artist_matches(c) {
+            return Some(c.duration_ms);
+        }
+    }
+    // Pass 2: exact title match.
+    for c in &candidates {
+        if c.title == norm_title {
+            return Some(c.duration_ms);
+        }
+    }
+    // Pass 3: substring title match when artist also matches.
+    for c in &candidates {
+        if (c.title.contains(&norm_title) || norm_title.contains(&c.title)) && artist_matches(c) {
+            return Some(c.duration_ms);
+        }
+    }
+
+    None
 }
 
 fn match_known_source_name(aumid: &str) -> Option<&'static str> {
@@ -1366,10 +1803,13 @@ fn unix_now_ms() -> i64 {
 #[cfg(test)]
 mod tests {
     use super::{
-        compute_timeline_ms, extract_ambient_color, format_source_name, MediaSnapshot,
-        PlaybackStatus, snapshots_differ,
+        clean_media_title, compute_timeline_ms, extract_ambient_color,
+        extract_matching_youtube_duration_ms, format_source_name, parse_duration_text,
+        snapshots_differ, update_fallback_timer, MediaSnapshot, PlaybackStatus,
+        TrackFallbackTimer,
     };
     use image::{Rgb, RgbImage};
+    use std::collections::HashMap;
 
     #[test]
     fn formats_known_and_unknown_sources() {
@@ -1397,6 +1837,152 @@ mod tests {
         assert_eq!(
             compute_timeline_ms(0, 89_000, 90_000, 0, 0, 1_000, 10_000, PlaybackStatus::Playing),
             (90_000, 90_000)
+        );
+        // Empty GSMTC timeline (Firefox) must return (0, 0) rather than fabricating now - last_updated.
+        assert_eq!(
+            compute_timeline_ms(0, 0, 0, 0, 0, 10_000, 15_000, PlaybackStatus::Playing),
+            (0, 0)
+        );
+    }
+
+    #[test]
+    fn fallback_timer_accumulates_across_heartbeats_and_pauses_without_resetting() {
+        let mut timers: HashMap<String, TrackFallbackTimer> = HashMap::new();
+        assert_eq!(
+            update_fallback_timer(
+                &mut timers,
+                "Firefox",
+                "KØRER GALT I TUNET VOLVO!",
+                "Granturismo Cars",
+                PlaybackStatus::Playing,
+                1_000,
+                None,
+            ),
+            0
+        );
+        // 5 seconds later
+        assert_eq!(
+            update_fallback_timer(
+                &mut timers,
+                "Firefox",
+                "KØRER GALT I TUNET VOLVO!",
+                "Granturismo Cars",
+                PlaybackStatus::Playing,
+                6_000,
+                None,
+            ),
+            5_000
+        );
+        // 65 seconds later (across 60s GSMTC heartbeat) — never resets!
+        assert_eq!(
+            update_fallback_timer(
+                &mut timers,
+                "Firefox",
+                "KØRER GALT I TUNET VOLVO!",
+                "Granturismo Cars",
+                PlaybackStatus::Playing,
+                66_000,
+                None,
+            ),
+            65_000
+        );
+        // Pause at t=70_000 -> freezes at 69_000
+        assert_eq!(
+            update_fallback_timer(
+                &mut timers,
+                "Firefox",
+                "KØRER GALT I TUNET VOLVO!",
+                "Granturismo Cars",
+                PlaybackStatus::Paused,
+                70_000,
+                None,
+            ),
+            69_000
+        );
+        // Still paused at t=100_000 -> remains 69_000
+        assert_eq!(
+            update_fallback_timer(
+                &mut timers,
+                "Firefox",
+                "KØRER GALT I TUNET VOLVO!",
+                "Granturismo Cars",
+                PlaybackStatus::Paused,
+                100_000,
+                None,
+            ),
+            69_000
+        );
+        // Resume at t=100_000 and read at t=110_000 -> 79_000
+        let _ = update_fallback_timer(
+            &mut timers,
+            "Firefox",
+            "KØRER GALT I TUNET VOLVO!",
+            "Granturismo Cars",
+            PlaybackStatus::Playing,
+            100_000,
+            None,
+        );
+        assert_eq!(
+            update_fallback_timer(
+                &mut timers,
+                "Firefox",
+                "KØRER GALT I TUNET VOLVO!",
+                "Granturismo Cars",
+                PlaybackStatus::Playing,
+                110_000,
+                None,
+            ),
+            79_000
+        );
+        // New video title resets to 0
+        assert_eq!(
+            update_fallback_timer(
+                &mut timers,
+                "Firefox",
+                "Ny Video",
+                "Granturismo Cars",
+                PlaybackStatus::Playing,
+                115_000,
+                None,
+            ),
+            0
+        );
+    }
+
+    #[test]
+    fn parses_youtube_duration_and_matches_video_renderer() {
+        assert_eq!(clean_media_title("(3) KØRER GALT I TUNET VOLVO! - YouTube"), "KØRER GALT I TUNET VOLVO!");
+        assert_eq!(parse_duration_text("52:13"), Some(3_133_000));
+        assert_eq!(parse_duration_text("1:02:05"), Some(3_725_000));
+        assert_eq!(parse_duration_text("LIVE"), None);
+
+        let sample = serde_json::json!({
+            "contents": {
+                "sectionListRenderer": {
+                    "contents": [
+                        {
+                            "videoRenderer": {
+                                "videoId": "4LnvM9aNRHM",
+                                "title": { "runs": [{ "text": "KØRER GALT I TUNET VOLVO!" }] },
+                                "ownerText": { "runs": [{ "text": "Granturismo Cars" }] },
+                                "lengthText": { "simpleText": "52:13" }
+                            }
+                        }
+                    ]
+                }
+            }
+        });
+        assert_eq!(
+            extract_matching_youtube_duration_ms(
+                &sample,
+                "KØRER GALT I TUNET VOLVO!",
+                "Granturismo Cars",
+            ),
+            Some(3_133_000)
+        );
+        assert_eq!(
+            extract_matching_youtube_duration_ms(&sample, "Helt Anden Video", "Anden Kanal"),
+            None
         );
     }
 

@@ -14,7 +14,7 @@ interface ProgressProps {
   anchorUpdatedAt?: number;
   durationMs: number;
   playing: boolean;
-  trackKey: string;
+  trackKey?: string;
   height?: number;
   interactive?: boolean;
   disabledHint?: string;
@@ -45,7 +45,6 @@ export function Progress({
   anchorUpdatedAt,
   durationMs,
   playing,
-  trackKey: _trackKey,
   height = 2.5,
   interactive = false,
   disabledHint,

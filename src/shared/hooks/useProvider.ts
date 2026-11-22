@@ -219,11 +219,14 @@ export function useProvider<K extends ProviderKind>(
     });
 
     if (initial.data !== null || initial.failed) {
-      setState({
-        subId,
-        data: initial.data as ProviderDataMap[K] | null,
-        failed: initial.failed,
-        showSkeleton: false,
+      queueMicrotask(() => {
+        if (!active) return;
+        setState({
+          subId,
+          data: initial.data as ProviderDataMap[K] | null,
+          failed: initial.failed,
+          showSkeleton: false,
+        });
       });
     }
 

@@ -713,7 +713,7 @@ fn apply_saturation(img: &mut RgbImage, s: f32) {
     let m11 = g_w + s;
     let m22 = b_w + s;
 
-    for px in img.as_mut().chunks_exact_mut(3) {
+    for px in img.as_mut().as_chunks_mut::<3>().0 {
         let r = px[0] as f32;
         let g = px[1] as f32;
         let b = px[2] as f32;

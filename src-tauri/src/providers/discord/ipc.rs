@@ -317,8 +317,11 @@ pub fn extract_rpc_error(val: &Value) -> Option<String> {
     Some(msg.to_string())
 }
 
-pub fn request_authorize_code(client_id: &str) -> Result<(String, bool), String> {
+pub fn request_authorize_code(
+    client_id: &str,
+) -> Result<(String, bool, Option<String>), String> {
     let mut pipe = connect_and_handshake(client_id)?;
+    let initial_username = pipe.self_username.clone();
 
     let write_scopes = json!(["rpc", "rpc.voice.read", "rpc.voice.write"]);
     let nonce = pipe
@@ -355,6 +358,7 @@ pub fn request_authorize_code(client_id: &str) -> Result<(String, bool), String>
                 .wait_for_nonce(&retry_nonce, Duration::from_secs(60))
                 .map_err(|e| e.to_string())?;
             if let Some(retry_err) = extract_rpc_error(&retry_resp) {
+                let _ = pipe.write_frame(OP_CLOSE, &json!({}));
                 return Err(retry_err);
             }
             let code = retry_resp
@@ -363,8 +367,10 @@ pub fn request_authorize_code(client_id: &str) -> Result<(String, bool), String>
                 .and_then(|v| v.as_str())
                 .filter(|s| !s.is_empty())
                 .ok_or_else(|| "Discord returnerede ingen autorisationskode".to_string())?;
-            return Ok((code.to_string(), false));
+            let _ = pipe.write_frame(OP_CLOSE, &json!({}));
+            return Ok((code.to_string(), false, initial_username));
         }
+        let _ = pipe.write_frame(OP_CLOSE, &json!({}));
         return Err(err_msg);
     }
 
@@ -374,7 +380,8 @@ pub fn request_authorize_code(client_id: &str) -> Result<(String, bool), String>
         .and_then(|v| v.as_str())
         .filter(|s| !s.is_empty())
         .ok_or_else(|| "Discord returnerede ingen autorisationskode".to_string())?;
-    Ok((code.to_string(), true))
+    let _ = pipe.write_frame(OP_CLOSE, &json!({}));
+    Ok((code.to_string(), true, initial_username))
 }
 
 pub fn url_encode(input: &str) -> String {
