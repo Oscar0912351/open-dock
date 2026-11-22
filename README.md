@@ -13,7 +13,7 @@ Built with **Rust**, **Tauri v2**, **Win32 Subclassing**, and **Direct3D 11 + Di
 
 <br />
 
-<img src="docs/assets/dock-showcase.png" alt="Open Dock frosted glass status dock and Nordic Aurora D3D11 live wallpaper on Windows" width="100%" />
+<img src="docs/assets/dock-showcase.jpg" alt="Open Dock frosted glass widgets — system monitor, media player and clock — over a live desktop wallpaper on Windows" width="100%" />
 
 </div>
 
@@ -104,6 +104,12 @@ All system, media, voice, and weather feeds flow through [`src-tauri/src/provide
 - **Freeform Widgets:** `Clock`, `Player` (GSMTC with multi-source chips), `System` (CPU/RAM/GPU/VRAM/Net/Disk + 60-point sparkline), `Weather` (hourly/7-day curve), `Note` (checklists/notes), and `Discord` (voice activity).
 - **Adaptive Clusters (`All-in-One Box`, `Mini Trio`, `Capsule Bar`, Custom):** Compact multi-module docks (`232` / `264` / `288u`) that dynamically expand on active playback, system load, or click using synchronized two-phase Win32 window sizing.
 - **Themes & Control Center:** **Aurora** (frosted light glass), **Lærk** (warm ceramic stone glass), and **Grafit** (smoked obsidian + `#7FE3C1` mint), configured in a Dark/Light Control Center (`Gallery`, `Desktop`, `Wallpapers`, `Themes`, `Settings`) with dot-grid drag snapping (~120 Hz Rust drag loop) and JSON layout import/export.
+
+<p align="center">
+  <img src="docs/assets/control-center-gallery.jpg" alt="Control Center gallery with live widget cluster previews" width="32%" />
+  <img src="docs/assets/control-center-desktop.jpg" alt="Control Center desktop page with theme picker and live widget preview" width="32%" />
+  <img src="docs/assets/control-center-wallpapers.jpg" alt="Control Center wallpaper catalog" width="32%" />
+</p>
 
 ---
 
