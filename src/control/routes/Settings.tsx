@@ -522,119 +522,85 @@ export function Settings() {
             const avatarInitial = discordDisplayName.charAt(0).toLocaleUpperCase("da-DK") || "D";
 
             return (
-              <div className={`cc-discord-card is-${discordTone}`}>
-                <div className="cc-discord-hero">
-                  {discordLinked ? (
-                    <div
-                      className={`cc-discord-avatar-wrap is-${discordTone}${avatarSrc ? "" : " is-fallback"}`}
-                    >
-                      {avatarSrc ? (
-                        <img
-                          className="cc-discord-avatar"
-                          src={avatarSrc}
-                          alt={discordDisplayName}
-                          draggable={false}
-                          onError={() => setFailedDiscordAvatar(avatarPath)}
-                        />
-                      ) : (
-                        <span className="cc-discord-avatar-fallback" aria-hidden="true">
-                          {avatarInitial}
-                        </span>
-                      )}
-                      <span className="cc-discord-avatar-badge" aria-hidden="true">
-                        <DiscordGlyph size={10} />
+              <div className="cc-discord-row">
+                {discordLinked ? (
+                  <div className={`cc-discord-avatar-wrap${avatarSrc ? "" : " is-fallback"}`}>
+                    {avatarSrc ? (
+                      <img
+                        className="cc-discord-avatar"
+                        src={avatarSrc}
+                        alt={discordDisplayName}
+                        draggable={false}
+                        onError={() => setFailedDiscordAvatar(avatarPath)}
+                      />
+                    ) : (
+                      <span className="cc-discord-avatar-fallback" aria-hidden="true">
+                        {avatarInitial}
                       </span>
-                      <span className="cc-discord-presence-dot" aria-hidden="true" />
-                    </div>
-                  ) : (
-                    <div className="cc-discord-mark" aria-hidden="true">
-                      <DiscordGlyph size={22} />
-                    </div>
-                  )}
+                    )}
+                  </div>
+                ) : (
+                  <div className="cc-discord-mark" aria-hidden="true">
+                    <DiscordGlyph size={18} />
+                  </div>
+                )}
 
-                  <div className="cc-discord-copy">
-                    <div className="cc-discord-name-row">
-                      <span className="cc-discord-name">
-                        {discordLinked ? discordDisplayName : t("discord.rpcTitle")}
-                      </span>
-                      {discordLinked && discordHandle && (
-                        <span className="cc-discord-handle">{discordHandle}</span>
-                      )}
-                      <span className={`cc-discord-presence is-${discordTone}`}>
-                        <span className="cc-discord-presence-dot" aria-hidden="true" />
-                        <span>
-                          {discordConnected
-                            ? t("discord.rpcStatusConnectedShort")
-                            : discordLinked
-                              ? t("discord.rpcStatusWaitingShort")
-                              : t("discord.rpcStatusDisconnectedShort")}
-                        </span>
-                      </span>
-                    </div>
-
-                    <p className="cc-discord-desc">
-                      {discordConnected
-                        ? t("discord.rpcHelpConnected")
-                        : discordLinked
-                          ? t("discord.rpcHelpWaiting")
-                          : t("discord.rpcViaCentralHelp")}
-                    </p>
-
-                    <div className="cc-discord-chips">
-                      {discordLinked ? (
-                        <>
-                          <span className={`cc-discord-chip${discordConnected ? " is-active" : ""}`}>
-                            {t("discord.rpcChipParticipants")}
-                          </span>
-                          {discordConnected && (
-                            <span className="cc-discord-chip is-active">
-                              {discordStatus?.canControlVoice
-                                ? t("discord.rpcChipVoiceControl")
-                                : t("discord.rpcChipVoiceReadOnly")}
-                            </span>
-                          )}
-                          {discordStatus?.viaCentral && (
-                            <span className="cc-discord-chip">{t("discord.rpcChipCentral")}</span>
-                          )}
-                        </>
-                      ) : (
-                        <span className="cc-discord-chip">{t("discord.rpcChipAudioFallback")}</span>
-                      )}
-                    </div>
+                <div className="cc-discord-copy">
+                  <div className="cc-discord-name-row">
+                    <span className="cc-discord-name">
+                      {discordLinked ? discordDisplayName : t("discord.rpcTitle")}
+                    </span>
+                    {discordLinked && discordHandle && (
+                      <span className="cc-discord-handle">{discordHandle}</span>
+                    )}
                   </div>
 
-                  <div className="cc-discord-card-actions">
-                    {discordLinked ? (
-                      <>
-                        <Button
-                          variant="secondary"
-                          disabled={discordBusy !== null}
-                          onClick={() => void handleDiscordConnectCentral()}
-                        >
-                          {discordBusy === "connect"
-                            ? t("discord.rpcConnecting")
-                            : t("discord.rpcReconnect")}
-                        </Button>
-                        <Button
-                          variant="secondary"
-                          disabled={discordBusy !== null}
-                          onClick={() => void handleDiscordDisconnect()}
-                        >
-                          {t("discord.rpcDisconnect")}
-                        </Button>
-                      </>
-                    ) : (
+                  {discordLinked ? (
+                    <div className={`cc-discord-meta is-${discordTone}`}>
+                      <span className="cc-discord-dot" aria-hidden="true" />
+                      <span>
+                        {t("discord.rpcTitle")} ·{" "}
+                        {discordConnected
+                          ? t("discord.rpcStatusConnectedShort")
+                          : t("discord.rpcStatusWaitingShort")}
+                      </span>
+                    </div>
+                  ) : (
+                    <p className="cc-discord-desc">{t("discord.rpcViaCentralHelp")}</p>
+                  )}
+                </div>
+
+                <div className="cc-discord-actions">
+                  {discordLinked ? (
+                    <>
                       <Button
-                        variant="primary"
-                        disabled={discordBusy !== null || discordStatus === null}
+                        variant="ghost"
+                        disabled={discordBusy !== null}
                         onClick={() => void handleDiscordConnectCentral()}
                       >
                         {discordBusy === "connect"
                           ? t("discord.rpcConnecting")
-                          : t("discord.rpcConnect")}
+                          : t("discord.rpcReconnect")}
                       </Button>
-                    )}
-                  </div>
+                      <Button
+                        variant="secondary"
+                        disabled={discordBusy !== null}
+                        onClick={() => void handleDiscordDisconnect()}
+                      >
+                        {t("discord.rpcDisconnect")}
+                      </Button>
+                    </>
+                  ) : (
+                    <Button
+                      variant="primary"
+                      disabled={discordBusy !== null || discordStatus === null}
+                      onClick={() => void handleDiscordConnectCentral()}
+                    >
+                      {discordBusy === "connect"
+                        ? t("discord.rpcConnecting")
+                        : t("discord.rpcConnect")}
+                    </Button>
+                  )}
                 </div>
               </div>
             );
