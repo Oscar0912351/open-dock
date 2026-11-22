@@ -1,39 +1,83 @@
-use std::{sync::atomic::Ordering, time::Duration};
+use std::{
+    sync::{
+        atomic::Ordering,
+        Arc, LazyLock,
+    },
+    time::Duration,
+};
 
 use tauri::{AppHandle, Emitter, Manager};
-use tokio::time::{interval, MissedTickBehavior};
+use tokio::{
+    sync::Notify,
+    time::{interval, MissedTickBehavior},
+};
 use windows::Win32::{
     System::Power::{GetSystemPowerStatus, SYSTEM_POWER_STATUS},
     UI::Shell::{
-        SHQueryUserNotificationState, QUNS_BUSY, QUNS_PRESENTATION_MODE,
-        QUNS_RUNNING_D3D_FULL_SCREEN,
+        SHQueryUserNotificationState, QUNS_PRESENTATION_MODE, QUNS_RUNNING_D3D_FULL_SCREEN,
     },
 };
 
 use crate::{
     providers::scheduler::Scheduler,
     state::{AppPaused, AppState, PauseReason},
+    windows::widget,
 };
 
 use super::{showdesktop, zorder};
+
+static CHECK_NOTIFY: LazyLock<Arc<Notify>> = LazyLock::new(|| Arc::new(Notify::new()));
+
+pub fn trigger_check() {
+    CHECK_NOTIFY.notify_one();
+}
 
 pub fn start(app: AppHandle) {
     tauri::async_runtime::spawn(async move {
         let mut poll = interval(Duration::from_secs(2));
         poll.set_missed_tick_behavior(MissedTickBehavior::Delay);
+        let notify = Arc::clone(&CHECK_NOTIFY);
         let mut last_auto: Option<PauseReason> = None;
+        let mut last_fullscreen = false;
+        let mut last_overlay = false;
 
         loop {
-            poll.tick().await;
-            let general = app.state::<AppState>().config.get().general;
+            tokio::select! {
+                _ = poll.tick() => {}
+                _ = notify.notified() => {
+                    tokio::time::sleep(Duration::from_millis(120)).await;
+                }
+            }
 
-            let fullscreen = general.pause_on_fullscreen
-                && !showdesktop::foreground_is_desktop()
+            let state = app.state::<AppState>();
+            let general = state.config.get().general;
+            let edit_mode = state.edit_mode.load(Ordering::Acquire);
+
+            let is_fullscreen = !showdesktop::foreground_is_desktop()
+                && !showdesktop::foreground_is_shell_or_own()
                 && (shell_reports_fullscreen()
                     || showdesktop::foreground_is_borderless_fullscreen());
+
+            if is_fullscreen != last_fullscreen {
+                last_fullscreen = is_fullscreen;
+                state.fullscreen_active.store(is_fullscreen, Ordering::Release);
+                crate::wallpaper::notify_pause_changed(&app);
+            }
+
+            let next_overlay = general.game_overlay && is_fullscreen && !edit_mode;
+            if next_overlay != last_overlay {
+                last_overlay = next_overlay;
+                state.game_overlay_active.store(next_overlay, Ordering::Release);
+                widget::apply_game_overlay(&app, next_overlay);
+            } else if next_overlay {
+                zorder::reassert_game_overlay();
+            }
+
+            let pause_for_fullscreen =
+                !general.game_overlay && general.pause_on_fullscreen && is_fullscreen;
             let battery = general.pause_on_battery && on_battery();
 
-            let next_auto = if fullscreen {
+            let next_auto = if pause_for_fullscreen {
                 Some(PauseReason::Fullscreen)
             } else if battery {
                 Some(PauseReason::Battery)
@@ -45,7 +89,7 @@ pub fn start(app: AppHandle) {
                 let was_fullscreen = last_auto == Some(PauseReason::Fullscreen);
                 let now_fullscreen = next_auto == Some(PauseReason::Fullscreen);
                 last_auto = next_auto.clone();
-                *app.state::<AppState>().auto_pause_reason.write() = next_auto;
+                *state.auto_pause_reason.write() = next_auto;
                 if was_fullscreen != now_fullscreen {
                     sync_top_widgets(&app, now_fullscreen);
                 }
@@ -64,9 +108,12 @@ fn on_battery() -> bool {
 fn shell_reports_fullscreen() -> bool {
     let result = unsafe { SHQueryUserNotificationState() };
     match result {
+        // Bemærk: QUNS_BUSY udelades bevidst — Windows returnerer QUNS_BUSY ved
+        // proceslinje-pil (^), Start-menu og system-popups. Borderless-fuldskærm
+        // fanges i stedet præcist af `foreground_is_borderless_fullscreen()`.
         Ok(state) => matches!(
             state,
-            QUNS_BUSY | QUNS_RUNNING_D3D_FULL_SCREEN | QUNS_PRESENTATION_MODE
+            QUNS_RUNNING_D3D_FULL_SCREEN | QUNS_PRESENTATION_MODE
         ),
         Err(error) => {
             log::warn!("SHQueryUserNotificationState fejlede: {error}");

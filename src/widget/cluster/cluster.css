@@ -73,12 +73,10 @@
 }
 
 .c-hint {
-  display: inline-flex;
+  display: none;
   align-items: center;
   gap: calc(3 * var(--u));
-  opacity: 0;
   color: var(--ink-3);
-  transition: opacity 140ms var(--e-soft);
   flex: none;
 }
 
@@ -88,7 +86,8 @@
 }
 
 .c-mod:hover .c-hint {
-  opacity: 1;
+  display: inline-flex;
+  animation: od-fade-in 140ms var(--e-soft) both;
 }
 
 /* Afspiller i klynge */
@@ -152,10 +151,6 @@
   background: var(--accent);
   transform-origin: left center;
   transform: scaleX(var(--p-live, var(--p0, 0)));
-}
-
-.c-media-prog-edge > i.is-playing {
-  animation: od-progress var(--rest, 1ms) linear forwards;
 }
 
 /* System mini bars */
@@ -394,16 +389,45 @@
 }
 
 .c-discord-ico.is-call {
-  color: var(--accent);
+  color: var(--dc-live, #4ade80);
   background: var(--panel-2);
 }
 
 .c-mod-discord-cmp {
-  height: calc(32 * var(--u));
-  display: flex;
-  align-items: center;
+  min-height: calc(36 * var(--u));
 }
 
 .c-mod-discord-exp {
-  min-height: calc(76 * var(--u));
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.dc-exp-inner {
+  gap: calc(6 * var(--u));
+  flex: 1 1 auto;
+  min-height: 0;
+  width: 100%;
+}
+
+.c-mod-agents-cmp {
+  min-height: calc(32 * var(--u));
+}
+
+.c-mod-agents-exp {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.ag-exp-inner {
+  gap: calc(4 * var(--u));
+  flex: 1 1 auto;
+  min-height: 0;
+  width: 100%;
+}
+
+.ag-empty-copy {
+  white-space: normal;
+  line-height: 1.35;
 }

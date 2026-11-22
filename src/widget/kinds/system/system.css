@@ -4,7 +4,7 @@
   height: calc(var(--s) * var(--u));
   flex: none;
 }
-.ring svg {
+.ring > svg {
   width: 100%;
   height: 100%;
   transform: rotate(-90deg);
@@ -108,9 +108,13 @@
   height: 100%;
   padding: 0 calc(2 * var(--u));
 }
+.sys-pill-metric {
+  justify-content: center;
+}
 .sys-pill-net {
   gap: calc(2 * var(--u));
   min-width: 0;
+  align-items: center;
 }
 .sys-pill-net-row {
   gap: calc(4 * var(--u));

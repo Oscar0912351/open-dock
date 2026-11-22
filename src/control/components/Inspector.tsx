@@ -3,29 +3,33 @@ import {
   ArrowUp,
   CaretDown,
   CaretRight,
+  Clock,
+  CloudSun,
   Copy,
-  CursorClick,
-  DotsSixVertical,
+  Gauge,
+  Headset,
+  MusicNote,
+  NotePencil,
+  Robot,
   Trash,
+  type Icon,
 } from "@phosphor-icons/react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { AutoRule } from "../../shared/bindings/AutoRule";
 import type { ClusterConfig } from "../../shared/bindings/ClusterConfig";
 import type { ClusterModule } from "../../shared/bindings/ClusterModule";
-import type { GlassEngine } from "../../shared/bindings/GlassEngine";
 import type { Layer } from "../../shared/bindings/Layer";
 import type { ModuleMode } from "../../shared/bindings/ModuleMode";
 import type { ResizeBehavior } from "../../shared/bindings/ResizeBehavior";
 import type { ThemeId } from "../../shared/bindings/ThemeId";
 import type { VerticalAnchor } from "../../shared/bindings/VerticalAnchor";
 import type { WidgetInstance } from "../../shared/bindings/WidgetInstance";
-import type { WidgetSize } from "../../shared/bindings/WidgetSize";
 import { t } from "../../shared/i18n";
-import { ipc } from "../../shared/ipc";
-import { WIDGET_LIST, WIDGET_REGISTRY, type FreeWidgetKind } from "../../widget/registry";
+import { ipc, toAssetUrl } from "../../shared/ipc";
+import { WIDGET_REGISTRY, type FreeWidgetKind } from "../../widget/registry";
 import { formatWidgetTitle, useControlStore } from "../store";
 import { Button } from "./Button";
-import { Input } from "./Input";
+import { Drawer } from "./Drawer";
 import { Segmented } from "./Segmented";
 import { Select, type SelectOption } from "./Select";
 import { SettingsForm } from "./SettingsForm";
@@ -33,29 +37,42 @@ import { Slider } from "./Slider";
 import { Switch } from "./Switch";
 import { WidgetPreview } from "./WidgetPreview";
 
-type InspectorTab = "content" | "appearance" | "placement";
+type ClusterShape = "box" | "pill";
 
-function computeEffectiveEngine(
-  preferred: GlassEngine,
-  layer: Layer,
-  size: WidgetSize,
-  isWin11: boolean,
-): GlassEngine {
-  let chosen = preferred;
-  if (layer !== "desktop" && chosen === "wallpaper") {
-    chosen = "acrylic";
-  }
-  if (chosen === "acrylic" && (!isWin11 || size === "pill")) {
-    chosen = "tint";
-  }
-  return chosen;
+const MAX_CLUSTER_MODULES = 7;
+
+const CLUSTER_MODULE_CHOICES: ReadonlyArray<{
+  id: string;
+  kinds: FreeWidgetKind[];
+  icon: Icon;
+}> = [
+  { id: "clock", kinds: ["clock"], icon: Clock },
+  { id: "weather", kinds: ["weather"], icon: CloudSun },
+  { id: "system", kinds: ["system"], icon: Gauge },
+  { id: "nowPlaying", kinds: ["nowPlaying"], icon: MusicNote },
+  { id: "discord", kinds: ["discord"], icon: Headset },
+  { id: "note", kinds: ["note"], icon: NotePencil },
+  { id: "agents", kinds: ["agents"], icon: Robot },
+];
+
+function defaultAutoRule(kind: FreeWidgetKind, shape: ClusterShape): AutoRule {
+  if (kind === "nowPlaying") return "expandWhenPlaying";
+  if (kind === "discord") return "expandWhenInCall";
+  if (shape === "box" && kind === "system") return "expandWhenHighLoad";
+  if (shape === "box" && kind === "agents") return "expandWhenActive";
+  if (shape === "box" && kind === "weather") return "fillRemainingSpace";
+  return "none";
 }
 
-const ENGINE_LABELS: Record<GlassEngine, string> = {
-  wallpaper: "engine.wallpaper",
-  acrylic: "engine.acrylic",
-  tint: "engine.tint",
-};
+function createClusterModule(kind: FreeWidgetKind, shape: ClusterShape): ClusterModule {
+  return {
+    id: crypto.randomUUID(),
+    kind,
+    defaultMode: kind === "nowPlaying" || kind === "discord" ? "hidden" : "compact",
+    autoRule: defaultAutoRule(kind, shape),
+    settings: { ...WIDGET_REGISTRY[kind].defaultSettings },
+  };
+}
 
 function autoRulesForKind(kind: FreeWidgetKind): SelectOption<AutoRule>[] {
   const common: SelectOption<AutoRule>[] = [
@@ -74,11 +91,21 @@ function autoRulesForKind(kind: FreeWidgetKind): SelectOption<AutoRule>[] {
         { value: "expandWhenHighLoad", label: t("desktop.ruleExpandWhenHighLoad") },
         { value: "fillRemainingSpace", label: t("desktop.ruleFillRemainingSpace") },
       ];
+    case "agents":
+      return [
+        ...common,
+        { value: "expandWhenActive", label: t("desktop.ruleExpandWhenActive") },
+        { value: "fillRemainingSpace", label: t("desktop.ruleFillRemainingSpace") },
+      ];
+    case "discord":
+      return [
+        ...common,
+        { value: "expandWhenInCall", label: t("desktop.ruleExpandWhenInCall") },
+        { value: "fillRemainingSpace", label: t("desktop.ruleFillRemainingSpace") },
+      ];
     case "weather":
     case "note":
     case "clock":
-    case "discord":
-    case "agents":
       return [
         ...common,
         { value: "fillRemainingSpace", label: t("desktop.ruleFillRemainingSpace") },
@@ -93,58 +120,44 @@ export function Inspector() {
   const placements = useControlStore((s) => s.placements);
   const selectedId = useControlStore((s) => s.selectedWidgetId);
   const setSelectedWidgetId = useControlStore((s) => s.setSelectedWidgetId);
-  const isWindows11 = useControlStore((s) => s.isWindows11);
 
   const instance = useMemo(
     () => config?.widgets.find((w) => w.id === selectedId) ?? null,
     [config, selectedId],
   );
 
-  if (!config || !instance) {
-    return (
-      <aside className="cc-inspector">
-        <div className="cc-inspector-empty">
-          <div className="cc-inspector-empty-icon" aria-hidden="true">
-            <CursorClick size={18} />
-          </div>
-          <strong style={{ color: "var(--c-ink-1)", fontWeight: 600 }}>
-            {t("desktop.noneSelected")}
-          </strong>
-          <span>{t("desktop.noneSelectedHint")}</span>
-        </div>
-      </aside>
-    );
-  }
+  if (!config || !instance) return null;
 
   return (
-    <SelectedInspector
+    <WidgetEditorDrawer
       key={instance.id}
       instance={instance}
       config={config}
       monitors={monitors}
       livePlacement={placements[instance.id] ?? null}
-      isWindows11={isWindows11}
+      onClose={() => setSelectedWidgetId(null)}
       onSelect={setSelectedWidgetId}
     />
   );
 }
 
-function SelectedInspector({
+function WidgetEditorDrawer({
   instance,
   config,
   monitors,
   livePlacement,
-  isWindows11,
+  onClose,
   onSelect,
 }: {
   instance: WidgetInstance;
   config: NonNullable<ReturnType<typeof useControlStore.getState>["config"]>;
   monitors: ReturnType<typeof useControlStore.getState>["monitors"];
   livePlacement: ReturnType<typeof useControlStore.getState>["placements"][string] | null;
-  isWindows11: boolean;
+  onClose: () => void;
   onSelect: (id: string | null) => void;
 }) {
-  const [tab, setTab] = useState<InspectorTab>("content");
+  const [advancedOpen, setAdvancedOpen] = useState(false);
+
   const [scaleOverride, setScaleOverride] = useState<{ base: number; pct: number } | null>(null);
   const scaleDraft =
     scaleOverride && scaleOverride.base === instance.scale
@@ -157,19 +170,6 @@ function SelectedInspector({
     glassOverride && glassOverride.base === baseGlass
       ? glassOverride.pct
       : Math.round(baseGlass * 100);
-
-  const [posDraft, setPosDraft] = useState<{
-    baseX: number;
-    baseY: number;
-    x: string;
-    y: string;
-  } | null>(null);
-  const posMatches =
-    posDraft !== null &&
-    posDraft.baseX === instance.placement.x &&
-    posDraft.baseY === instance.placement.y;
-  const posX = posMatches ? posDraft.x : String(Math.round(instance.placement.x));
-  const posY = posMatches ? posDraft.y : String(Math.round(instance.placement.y));
 
   const scaleTimer = useRef<number | null>(null);
   const glassTimer = useRef<number | null>(null);
@@ -199,43 +199,13 @@ function SelectedInspector({
     }, 60);
   };
 
-  const setPosX = (x: string) => {
-    setPosDraft({
-      baseX: instance.placement.x,
-      baseY: instance.placement.y,
-      x,
-      y: posY,
-    });
-  };
-
-  const setPosY = (y: string) => {
-    setPosDraft({
-      baseX: instance.placement.x,
-      baseY: instance.placement.y,
-      x: posX,
-      y,
-    });
-  };
-
-  const commitPosition = () => {
-    const nx = Number(posX);
-    const ny = Number(posY);
-    if (!Number.isFinite(nx) || !Number.isFinite(ny)) {
-      setPosDraft(null);
-      return;
-    }
-    setPosDraft(null);
-    void ipc.widgetMove(instance.id, instance.placement.monitor.name, nx, ny);
-  };
-
   const isCluster = instance.kind === "cluster";
-  const effectiveEngine = computeEffectiveEngine(
-    config.appearance.glassEngine,
-    instance.layer,
-    instance.size,
-    isWindows11,
-  );
-  const engineDiffers = effectiveEngine !== config.appearance.glassEngine;
+  const primaryMonitor =
+    monitors.find((m) => m.name === instance.placement.monitor.name) ??
+    monitors.find((m) => m.isPrimary) ??
+    monitors[0] ??
+    null;
+  const plateUrl = toAssetUrl(primaryMonitor?.platePath ?? "");
 
   const themeOptions: SelectOption<string>[] = [
     {
@@ -266,45 +236,65 @@ function SelectedInspector({
     monitors[0]?.name ??
     instance.placement.monitor.name;
 
-  const sizeLabel =
-    isCluster && instance.cluster
-      ? `${instance.cluster.width} px`
-      : t(`size.${instance.size}`);
+  const monIdx = monitors.findIndex((m) => m.name === currentMonitorName);
+  const subtitleParts: string[] = [];
+  if (isCluster && instance.cluster) {
+    subtitleParts.push(
+      instance.cluster.presetId === "pillBar"
+        ? t("gallery.custom.pill")
+        : t("gallery.custom.box"),
+    );
+  } else {
+    subtitleParts.push(t(`size.${instance.size}`));
+  }
+  if (monitors.length > 1 && monIdx >= 0) {
+    subtitleParts.push(t("gallery.monitorNth", { n: monIdx + 1 }));
+  }
+
+  const freeMeta = instance.kind === "cluster" ? null : WIDGET_REGISTRY[instance.kind];
+  const hasSettings = Boolean(freeMeta && freeMeta.settingsSchema.length > 0);
 
   return (
-    <aside className="cc-inspector">
-      {/* Pinned Top Header */}
-      <div className="cc-inspector-head">
-        <div style={{ minWidth: 0 }}>
-          <div className="cc-inspector-head-title">{formatWidgetTitle(instance)}</div>
-          <div className="cc-inspector-head-meta">{sizeLabel}</div>
-        </div>
-        <div style={{ display: "flex", gap: 4, flex: "none" }}>
-          <button
-            type="button"
-            className="cc-iconbtn"
-            aria-label={t("desktop.duplicate")}
-            title={t("desktop.duplicate")}
+    <Drawer
+      open
+      title={formatWidgetTitle(instance)}
+      subtitle={subtitleParts.join(" · ")}
+      onClose={onClose}
+      footer={
+        <div className="cc-wd-foot-actions">
+          <Button
+            variant="secondary"
+            style={{ flex: 1 }}
             onClick={() => {
               void ipc.widgetDuplicate(instance.id).then((copy) => onSelect(copy.id));
             }}
           >
-            <Copy size={14} aria-hidden="true" />
-          </button>
-          <button
-            type="button"
-            className="cc-iconbtn is-danger"
-            aria-label={t("desktop.removeWidget")}
-            title={t("desktop.removeWidget")}
-            onClick={() => void ipc.widgetRemove(instance.id)}
+            <Copy size={13} aria-hidden="true" />
+            <span>{t("desktop.duplicate")}</span>
+          </Button>
+          <Button
+            variant="danger"
+            style={{ flex: 1 }}
+            onClick={() => {
+              onClose();
+              void ipc.widgetRemove(instance.id);
+            }}
           >
-            <Trash size={14} aria-hidden="true" />
-          </button>
+            <Trash size={13} aria-hidden="true" />
+            <span>{t("desktop.removeWidget")}</span>
+          </Button>
         </div>
-      </div>
-
-      {/* Pinned Live Preview Stage */}
-      <div className="cc-inspector-preview">
+      }
+    >
+      <div className="cc-wd-preview">
+        {plateUrl && (
+          <div
+            className="cc-preview-bg"
+            aria-hidden="true"
+            style={{ backgroundImage: `url("${plateUrl}")` }}
+          />
+        )}
+        <div className="cc-stage-scrim" aria-hidden="true" />
         <WidgetPreview
           instance={instance}
           id={instance.id}
@@ -316,77 +306,73 @@ function SelectedInspector({
           monitors={monitors}
           locations={config.weather.locations}
           livePlacement={livePlacement}
-          maxWidth={312}
-          maxHeight={142}
-          stageHeight={160}
+          maxWidth={320}
+          maxHeight={156}
+          stageHeight={176}
           interactive={isCluster}
+          previewShowAll={isCluster}
         />
       </div>
 
-      {/* Pinned Tab Strip */}
-      <div className="cc-inspector-tabs">
-        <Segmented<InspectorTab>
-          fullWidth
-          value={tab}
-          ariaLabel={formatWidgetTitle(instance)}
-          options={[
-            { value: "content", label: t("desktop.tabContent") },
-            { value: "appearance", label: t("desktop.tabAppearance") },
-            { value: "placement", label: t("desktop.tabPlacement") },
-          ]}
-          onChange={setTab}
+      {isCluster && instance.cluster ? (
+        <ClusterQuickEditor
+          cluster={instance.cluster}
+          onChange={(nextCluster) =>
+            void ipc.widgetUpdate(instance.id, { cluster: nextCluster })
+          }
         />
-      </div>
-
-      {/* Independent Scrollable Tab Content */}
-      <div className="cc-inspector-body">
-        {tab === "content" && (
-          <>
-            {instance.kind !== "cluster" && (
-              <div className="cc-insp-section">
-                <span className="cc-section-label">{t("desktop.secSize")}</span>
-                <Segmented
-                  fullWidth
-                  value={instance.size}
-                  ariaLabel={t("desktop.secSize")}
-                  options={WIDGET_REGISTRY[instance.kind].allowedSizes.map((s) => ({
-                    value: s,
-                    label: t(`size.${s}`),
-                  }))}
-                  onChange={(size) => void ipc.widgetUpdate(instance.id, { size })}
-                />
-              </div>
-            )}
-
-            <div className="cc-insp-section">
-              <span className="cc-section-label">{t("desktop.secContent")}</span>
-              {instance.kind === "cluster" && instance.cluster ? (
-                <ClusterEditor
-                  cluster={instance.cluster}
-                  onChange={(nextCluster) =>
-                    void ipc.widgetUpdate(instance.id, { cluster: nextCluster })
-                  }
-                />
-              ) : (
-                instance.kind !== "cluster" && (
-                  <SettingsForm
-                    kind={instance.kind}
-                    size={instance.size}
-                    settings={instance.settings}
-                    onPatch={(patch) =>
-                      void ipc.widgetUpdate(instance.id, {
-                        settings: { ...instance.settings, ...patch },
-                      })
-                    }
-                  />
-                )
-              )}
+      ) : (
+        <>
+          {freeMeta && freeMeta.allowedSizes.length > 1 && (
+            <div className="cc-insp-field">
+              <span className="cc-field-label">{t("desktop.secSize")}</span>
+              <Segmented
+                fullWidth
+                value={instance.size}
+                ariaLabel={t("desktop.secSize")}
+                options={freeMeta.allowedSizes.map((s) => ({
+                  value: s,
+                  label: t(`size.${s}`),
+                }))}
+                onChange={(size) => void ipc.widgetUpdate(instance.id, { size })}
+              />
             </div>
-          </>
-        )}
+          )}
 
-        {tab === "appearance" && (
-          <div className="cc-insp-section">
+          {hasSettings && instance.kind !== "cluster" && (
+            <div className="cc-insp-section">
+              <SettingsForm
+                kind={instance.kind}
+                size={instance.size}
+                settings={instance.settings}
+                onPatch={(patch) =>
+                  void ipc.widgetUpdate(instance.id, {
+                    settings: { ...instance.settings, ...patch },
+                  })
+                }
+              />
+            </div>
+          )}
+        </>
+      )}
+
+      <div className="cc-wd-advanced">
+        <button
+          type="button"
+          className="cc-wd-advanced-toggle"
+          aria-expanded={advancedOpen}
+          onClick={() => setAdvancedOpen((prev) => !prev)}
+        >
+          {advancedOpen ? (
+            <CaretDown size={13} aria-hidden="true" />
+          ) : (
+            <CaretRight size={13} aria-hidden="true" />
+          )}
+          <span>{t("desktop.moreOptions")}</span>
+        </button>
+
+        {advancedOpen && (
+          <div className="cc-wd-advanced-body">
             <div className="cc-insp-field">
               <span className="cc-field-label">{t("desktop.scale")}</span>
               <Slider
@@ -399,6 +385,49 @@ function SelectedInspector({
                 onChange={handleScaleChange}
               />
             </div>
+
+            <div className="cc-insp-field">
+              <span className="cc-field-label">{t("desktop.layerLabel")}</span>
+              <Select
+                options={layerOptions}
+                value={instance.layer}
+                ariaLabel={t("desktop.layerLabel")}
+                onChange={(layer) => void ipc.widgetUpdate(instance.id, { layer })}
+              />
+            </div>
+
+            <div className="cc-insp-field">
+              <div className="cc-insp-field-head">
+                <span className="cc-field-label">{t("desktop.clickThrough")}</span>
+                <Switch
+                  checked={instance.clickThrough}
+                  ariaLabel={t("desktop.clickThrough")}
+                  onChange={(clickThrough) =>
+                    void ipc.widgetUpdate(instance.id, { clickThrough })
+                  }
+                />
+              </div>
+              <span className="cc-field-help">{t("desktop.clickThroughHelp")}</span>
+            </div>
+
+            {monitorOptions.length > 1 && (
+              <div className="cc-insp-field">
+                <span className="cc-field-label">{t("desktop.monitorLabelField")}</span>
+                <Select
+                  options={monitorOptions}
+                  value={currentMonitorName}
+                  ariaLabel={t("desktop.monitorLabelField")}
+                  onChange={(mon) =>
+                    void ipc.widgetMove(
+                      instance.id,
+                      mon,
+                      instance.placement.x,
+                      instance.placement.y,
+                    )
+                  }
+                />
+              </div>
+            )}
 
             <div className="cc-insp-field">
               <span className="cc-field-label">{t("desktop.themeLabel")}</span>
@@ -421,7 +450,9 @@ function SelectedInspector({
                   <button
                     type="button"
                     className="cc-link-btn"
-                    onClick={() => void ipc.widgetUpdate(instance.id, { glassOverride: null })}
+                    onClick={() =>
+                      void ipc.widgetUpdate(instance.id, { glassOverride: null })
+                    }
                   >
                     {t("desktop.reset")}
                   </button>
@@ -438,126 +469,196 @@ function SelectedInspector({
               />
             </div>
 
-            <div className="cc-info-banner">
-              <span>
-                {engineDiffers && instance.layer !== "desktop"
-                  ? t("engine.fallbackTop", { engine: t(ENGINE_LABELS[effectiveEngine]) })
-                  : t("engine.effective", { engine: t(ENGINE_LABELS[effectiveEngine]) })}
-              </span>
-            </div>
+            {isCluster && instance.cluster && (
+              <ClusterAdvancedEditor
+                cluster={instance.cluster}
+                onChange={(nextCluster) =>
+                  void ipc.widgetUpdate(instance.id, { cluster: nextCluster })
+                }
+              />
+            )}
           </div>
         )}
-
-        {tab === "placement" && (
-          <>
-            <div className="cc-insp-section">
-              <div className="cc-insp-field">
-                <span className="cc-field-label">{t("desktop.layerLabel")}</span>
-                <Select
-                  options={layerOptions}
-                  value={instance.layer}
-                  ariaLabel={t("desktop.layerLabel")}
-                  onChange={(layer) => void ipc.widgetUpdate(instance.id, { layer })}
-                />
-              </div>
-
-              <div className="cc-insp-field">
-                <div className="cc-insp-field-head">
-                  <span className="cc-field-label">{t("desktop.clickThrough")}</span>
-                  <Switch
-                    checked={instance.clickThrough}
-                    ariaLabel={t("desktop.clickThrough")}
-                    onChange={(clickThrough) => void ipc.widgetUpdate(instance.id, { clickThrough })}
-                  />
-                </div>
-                <span className="cc-field-help">{t("desktop.clickThroughHelp")}</span>
-              </div>
-
-              {monitorOptions.length > 0 && (
-                <div className="cc-insp-field">
-                  <span className="cc-field-label">{t("desktop.monitorLabelField")}</span>
-                  <Select
-                    options={monitorOptions}
-                    value={currentMonitorName}
-                    ariaLabel={t("desktop.monitorLabelField")}
-                    onChange={(mon) =>
-                      void ipc.widgetMove(instance.id, mon, instance.placement.x, instance.placement.y)
-                    }
-                  />
-                </div>
-              )}
-
-              <div className="cc-xy-grid">
-                <div className="cc-insp-field">
-                  <span className="cc-field-label">{t("desktop.posX")}</span>
-                  <Input
-                    numeric
-                    type="number"
-                    value={posX}
-                    aria-label={t("desktop.posX")}
-                    onChange={(e) => setPosX(e.target.value)}
-                    onBlur={commitPosition}
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter") commitPosition();
-                    }}
-                  />
-                </div>
-                <div className="cc-insp-field">
-                  <span className="cc-field-label">{t("desktop.posY")}</span>
-                  <Input
-                    numeric
-                    type="number"
-                    value={posY}
-                    aria-label={t("desktop.posY")}
-                    onChange={(e) => setPosY(e.target.value)}
-                    onBlur={commitPosition}
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter") commitPosition();
-                    }}
-                  />
-                </div>
-              </div>
-            </div>
-
-            <div className="cc-insp-section">
-              <span className="cc-section-label">{t("desktop.secDanger")}</span>
-              <div style={{ display: "flex", gap: 8 }}>
-                <Button
-                  variant="secondary"
-                  style={{ flex: 1 }}
-                  onClick={() => {
-                    void ipc.widgetDuplicate(instance.id).then((copy) => onSelect(copy.id));
-                  }}
-                >
-                  <Copy size={13} aria-hidden="true" />
-                  <span>{t("desktop.duplicate")}</span>
-                </Button>
-                <Button
-                  variant="danger"
-                  style={{ flex: 1 }}
-                  onClick={() => void ipc.widgetRemove(instance.id)}
-                >
-                  <Trash size={13} aria-hidden="true" />
-                  <span>{t("desktop.removeWidget")}</span>
-                </Button>
-              </div>
-            </div>
-          </>
-        )}
       </div>
-    </aside>
+    </Drawer>
   );
 }
 
-function ClusterEditor({
+function ClusterQuickEditor({
   cluster,
   onChange,
 }: {
   cluster: ClusterConfig;
   onChange: (next: ClusterConfig) => void;
 }) {
-  const [expandedModId, setExpandedModId] = useState<string | null>(null);
-  const [dragIdx, setDragIdx] = useState<number | null>(null);
+  const [openModId, setOpenModId] = useState<string | null>(null);
+  const shape: ClusterShape = cluster.presetId === "pillBar" ? "pill" : "box";
+
+  const activeKinds = useMemo(
+    () =>
+      cluster.modules
+        .map((m) => m.kind)
+        .filter((k): k is FreeWidgetKind => k !== "cluster"),
+    [cluster.modules],
+  );
+
+  const handleShapeChange = (nextShape: ClusterShape) => {
+    if (nextShape === shape) return;
+    const modules = cluster.modules.map((m) => {
+      if (m.kind === "cluster") return m;
+      let autoRule = m.autoRule;
+      if (
+        nextShape === "pill" &&
+        (autoRule === "fillRemainingSpace" ||
+          autoRule === "expandWhenHighLoad" ||
+          autoRule === "expandWhenActive")
+      ) {
+        autoRule = "none";
+      } else if (nextShape === "box" && autoRule === "none") {
+        autoRule = defaultAutoRule(m.kind, "box");
+      }
+      return { ...m, autoRule };
+    });
+    onChange({
+      ...cluster,
+      presetId: nextShape === "pill" ? "pillBar" : null,
+      maxHeight: nextShape === "pill" ? 240 : 320,
+      modules,
+    });
+  };
+
+  const toggleChoice = (kinds: FreeWidgetKind[]) => {
+    const anyOn = kinds.some((k) => activeKinds.includes(k));
+    if (anyOn) {
+      const remaining = cluster.modules.filter(
+        (m) => m.kind === "cluster" || !kinds.includes(m.kind),
+      );
+      if (remaining.length === 0) return;
+      onChange({ ...cluster, modules: remaining });
+      return;
+    }
+    const toAdd = kinds.filter((k) => !activeKinds.includes(k));
+    if (cluster.modules.length + toAdd.length > MAX_CLUSTER_MODULES) return;
+    const nextModules = [
+      ...cluster.modules,
+      ...toAdd.map((k) => createClusterModule(k, shape)),
+    ];
+    onChange({ ...cluster, modules: nextModules });
+  };
+
+  const updateModuleSettings = (modId: string, patch: Record<string, unknown>) => {
+    onChange({
+      ...cluster,
+      modules: cluster.modules.map((m) =>
+        m.id === modId ? { ...m, settings: { ...m.settings, ...patch } } : m,
+      ),
+    });
+  };
+
+  const configurableModules = cluster.modules.filter(
+    (m) => m.kind !== "cluster" && WIDGET_REGISTRY[m.kind].settingsSchema.length > 0,
+  );
+
+  return (
+    <div className="cc-insp-section">
+      <div className="cc-insp-field">
+        <span className="cc-field-label">{t("gallery.custom.shape")}</span>
+        <Segmented<ClusterShape>
+          fullWidth
+          value={shape}
+          ariaLabel={t("gallery.custom.shape")}
+          options={[
+            { value: "box", label: t("gallery.custom.box") },
+            { value: "pill", label: t("gallery.custom.pill") },
+          ]}
+          onChange={handleShapeChange}
+        />
+      </div>
+
+      <div className="cc-insp-field">
+        <div className="cc-insp-field-head">
+          <span className="cc-field-label">{t("gallery.custom.modules")}</span>
+          <span className="cc-field-help">
+            {cluster.modules.length} / {MAX_CLUSTER_MODULES}
+          </span>
+        </div>
+        <div className="cc-modchips" role="group" aria-label={t("gallery.custom.modules")}>
+          {CLUSTER_MODULE_CHOICES.map(({ id, kinds, icon: ModuleIcon }) => {
+            const isOn = kinds.some((k) => activeKinds.includes(k));
+            const remainingIfOff = cluster.modules.filter(
+              (m) => m.kind === "cluster" || !kinds.includes(m.kind),
+            ).length;
+            const missing = kinds.filter((k) => !activeKinds.includes(k)).length;
+            const disabled = isOn
+              ? remainingIfOff === 0
+              : cluster.modules.length + missing > MAX_CLUSTER_MODULES;
+            const label = t(`widgets.${id}.name`);
+
+            return (
+              <button
+                key={id}
+                type="button"
+                className={`cc-modchip${isOn ? " is-on" : ""}`}
+                aria-pressed={isOn}
+                disabled={disabled}
+                onClick={() => toggleChoice(kinds)}
+              >
+                <ModuleIcon size={14} weight={isOn ? "fill" : "regular"} aria-hidden="true" />
+                <span>{label}</span>
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
+      {configurableModules.length > 0 && (
+        <div className="cc-insp-field">
+          <span className="cc-field-label">{t("desktop.moduleSettings")}</span>
+          <div className="cc-sort-list">
+            {configurableModules.map((mod) => {
+              if (mod.kind === "cluster") return null;
+              const isOpen = openModId === mod.id;
+              return (
+                <div key={mod.id} className="cc-mod-editor">
+                  <button
+                    type="button"
+                    className="cc-mod-editor-head"
+                    aria-expanded={isOpen}
+                    onClick={() => setOpenModId(isOpen ? null : mod.id)}
+                  >
+                    {isOpen ? <CaretDown size={12} /> : <CaretRight size={12} />}
+                    <span className="cc-mod-editor-title">
+                      {t(`widgets.${mod.kind}.name`)}
+                    </span>
+                  </button>
+                  {isOpen && (
+                    <div className="cc-mod-editor-body">
+                      <SettingsForm
+                        kind={mod.kind}
+                        size="m"
+                        settings={mod.settings}
+                        onPatch={(patch) => updateModuleSettings(mod.id, patch)}
+                      />
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ClusterAdvancedEditor({
+  cluster,
+  onChange,
+}: {
+  cluster: ClusterConfig;
+  onChange: (next: ClusterConfig) => void;
+}) {
+  const [openRuleId, setOpenRuleId] = useState<string | null>(null);
 
   const patchCluster = (patch: Partial<ClusterConfig>) => {
     onChange({ ...cluster, ...patch });
@@ -579,25 +680,6 @@ function ClusterEditor({
     onChange({ ...cluster, modules: next });
   };
 
-  const addModule = (kind: FreeWidgetKind) => {
-    if (cluster.modules.length >= 5) return;
-    const defaultRule: AutoRule =
-      kind === "nowPlaying"
-        ? "expandWhenPlaying"
-        : kind === "system"
-          ? "expandWhenHighLoad"
-          : "none";
-    const newMod: ClusterModule = {
-      id: crypto.randomUUID(),
-      kind,
-      defaultMode: kind === "nowPlaying" ? "hidden" : "compact",
-      autoRule: defaultRule,
-      settings: { ...WIDGET_REGISTRY[kind].defaultSettings },
-    };
-    onChange({ ...cluster, modules: [...cluster.modules, newMod] });
-    setExpandedModId(newMod.id);
-  };
-
   const modeOptions: SelectOption<ModuleMode>[] = [
     { value: "hidden", label: t("desktop.modeHidden") },
     { value: "compact", label: t("desktop.modeCompact") },
@@ -610,6 +692,21 @@ function ClusterEditor({
   return (
     <>
       <div className="cc-insp-field">
+        <span className="cc-field-label">{t("desktop.clusterWidth")}</span>
+        <Segmented
+          fullWidth
+          value={widthVal}
+          ariaLabel={t("desktop.clusterWidth")}
+          options={[
+            { value: "232", label: t("desktop.widthNarrow") },
+            { value: "264", label: t("desktop.widthNormal") },
+            { value: "288", label: t("desktop.widthWide") },
+          ]}
+          onChange={(w) => patchCluster({ width: Number(w) })}
+        />
+      </div>
+
+      <div className="cc-insp-field">
         <span className="cc-field-label">{t("desktop.clusterBehavior")}</span>
         <Segmented<ResizeBehavior>
           fullWidth
@@ -620,21 +717,6 @@ function ClusterEditor({
             { value: "adaptive", label: t("desktop.behaviorAdaptive") },
           ]}
           onChange={(resizeBehavior) => patchCluster({ resizeBehavior })}
-        />
-      </div>
-
-      <div className="cc-insp-field">
-        <span className="cc-field-label">{t("desktop.clusterWidth")}</span>
-        <Segmented
-          fullWidth
-          value={widthVal}
-          ariaLabel={t("desktop.clusterWidth")}
-          options={[
-            { value: "232", label: "232 px" },
-            { value: "264", label: "264 px" },
-            { value: "288", label: "288 px" },
-          ]}
-          onChange={(w) => patchCluster({ width: Number(w) })}
         />
       </div>
 
@@ -652,134 +734,78 @@ function ClusterEditor({
         />
       </div>
 
-      <div className="cc-insp-field">
-        <div className="cc-insp-field-head">
-          <span className="cc-field-label">{t("desktop.modulesHeading")}</span>
-          <span className="cc-field-help cc-mono">{cluster.modules.length} / 5</span>
-        </div>
-
-        <div className="cc-sort-list">
-          {cluster.modules.map((mod, idx) => {
-            const isOpen = expandedModId === mod.id;
-            const modKind = mod.kind === "cluster" ? "clock" : mod.kind;
-            return (
-              <div
-                key={mod.id}
-                draggable
-                onDragStart={() => setDragIdx(idx)}
-                onDragOver={(e) => {
-                  if (dragIdx !== null) e.preventDefault();
-                }}
-                onDrop={() => {
-                  if (dragIdx !== null) moveModule(dragIdx, idx);
-                  setDragIdx(null);
-                }}
-                className="cc-mod-editor"
-              >
-                <div
-                  className="cc-mod-editor-head"
-                  onClick={() => setExpandedModId(isOpen ? null : mod.id)}
-                >
-                  <span className="cc-drag-grip" aria-label={t("desktop.dragHandle")}>
-                    <DotsSixVertical size={13} />
-                  </span>
-                  {isOpen ? <CaretDown size={12} /> : <CaretRight size={12} />}
-                  <span style={{ fontSize: 12.5, fontWeight: 500, flex: 1 }}>
-                    {t(`widgets.${modKind}.name`)}
-                  </span>
-                  <div
-                    style={{ display: "flex", gap: 2 }}
-                    onClick={(e) => e.stopPropagation()}
-                  >
+      {cluster.modules.length > 0 && (
+        <div className="cc-insp-field">
+          <span className="cc-field-label">{t("desktop.moduleOrderRules")}</span>
+          <div className="cc-sort-list">
+            {cluster.modules.map((mod, idx) => {
+              const modKind: FreeWidgetKind = mod.kind === "cluster" ? "clock" : mod.kind;
+              const isOpen = openRuleId === mod.id;
+              return (
+                <div key={mod.id} className="cc-mod-editor">
+                  <div className="cc-mod-editor-row">
                     <button
                       type="button"
-                      className="cc-iconbtn"
-                      style={{ width: 24, height: 24 }}
-                      disabled={idx === 0}
-                      aria-label={t("desktop.moveUp")}
-                      onClick={() => moveModule(idx, idx - 1)}
+                      className="cc-mod-editor-head"
+                      aria-expanded={isOpen}
+                      onClick={() => setOpenRuleId(isOpen ? null : mod.id)}
                     >
-                      <ArrowUp size={12} />
+                      {isOpen ? <CaretDown size={12} /> : <CaretRight size={12} />}
+                      <span className="cc-mod-editor-title">
+                        {t(`widgets.${modKind}.name`)}
+                      </span>
                     </button>
-                    <button
-                      type="button"
-                      className="cc-iconbtn"
-                      style={{ width: 24, height: 24 }}
-                      disabled={idx === cluster.modules.length - 1}
-                      aria-label={t("desktop.moveDown")}
-                      onClick={() => moveModule(idx, idx + 1)}
-                    >
-                      <ArrowDown size={12} />
-                    </button>
-                  </div>
-                </div>
-
-                {isOpen && (
-                  <div className="cc-mod-editor-body">
-                    <div className="cc-insp-field">
-                      <span className="cc-field-label">{t("desktop.defaultMode")}</span>
-                      <Select
-                        options={modeOptions}
-                        value={mod.defaultMode}
-                        ariaLabel={t("desktop.defaultMode")}
-                        onChange={(defaultMode) => updateModule(mod.id, { defaultMode })}
-                      />
-                    </div>
-                    <div className="cc-insp-field">
-                      <span className="cc-field-label">{t("desktop.autoRule")}</span>
-                      <Select
-                        options={autoRulesForKind(modKind)}
-                        value={mod.autoRule}
-                        ariaLabel={t("desktop.autoRule")}
-                        onChange={(autoRule) => updateModule(mod.id, { autoRule })}
-                      />
-                    </div>
-                    <SettingsForm
-                      kind={modKind}
-                      size="m"
-                      settings={mod.settings}
-                      onPatch={(patch) =>
-                        updateModule(mod.id, { settings: { ...mod.settings, ...patch } })
-                      }
-                    />
-                    {cluster.modules.length > 2 && (
-                      <Button
-                        variant="danger"
-                        size="sm"
-                        onClick={() => {
-                          onChange({
-                            ...cluster,
-                            modules: cluster.modules.filter((m) => m.id !== mod.id),
-                          });
-                          setExpandedModId(null);
-                        }}
+                    <div className="cc-mod-editor-arrows">
+                      <button
+                        type="button"
+                        className="cc-iconbtn"
+                        style={{ width: 24, height: 24 }}
+                        disabled={idx === 0}
+                        aria-label={t("desktop.moveUp")}
+                        onClick={() => moveModule(idx, idx - 1)}
                       >
-                        <Trash size={12} aria-hidden="true" />
-                        <span>{t("desktop.removeModule")}</span>
-                      </Button>
-                    )}
+                        <ArrowUp size={12} />
+                      </button>
+                      <button
+                        type="button"
+                        className="cc-iconbtn"
+                        style={{ width: 24, height: 24 }}
+                        disabled={idx === cluster.modules.length - 1}
+                        aria-label={t("desktop.moveDown")}
+                        onClick={() => moveModule(idx, idx + 1)}
+                      >
+                        <ArrowDown size={12} />
+                      </button>
+                    </div>
                   </div>
-                )}
-              </div>
-            );
-          })}
+                  {isOpen && (
+                    <div className="cc-mod-editor-body">
+                      <div className="cc-insp-field">
+                        <span className="cc-field-label">{t("desktop.defaultMode")}</span>
+                        <Select
+                          options={modeOptions}
+                          value={mod.defaultMode}
+                          ariaLabel={t("desktop.defaultMode")}
+                          onChange={(defaultMode) => updateModule(mod.id, { defaultMode })}
+                        />
+                      </div>
+                      <div className="cc-insp-field">
+                        <span className="cc-field-label">{t("desktop.autoRule")}</span>
+                        <Select
+                          options={autoRulesForKind(modKind)}
+                          value={mod.autoRule}
+                          ariaLabel={t("desktop.autoRule")}
+                          onChange={(autoRule) => updateModule(mod.id, { autoRule })}
+                        />
+                      </div>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
         </div>
-
-        {cluster.modules.length < 5 && (
-          <Select
-            placeholder={`${t("desktop.addModule")} +`}
-            value=""
-            ariaLabel={t("desktop.addModule")}
-            options={WIDGET_LIST.map((meta) => ({
-              value: meta.kind,
-              label: `${t(`widgets.${meta.kind}.name`)}`,
-            }))}
-            onChange={(val) => {
-              if (val) addModule(val as FreeWidgetKind);
-            }}
-          />
-        )}
-      </div>
+      )}
     </>
   );
 }

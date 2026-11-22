@@ -211,7 +211,7 @@ impl HardwareSampler {
             vram: (c_vram.is_some() && vram_total_bytes.is_some())
                 || (has_nvml && vram_total_bytes.is_some()),
             gpu_temp: has_nvml,
-            cpu_temp: crate::elevation::process_is_elevated(),
+            cpu_temp: super::cpu_sensor::is_available(),
             disk: c_disk_read.is_some() && c_disk_write.is_some(),
             battery,
         };

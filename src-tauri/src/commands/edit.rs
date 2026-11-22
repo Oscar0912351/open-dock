@@ -28,6 +28,15 @@ pub fn edit_begin_drag(app: AppHandle, id: Uuid) -> Result<(), AppError> {
 }
 
 #[tauri::command]
+pub async fn edit_long_press_drag(app: AppHandle, id: Uuid) -> Result<(), AppError> {
+    let result = drag::enter_and_begin_drag(&app, id);
+    if let Err(error) = &result {
+        log::error!(target: "cmd", "edit_long_press_drag fejlede for {id}: {error:?}");
+    }
+    result
+}
+
+#[tauri::command]
 pub fn edit_nudge(app: AppHandle, id: Uuid, dx: f64, dy: f64) -> Result<(), AppError> {
     let result = drag::nudge(&app, id, dx, dy);
     if let Err(error) = &result {

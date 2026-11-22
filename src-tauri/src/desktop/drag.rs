@@ -53,9 +53,21 @@ pub fn set_edit_mode(app: &AppHandle, on: bool) -> Result<(), AppError> {
     if let Err(error) = app.emit("edit://mode", EditModeState { on }) {
         log::warn!("Kunne ikke sende edit://mode: {error}");
     }
+    super::fullscreen::trigger_check();
     crate::tray::sync(app);
 
     Ok(())
+}
+
+pub fn enter_and_begin_drag(app: &AppHandle, id: Uuid) -> Result<(), AppError> {
+    if !is_vk_down(VK_LBUTTON.0 as i32) {
+        return Ok(());
+    }
+    let state = app.state::<AppState>();
+    if !state.edit_mode.load(Ordering::Acquire) {
+        set_edit_mode(app, true)?;
+    }
+    begin_drag(app, id)
 }
 
 pub fn nudge(app: &AppHandle, id: Uuid, dx: f64, dy: f64) -> Result<(), AppError> {

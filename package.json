@@ -21,9 +21,9 @@
     "tauri": "tauri",
     "dev:tauri": "tauri dev",
     "tauri:dev": "tauri dev",
-    "build:tauri": "tauri build",
-    "tauri:build": "tauri build",
-    "build:tauri:dir": "tauri build --debug --no-bundle"
+    "build:tauri": "node scripts/kill-app.mjs && tauri build",
+    "tauri:build": "node scripts/kill-app.mjs && tauri build",
+    "build:tauri:dir": "node scripts/kill-app.mjs && tauri build --debug --no-bundle"
   },
   "dependencies": {
     "@fontsource-variable/inter": "^5.3.0",

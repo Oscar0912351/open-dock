@@ -29,14 +29,7 @@ use windows::{
 use crate::error::AppError;
 
 const COMMON_HLSL: &str = include_str!("shaders/common.hlsl");
-const SHADER_NORDIC_AURORA: &str = include_str!("shaders/nordic_aurora.hlsl");
-const SHADER_OBSIDIAN_SILK: &str = include_str!("shaders/obsidian_silk.hlsl");
-const SHADER_SOLAR_HORIZON: &str = include_str!("shaders/solar_horizon.hlsl");
-const SHADER_ALPINE_MIST: &str = include_str!("shaders/alpine_mist.hlsl");
-const SHADER_MONOLITH_MESH: &str = include_str!("shaders/monolith_mesh.hlsl");
-const SHADER_DEEP_OCEAN: &str = include_str!("shaders/deep_ocean.hlsl");
 const SHADER_AMBER_DUNES: &str = include_str!("shaders/amber_dunes.hlsl");
-const SHADER_QUIET_FIELD: &str = include_str!("shaders/quiet_field.hlsl");
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
@@ -49,14 +42,7 @@ pub struct SceneUniforms {
 
 pub fn scene_hlsl_source(shader_id: &str) -> Option<&'static str> {
     match shader_id {
-        "scene-nordic-aurora" => Some(SHADER_NORDIC_AURORA),
-        "scene-obsidian-silk" => Some(SHADER_OBSIDIAN_SILK),
-        "scene-solar-horizon" => Some(SHADER_SOLAR_HORIZON),
-        "scene-alpine-mist" => Some(SHADER_ALPINE_MIST),
-        "scene-monolith-mesh" => Some(SHADER_MONOLITH_MESH),
-        "scene-deep-ocean" => Some(SHADER_DEEP_OCEAN),
         "scene-amber-dunes" => Some(SHADER_AMBER_DUNES),
-        "scene-quiet-field" => Some(SHADER_QUIET_FIELD),
         _ => None,
     }
 }
@@ -351,10 +337,10 @@ mod tests {
     use crate::wallpaper::catalog::BUILTIN_SHADERS;
 
     #[test]
-    fn all_eight_shaders_compile_cleanly_to_dxbc() {
+    fn all_builtin_shaders_compile_cleanly_to_dxbc() {
         let vs = compile_vertex_shader().expect("VSMain should compile");
         assert!(!vs.is_empty());
-        assert_eq!(BUILTIN_SHADERS.len(), 8);
+        assert_eq!(BUILTIN_SHADERS.len(), 1);
 
         for spec in BUILTIN_SHADERS {
             let ps = compile_scene_pixel_shader(spec.id)

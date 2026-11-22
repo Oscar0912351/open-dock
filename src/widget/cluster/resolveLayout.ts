@@ -6,11 +6,15 @@ import type { WidgetKind } from "../../shared/bindings/WidgetKind";
 export interface ClusterSignals {
   mediaActive: boolean;
   systemHighLoad: boolean;
+  agentsActive: boolean;
+  discordInCall: boolean;
 }
 
 export const DEFAULT_CLUSTER_SIGNALS: ClusterSignals = {
   mediaActive: false,
   systemHighLoad: false,
+  agentsActive: false,
+  discordInCall: false,
 };
 
 export type ClusterModuleKind = Exclude<WidgetKind, "cluster">;
@@ -21,8 +25,8 @@ export const MODULE_HEIGHT_U: Record<ClusterModuleKind, Record<ModuleMode, numbe
   system: { hidden: 0, compact: 32, expanded: 104 },
   weather: { hidden: 0, compact: 32, expanded: 112 },
   note: { hidden: 0, compact: 32, expanded: 104 },
-  discord: { hidden: 0, compact: 32, expanded: 76 },
-  agents: { hidden: 0, compact: 32, expanded: 104 },
+  discord: { hidden: 0, compact: 36, expanded: 108 },
+  agents: { hidden: 0, compact: 32, expanded: 132 },
 };
 
 const FIXED_EXPANSION_ORDER: readonly ClusterModuleKind[] = [
@@ -57,6 +61,12 @@ export function resolveModuleModes(
         break;
       case "expandWhenHighLoad":
         mode = signals.systemHighLoad ? "expanded" : "compact";
+        break;
+      case "expandWhenActive":
+        mode = signals.agentsActive ? "expanded" : "compact";
+        break;
+      case "expandWhenInCall":
+        mode = signals.discordInCall ? "expanded" : "hidden";
         break;
       case "none":
       case "fillRemainingSpace":
@@ -123,6 +133,7 @@ export function computeClusterTargetHeight(
   presetId: string | null,
   resizeBehavior: ResizeBehavior,
   maxHeight: number,
+  heightOverrides?: ReadonlyMap<string, number>,
 ): number {
   const cappedMax = Math.max(48, Math.round(maxHeight));
   if (resizeBehavior === "fixed") {
@@ -134,7 +145,7 @@ export function computeClusterTargetHeight(
     if (!expanded) {
       return 48;
     }
-    const expH = moduleHeightUnits(expanded.kind, "expanded");
+    const expH = heightOverrides?.get(expanded.id) ?? moduleHeightUnits(expanded.kind, "expanded");
     return Math.min(cappedMax, Math.max(48, 8 + 32 + 7 + expH + 8));
   }
 
@@ -144,7 +155,7 @@ export function computeClusterTargetHeight(
     const mode = modes.get(mod.id) ?? mod.defaultMode;
     if (mode !== "hidden") {
       visibleCount += 1;
-      sumHeight += moduleHeightUnits(mod.kind, mode);
+      sumHeight += heightOverrides?.get(mod.id) ?? moduleHeightUnits(mod.kind, mode);
     }
   }
 

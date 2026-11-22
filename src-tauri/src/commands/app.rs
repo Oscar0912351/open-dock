@@ -64,6 +64,9 @@ pub fn app_quit(app: AppHandle) -> Result<(), AppError> {
 
 pub fn quit_app(app: &AppHandle) {
     if let Some(state) = app.try_state::<AppState>() {
+        state
+            .quitting
+            .store(true, std::sync::atomic::Ordering::Release);
         if let Err(error) = state.config.flush() {
             log::warn!(target: "cmd", "Kunne ikke gemme konfiguration før afslutning: {error:?}");
         }

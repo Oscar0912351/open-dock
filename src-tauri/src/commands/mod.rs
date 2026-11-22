@@ -1,5 +1,7 @@
+pub mod agents;
 pub mod app;
 pub mod config;
+pub mod discord;
 pub mod edit;
 pub mod media;
 pub mod note;

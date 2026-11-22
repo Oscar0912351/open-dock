@@ -52,7 +52,7 @@ pub fn default_settings(kind: WidgetKind) -> serde_json::Value {
         }),
         WidgetKind::Discord => json!({}),
         WidgetKind::Cluster => json!({}),
-        WidgetKind::Agents => json!({}),
+        WidgetKind::Agents => json!({ "recentWindowMin": "15" }),
     }
 }
 
@@ -158,7 +158,11 @@ pub fn cluster_preset_configs(preset_id: &str) -> Option<Vec<ClusterConfig>> {
                     ModuleMode::Hidden,
                     AutoRule::ExpandWhenPlaying,
                 ),
-                make_module(WidgetKind::Discord, ModuleMode::Compact, AutoRule::None),
+                make_module(
+                    WidgetKind::Discord,
+                    ModuleMode::Hidden,
+                    AutoRule::ExpandWhenInCall,
+                ),
             ],
         }]),
         "miniTrio" => {

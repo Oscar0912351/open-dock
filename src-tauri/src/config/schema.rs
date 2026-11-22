@@ -6,7 +6,7 @@ use uuid::Uuid;
 
 use crate::error::AppError;
 
-pub const CONFIG_VERSION: u32 = 1;
+pub const CONFIG_VERSION: u32 = 2;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum PatchValue<T> {
@@ -179,6 +179,8 @@ pub struct General {
     pub control_theme: ControlTheme,
     pub autostart: bool,
     pub pause_on_fullscreen: bool,
+    #[serde(default)]
+    pub game_overlay: bool,
     pub pause_on_battery: bool,
     pub system_interval_ms: u32,
     pub grid_snap: bool,
@@ -192,6 +194,7 @@ impl Default for General {
             control_theme: ControlTheme::Dark,
             autostart: true,
             pause_on_fullscreen: true,
+            game_overlay: false,
             pause_on_battery: false,
             system_interval_ms: 1000,
             grid_snap: true,
@@ -208,6 +211,7 @@ pub struct GeneralPatch {
     pub control_theme: Option<ControlTheme>,
     pub autostart: Option<bool>,
     pub pause_on_fullscreen: Option<bool>,
+    pub game_overlay: Option<bool>,
     pub pause_on_battery: Option<bool>,
     pub system_interval_ms: Option<u32>,
     pub grid_snap: Option<bool>,
@@ -227,6 +231,9 @@ impl General {
         }
         if let Some(pause_on_fullscreen) = patch.pause_on_fullscreen {
             self.pause_on_fullscreen = pause_on_fullscreen;
+        }
+        if let Some(game_overlay) = patch.game_overlay {
+            self.game_overlay = game_overlay;
         }
         if let Some(pause_on_battery) = patch.pause_on_battery {
             self.pause_on_battery = pause_on_battery;
@@ -519,6 +526,8 @@ pub enum AutoRule {
     ExpandWhenPlaying,
     CollapseWhenIdle,
     ExpandWhenHighLoad,
+    ExpandWhenActive,
+    ExpandWhenInCall,
     FillRemainingSpace,
 }
 
@@ -576,10 +585,10 @@ impl ClusterConfig {
             (WidgetKind::Weather, ModuleMode::Expanded) => 112.0,
             (WidgetKind::Note, ModuleMode::Compact) => 32.0,
             (WidgetKind::Note, ModuleMode::Expanded) => 104.0,
-            (WidgetKind::Discord, ModuleMode::Compact) => 32.0,
-            (WidgetKind::Discord, ModuleMode::Expanded) => 76.0,
+            (WidgetKind::Discord, ModuleMode::Compact) => 36.0,
+            (WidgetKind::Discord, ModuleMode::Expanded) => 108.0,
             (WidgetKind::Agents, ModuleMode::Compact) => 32.0,
-            (WidgetKind::Agents, ModuleMode::Expanded) => 104.0,
+            (WidgetKind::Agents, ModuleMode::Expanded) => 132.0,
             (WidgetKind::Cluster, _) => 48.0,
         }
     }
@@ -595,8 +604,10 @@ impl ClusterConfig {
             .modules
             .iter()
             .map(|m| match m.auto_rule {
-                AutoRule::ExpandWhenPlaying | AutoRule::CollapseWhenIdle => ModuleMode::Hidden,
-                AutoRule::ExpandWhenHighLoad => ModuleMode::Compact,
+                AutoRule::ExpandWhenPlaying
+                | AutoRule::CollapseWhenIdle
+                | AutoRule::ExpandWhenInCall => ModuleMode::Hidden,
+                AutoRule::ExpandWhenHighLoad | AutoRule::ExpandWhenActive => ModuleMode::Compact,
                 AutoRule::None | AutoRule::FillRemainingSpace => {
                     m.default_mode
                 }

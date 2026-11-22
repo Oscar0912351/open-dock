@@ -1,11 +1,14 @@
 import {
   Check,
+  GearSix,
+  Play,
   Plus,
   SpinnerGap,
   Stop,
   Trash,
   UploadSimple,
   WarningCircle,
+  X,
 } from "@phosphor-icons/react";
 import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -18,7 +21,7 @@ import type { WindowsQualityStatus } from "../../shared/bindings/WindowsQualityS
 import { t } from "../../shared/i18n";
 import { ipc, on, toAssetUrl } from "../../shared/ipc";
 import { Button } from "../components/Button";
-import { Card, SettingRow } from "../components/Card";
+import { SettingRow } from "../components/Card";
 import { Segmented } from "../components/Segmented";
 import { Select } from "../components/Select";
 import { Slider } from "../components/Slider";
@@ -58,6 +61,8 @@ export function Wallpapers() {
   const [kindFilter, setKindFilter] = useState<KindFilter>("all");
   const [busyId, setBusyId] = useState<string | null>(null);
   const [importing, setImporting] = useState(false);
+  const [engineMenuOpen, setEngineMenuOpen] = useState(false);
+  const engineMenuRef = useRef<HTMLDivElement>(null);
 
   const [speedDraft, setSpeedDraft] = useState<{ base: number; pct: number } | null>(null);
   const [brightnessDraft, setBrightnessDraft] = useState<{ base: number; pct: number } | null>(
@@ -140,6 +145,27 @@ export function Wallpapers() {
     };
   }, [refreshCatalog]);
 
+  useEffect(() => {
+    if (!engineMenuOpen) return;
+    const onPointerDown = (event: PointerEvent) => {
+      if (!engineMenuRef.current?.contains(event.target as Node)) {
+        setEngineMenuOpen(false);
+      }
+    };
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.stopPropagation();
+        setEngineMenuOpen(false);
+      }
+    };
+    document.addEventListener("pointerdown", onPointerDown);
+    window.addEventListener("keydown", onKeyDown, true);
+    return () => {
+      document.removeEventListener("pointerdown", onPointerDown);
+      window.removeEventListener("keydown", onKeyDown, true);
+    };
+  }, [engineMenuOpen]);
+
   const effectiveTarget = useMemo(() => {
     if (targetMonitor === "*") return "*";
     return monitors.some((m) => m.name === targetMonitor) ? targetMonitor : "*";
@@ -158,15 +184,13 @@ export function Wallpapers() {
   const activeAssignment: MonitorWallpaper | null = useMemo(() => {
     if (!config) return null;
     const assignments = config.wallpaper.assignments;
-    if (effectiveTarget !== "*" && assignments[effectiveTarget]) {
-      return assignments[effectiveTarget] ?? null;
+    if (effectiveTarget !== "*") {
+      return assignments[effectiveTarget] ?? assignments["*"] ?? null;
     }
-    if (assignments["*"]) return assignments["*"] ?? null;
-    if (selectedMonitorInfo && assignments[selectedMonitorInfo.name]) {
-      return assignments[selectedMonitorInfo.name] ?? null;
-    }
-    const firstKey = Object.keys(assignments)[0];
-    return firstKey ? (assignments[firstKey] ?? null) : null;
+    return (
+      assignments["*"] ??
+      (selectedMonitorInfo ? (assignments[selectedMonitorInfo.name] ?? null) : null)
+    );
   }, [config, effectiveTarget, selectedMonitorInfo]);
 
   const activeItem = useMemo(() => {
@@ -177,7 +201,7 @@ export function Wallpapers() {
   const filteredItems = useMemo(() => {
     return catalog.filter((item) => {
       if (kindFilter === "custom" && !item.isCustom) return false;
-      if (kindFilter === "shader" && item.kind !== "shader") return false;
+      if (kindFilter === "shader" && item.kind !== "shader" && item.kind !== "video") return false;
       if (kindFilter === "photo" && (item.kind !== "photo" || item.isCustom)) return false;
       return true;
     });
@@ -321,6 +345,35 @@ export function Wallpapers() {
   ];
 
   const activeError = errorMsg ?? engineStatus.lastError;
+  const statusTone =
+    engineStatus.runState === "running"
+      ? "is-live"
+      : engineStatus.runState === "error"
+        ? "is-error"
+        : engineStatus.runState === "idle"
+          ? ""
+          : "is-paused";
+
+  const showScalingControl =
+    activeItem !== null &&
+    activeAssignment !== null &&
+    (activeItem.kind === "photo" || activeItem.kind === "video");
+
+  const scalingOptions: Array<{ value: WallpaperFit; label: string }> =
+    activeItem?.kind === "video"
+      ? [
+          { value: "fill", label: t("wallpapers.controls.fitFill") },
+          { value: "fit", label: t("wallpapers.controls.fitFit") },
+          { value: "stretch", label: t("wallpapers.controls.fitStretch") },
+        ]
+      : [
+          { value: "fill", label: t("wallpapers.controls.fitFill") },
+          { value: "fit", label: t("wallpapers.controls.fitFit") },
+          { value: "center", label: t("wallpapers.controls.fitCenter") },
+          ...(monitors.length > 1
+            ? [{ value: "span" as const, label: t("wallpapers.controls.fitSpan") }]
+            : []),
+        ];
 
   return (
     <div className="cc-route">
@@ -329,14 +382,189 @@ export function Wallpapers() {
           <h1 className="cc-page-title">{t("wallpapers.title")}</h1>
           <p className="cc-page-subtitle">{t("wallpapers.subtitle")}</p>
         </div>
-        <Button variant="primary" disabled={importing} onClick={() => void handleImport()}>
-          {importing ? (
-            <SpinnerGap size={14} className="cc-wp-spin" aria-hidden="true" />
-          ) : (
-            <UploadSimple size={14} aria-hidden="true" />
-          )}
-          <span>{importing ? t("wallpapers.importing") : t("wallpapers.importBtn")}</span>
-        </Button>
+        <div className="cc-wp-header-actions">
+          <div className="cc-wp-gear-wrap" ref={engineMenuRef}>
+            <button
+              type="button"
+              className={`cc-wp-gear-btn${engineMenuOpen ? " is-open" : ""}`}
+              aria-label={t("wallpapers.sections.engine")}
+              aria-haspopup="dialog"
+              aria-expanded={engineMenuOpen}
+              title={t("wallpapers.sections.engine")}
+              onClick={() => setEngineMenuOpen((open) => !open)}
+            >
+              <GearSix size={16} aria-hidden="true" />
+            </button>
+
+            {engineMenuOpen && (
+              <div
+                className="cc-wp-popover"
+                role="dialog"
+                aria-label={t("wallpapers.sections.engine")}
+              >
+                <div className="cc-wp-popover-head">
+                  <div className="cc-wp-popover-title-wrap">
+                    <h3>{t("wallpapers.sections.engine")}</h3>
+                    <span className="cc-wp-popover-status">
+                      <span className={`cc-wp-status-dot ${statusTone}`} aria-hidden="true" />
+                      <span className="trunc">{statusText}</span>
+                    </span>
+                  </div>
+                  <button
+                    type="button"
+                    className="cc-iconbtn"
+                    aria-label={t("window.close")}
+                    onClick={() => setEngineMenuOpen(false)}
+                  >
+                    <X size={15} aria-hidden="true" />
+                  </button>
+                </div>
+
+                <div className="cc-wp-popover-body">
+                  {showScalingControl && activeAssignment && (
+                    <div className="cc-wp-popover-group">
+                      <span className="cc-wp-popover-group-label">
+                        {t("wallpapers.sections.scaling")}
+                      </span>
+                      <SettingRow
+                        title={t("wallpapers.controls.fit")}
+                        help={t("wallpapers.controls.fitHelp")}
+                        stacked
+                      >
+                        <Segmented<WallpaperFit>
+                          value={activeAssignment.fit}
+                          ariaLabel={t("wallpapers.controls.fit")}
+                          options={scalingOptions}
+                          onChange={(fit) =>
+                            void ipc.wallpaperUpdateAssignment(effectiveTarget, { fit })
+                          }
+                        />
+                      </SettingRow>
+                    </div>
+                  )}
+
+                  <div className="cc-wp-popover-group">
+                    <span className="cc-wp-popover-group-label">
+                      {t("wallpapers.sections.performance")}
+                    </span>
+                    <SettingRow
+                      title={t("wallpapers.settings.fpsCap")}
+                      help={t("wallpapers.settings.fpsCapHelp")}
+                      stacked
+                    >
+                      <Segmented<string>
+                        value={String(engine.fpsCap)}
+                        ariaLabel={t("wallpapers.settings.fpsCap")}
+                        options={FPS_OPTIONS.map((o) => ({ value: o.value, label: o.label }))}
+                        onChange={(val) => void ipc.wallpaperEnginePatch({ fpsCap: Number(val) })}
+                      />
+                    </SettingRow>
+                    <SettingRow
+                      title={t("wallpapers.settings.resolution")}
+                      help={t("wallpapers.settings.resolutionHelp")}
+                      stacked
+                    >
+                      <Segmented<WallpaperResolution>
+                        value={engine.resolution}
+                        ariaLabel={t("wallpapers.settings.resolution")}
+                        options={[
+                          { value: "native", label: t("wallpapers.settings.resolutionNative") },
+                          {
+                            value: "balanced",
+                            label: t("wallpapers.settings.resolutionBalanced"),
+                          },
+                        ]}
+                        onChange={(resolution) =>
+                          void ipc.wallpaperEnginePatch({ resolution })
+                        }
+                      />
+                    </SettingRow>
+                  </div>
+
+                  <div className="cc-wp-popover-group">
+                    <span className="cc-wp-popover-group-label">
+                      {t("wallpapers.sections.autoPause")}
+                    </span>
+                    <SettingRow
+                      title={t("wallpapers.settings.pauseCovered")}
+                      help={t("wallpapers.settings.pauseCoveredHelp")}
+                    >
+                      <Switch
+                        checked={engine.pauseWhenCovered}
+                        ariaLabel={t("wallpapers.settings.pauseCovered")}
+                        onChange={(pauseWhenCovered) =>
+                          void ipc.wallpaperEnginePatch({ pauseWhenCovered })
+                        }
+                      />
+                    </SettingRow>
+                    <SettingRow
+                      title={t("wallpapers.settings.pauseFullscreen")}
+                      help={t("wallpapers.settings.pauseFullscreenHelp")}
+                    >
+                      <Switch
+                        checked={engine.pauseOnFullscreen}
+                        ariaLabel={t("wallpapers.settings.pauseFullscreen")}
+                        onChange={(pauseOnFullscreen) =>
+                          void ipc.wallpaperEnginePatch({ pauseOnFullscreen })
+                        }
+                      />
+                    </SettingRow>
+                    <SettingRow
+                      title={t("wallpapers.settings.pauseBattery")}
+                      help={t("wallpapers.settings.pauseBatteryHelp")}
+                    >
+                      <Switch
+                        checked={engine.pauseOnBattery}
+                        ariaLabel={t("wallpapers.settings.pauseBattery")}
+                        onChange={(pauseOnBattery) =>
+                          void ipc.wallpaperEnginePatch({ pauseOnBattery })
+                        }
+                      />
+                    </SettingRow>
+                  </div>
+
+                  <div className="cc-wp-popover-group">
+                    <span className="cc-wp-popover-group-label">
+                      {t("wallpapers.sections.quality")}
+                    </span>
+                    <SettingRow
+                      title={t("wallpapers.settings.syncGlass")}
+                      help={t("wallpapers.settings.syncGlassHelp")}
+                    >
+                      <Switch
+                        checked={engine.syncGlassPlates}
+                        ariaLabel={t("wallpapers.settings.syncGlass")}
+                        onChange={(syncGlassPlates) =>
+                          void ipc.wallpaperEnginePatch({ syncGlassPlates })
+                        }
+                      />
+                    </SettingRow>
+                    <SettingRow
+                      title={t("wallpapers.settings.windowsQuality")}
+                      help={t("wallpapers.settings.windowsQualityHelp")}
+                    >
+                      <Switch
+                        checked={winQuality?.losslessEnabled ?? false}
+                        disabled={!winQuality}
+                        ariaLabel={t("wallpapers.settings.windowsQuality")}
+                        onChange={(enabled) => void handleToggleWindowsQuality(enabled)}
+                      />
+                    </SettingRow>
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+
+          <Button variant="primary" disabled={importing} onClick={() => void handleImport()}>
+            {importing ? (
+              <SpinnerGap size={14} className="cc-wp-spin" aria-hidden="true" />
+            ) : (
+              <UploadSimple size={14} aria-hidden="true" />
+            )}
+            <span>{importing ? t("wallpapers.importing") : t("wallpapers.importBtn")}</span>
+          </Button>
+        </div>
       </div>
 
       {activeError && (
@@ -346,7 +574,7 @@ export function Wallpapers() {
         </div>
       )}
 
-      {/* Current wallpaper + its controls */}
+      {/* Current wallpaper + live controls */}
       <div className="cc-wp-now">
         <div className="cc-wp-now-thumb" aria-hidden="true">
           {nowThumbUrl && (
@@ -384,7 +612,7 @@ export function Wallpapers() {
             )}
           </div>
 
-          {activeItem && activeAssignment && (
+          {activeItem && activeAssignment && isActiveLive && (
             <div className="cc-wp-now-params">
               {activeItem.kind === "shader" && (
                 <>
@@ -418,21 +646,6 @@ export function Wallpapers() {
               {activeItem.kind === "video" && (
                 <>
                   <div className="cc-wp-param-row">
-                    <span className="cc-field-label">{t("wallpapers.controls.fit")}</span>
-                    <Segmented<WallpaperFit>
-                      value={activeAssignment.fit}
-                      ariaLabel={t("wallpapers.controls.fit")}
-                      options={[
-                        { value: "fill", label: t("wallpapers.controls.fitFill") },
-                        { value: "fit", label: t("wallpapers.controls.fitFit") },
-                        { value: "stretch", label: t("wallpapers.controls.fitStretch") },
-                      ]}
-                      onChange={(fit) =>
-                        void ipc.wallpaperUpdateAssignment(effectiveTarget, { fit })
-                      }
-                    />
-                  </div>
-                  <div className="cc-wp-param-row">
                     <span className="cc-field-label">{t("wallpapers.controls.speed")}</span>
                     <Slider
                       value={speedPct}
@@ -455,25 +668,6 @@ export function Wallpapers() {
                     />
                   </div>
                 </>
-              )}
-
-              {activeItem.kind === "photo" && (
-                <div className="cc-wp-param-row">
-                  <span className="cc-field-label">{t("wallpapers.controls.fit")}</span>
-                  <Segmented<WallpaperFit>
-                    value={activeAssignment.fit}
-                    ariaLabel={t("wallpapers.controls.fit")}
-                    options={[
-                      { value: "fill", label: t("wallpapers.controls.fitFill") },
-                      { value: "fit", label: t("wallpapers.controls.fitFit") },
-                      { value: "center", label: t("wallpapers.controls.fitCenter") },
-                      { value: "span", label: t("wallpapers.controls.fitSpan") },
-                    ]}
-                    onChange={(fit) =>
-                      void ipc.wallpaperUpdateAssignment(effectiveTarget, { fit })
-                    }
-                  />
-                </div>
               )}
             </div>
           )}
@@ -528,7 +722,10 @@ export function Wallpapers() {
             </button>
           )}
           {filteredItems.map((item) => {
-            const isSelected = activeAssignment?.wallpaperId === item.id;
+            const isLiveItem = item.kind === "shader" || item.kind === "video";
+            const isSelected =
+              activeAssignment?.wallpaperId === item.id &&
+              !(isLiveItem && engineStatus.runState === "error");
             const isBusy = busyId === item.id;
             const thumbUrl = toAssetUrl(item.thumbPath);
 
@@ -552,6 +749,13 @@ export function Wallpapers() {
                       />
                     ) : (
                       <div className="cc-wp-card-img cc-wp-shimmer" />
+                    )}
+
+                    {isLiveItem && (
+                      <span className="cc-wp-live-pill">
+                        <Play size={9} weight="fill" aria-hidden="true" />
+                        <span>{t("wallpapers.badges.live")}</span>
+                      </span>
                     )}
 
                     {isSelected && !isBusy && (
@@ -596,98 +800,6 @@ export function Wallpapers() {
           })}
         </div>
       )}
-
-      <section className="cc-section">
-        <span className="cc-section-label">{t("wallpapers.sections.engine")}</span>
-        <Card compact>
-          <SettingRow
-            title={t("wallpapers.settings.fpsCap")}
-            help={t("wallpapers.settings.fpsCapHelp")}
-          >
-            <Segmented<string>
-              value={String(engine.fpsCap)}
-              ariaLabel={t("wallpapers.settings.fpsCap")}
-              options={FPS_OPTIONS.map((o) => ({ value: o.value, label: o.label }))}
-              onChange={(val) => void ipc.wallpaperEnginePatch({ fpsCap: Number(val) })}
-            />
-          </SettingRow>
-
-          <SettingRow
-            title={t("wallpapers.settings.resolution")}
-            help={t("wallpapers.settings.resolutionHelp")}
-          >
-            <Segmented<WallpaperResolution>
-              value={engine.resolution}
-              ariaLabel={t("wallpapers.settings.resolution")}
-              options={[
-                { value: "native", label: t("wallpapers.settings.resolutionNative") },
-                { value: "balanced", label: t("wallpapers.settings.resolutionBalanced") },
-              ]}
-              onChange={(resolution) => void ipc.wallpaperEnginePatch({ resolution })}
-            />
-          </SettingRow>
-
-          <SettingRow
-            title={t("wallpapers.settings.pauseCovered")}
-            help={t("wallpapers.settings.pauseCoveredHelp")}
-          >
-            <Switch
-              checked={engine.pauseWhenCovered}
-              ariaLabel={t("wallpapers.settings.pauseCovered")}
-              onChange={(pauseWhenCovered) =>
-                void ipc.wallpaperEnginePatch({ pauseWhenCovered })
-              }
-            />
-          </SettingRow>
-
-          <SettingRow
-            title={t("wallpapers.settings.pauseFullscreen")}
-            help={t("wallpapers.settings.pauseFullscreenHelp")}
-          >
-            <Switch
-              checked={engine.pauseOnFullscreen}
-              ariaLabel={t("wallpapers.settings.pauseFullscreen")}
-              onChange={(pauseOnFullscreen) =>
-                void ipc.wallpaperEnginePatch({ pauseOnFullscreen })
-              }
-            />
-          </SettingRow>
-
-          <SettingRow
-            title={t("wallpapers.settings.pauseBattery")}
-            help={t("wallpapers.settings.pauseBatteryHelp")}
-          >
-            <Switch
-              checked={engine.pauseOnBattery}
-              ariaLabel={t("wallpapers.settings.pauseBattery")}
-              onChange={(pauseOnBattery) => void ipc.wallpaperEnginePatch({ pauseOnBattery })}
-            />
-          </SettingRow>
-
-          <SettingRow
-            title={t("wallpapers.settings.syncGlass")}
-            help={t("wallpapers.settings.syncGlassHelp")}
-          >
-            <Switch
-              checked={engine.syncGlassPlates}
-              ariaLabel={t("wallpapers.settings.syncGlass")}
-              onChange={(syncGlassPlates) => void ipc.wallpaperEnginePatch({ syncGlassPlates })}
-            />
-          </SettingRow>
-
-          <SettingRow
-            title={t("wallpapers.settings.windowsQuality")}
-            help={t("wallpapers.settings.windowsQualityHelp")}
-          >
-            <Switch
-              checked={winQuality?.losslessEnabled ?? false}
-              disabled={!winQuality}
-              ariaLabel={t("wallpapers.settings.windowsQuality")}
-              onChange={(enabled) => void handleToggleWindowsQuality(enabled)}
-            />
-          </SettingRow>
-        </Card>
-      </section>
     </div>
   );
 }

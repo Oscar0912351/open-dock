@@ -54,6 +54,11 @@ impl WallpaperHostWindow {
         {
             return false;
         }
+        if let DesktopTopology::RaisedDesktop24H2 { shell_def_view, .. } = self.topology {
+            if !unsafe { IsWindow(Some(shell_def_view)).as_bool() } {
+                return false;
+            }
+        }
         let mut pt = POINT {
             x: self.rect.x,
             y: self.rect.y,
@@ -142,12 +147,17 @@ pub fn create_and_attach_host_window(monitor_rect: RectI) -> Result<WallpaperHos
     };
 
     unsafe {
+        if let Err(e) = SetParent(hwnd, Some(parent)) {
+            let _ = DestroyWindow(hwnd);
+            return Err(AppError::Other(format!(
+                "Kunne ikke fastgøre baggrundsvindue til skrivebordet: {e}"
+            )));
+        }
         let _ = SetWindowLongPtrW(hwnd, GWL_STYLE, child_style.0 as isize);
-        let _ = SetParent(hwnd, Some(parent));
         if let Err(error) = SetLayeredWindowAttributes(hwnd, COLORREF(0), 255, LWA_ALPHA) {
             log::warn!("SetLayeredWindowAttributes fejlede på baggrundsvært: {error}");
         }
-        SetWindowPos(
+        if let Err(e) = SetWindowPos(
             hwnd,
             Some(insert_after),
             pt.x,
@@ -155,7 +165,10 @@ pub fn create_and_attach_host_window(monitor_rect: RectI) -> Result<WallpaperHos
             monitor_rect.width.max(1),
             monitor_rect.height.max(1),
             SWP_NOACTIVATE | SWP_SHOWWINDOW | SWP_FRAMECHANGED,
-        )?;
+        ) {
+            let _ = DestroyWindow(hwnd);
+            return Err(e.into());
+        }
     }
 
     Ok(WallpaperHostWindow {

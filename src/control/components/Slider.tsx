@@ -8,6 +8,7 @@ interface SliderProps {
   formatValue?: (value: number) => string;
   onChange: (value: number) => void;
   ariaLabel?: string;
+  disabled?: boolean;
 }
 
 export function Slider({
@@ -18,13 +19,14 @@ export function Slider({
   formatValue,
   onChange,
   ariaLabel,
+  disabled = false,
 }: SliderProps) {
   const clamped = Math.min(max, Math.max(min, value));
   const pct = max > min ? ((clamped - min) / (max - min)) * 100 : 0;
   const chip = formatValue ? formatValue(clamped) : String(clamped);
 
   return (
-    <div className="cc-slider-wrap">
+    <div className={`cc-slider-wrap${disabled ? " is-disabled" : ""}`}>
       <input
         type="range"
         className="cc-slider"
@@ -32,6 +34,7 @@ export function Slider({
         max={max}
         step={step}
         value={clamped}
+        disabled={disabled}
         aria-label={ariaLabel}
         style={{ "--pct": `${pct}%` } as CSSProperties}
         onChange={(e) => onChange(Number(e.target.value))}

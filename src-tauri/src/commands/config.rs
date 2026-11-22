@@ -52,6 +52,9 @@ pub fn sync_autostart(app: &AppHandle, enabled: bool) {
 pub fn general_patch(app: AppHandle, mut patch: GeneralPatch) -> Result<Config, AppError> {
     let autostart_change = patch.autostart;
     let control_theme_change = patch.control_theme;
+    let fullscreen_policy_change = patch.pause_on_fullscreen.is_some()
+        || patch.pause_on_battery.is_some()
+        || patch.game_overlay.is_some();
     let state = app.state::<AppState>();
 
     if let Some(ref incoming) = patch.hotkeys {
@@ -88,6 +91,10 @@ pub fn general_patch(app: AppHandle, mut patch: GeneralPatch) -> Result<Config, 
                 crate::windows::control::apply_theme(&control, theme);
             }
         });
+    }
+
+    if fullscreen_policy_change {
+        crate::desktop::fullscreen::trigger_check();
     }
 
     Ok(config)

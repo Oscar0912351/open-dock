@@ -5,7 +5,6 @@ import {
   Image,
   Monitor,
   NotePencil,
-  Palette,
   SquaresFour,
 } from "@phosphor-icons/react";
 import { t } from "../../shared/i18n";
@@ -20,7 +19,6 @@ const NAV_ITEMS: ReadonlyArray<{
   { route: "gallery", labelKey: "nav.gallery", Icon: SquaresFour },
   { route: "desktop", labelKey: "nav.desktop", Icon: Monitor },
   { route: "wallpapers", labelKey: "nav.wallpapers", Icon: Image },
-  { route: "themes", labelKey: "nav.themes", Icon: Palette },
   { route: "settings", labelKey: "nav.settings", Icon: GearSix },
 ];
 
@@ -49,7 +47,10 @@ export function Sidebar() {
           ? t("status.pausedBattery")
           : t("status.pausedUser");
   } else {
-    statusText = t("status.active", { n: widgetCount });
+    statusText =
+      widgetCount === 1
+        ? t("status.activeOne")
+        : t("status.active", { n: widgetCount });
   }
 
   return (
@@ -78,7 +79,8 @@ export function Sidebar() {
 
       <div className="cc-sidebar-footer">
         <div className={`cc-status-line${statusWarn ? " is-warn" : ""}`}>
-          <span className="cc-nav-label">{statusText}</span>
+          <span className="cc-status-dot" aria-hidden="true" />
+          <span>{statusText}</span>
         </div>
         <div className="cc-status-actions">
           <button

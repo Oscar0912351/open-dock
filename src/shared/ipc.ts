@@ -10,11 +10,15 @@ import type { AppStatus } from "./bindings/AppStatus";
 import type { AppVisible } from "./bindings/AppVisible";
 import type { ClusterConfig } from "./bindings/ClusterConfig";
 import type { Config } from "./bindings/Config";
+import type { CpuSensorStatus } from "./bindings/CpuSensorStatus";
+import type { DiscordRpcStatus } from "./bindings/DiscordRpcStatus";
 import type { DiscordSnapshot } from "./bindings/DiscordSnapshot";
+import type { DiscordVoiceAction } from "./bindings/DiscordVoiceAction";
 import type { EditDragging } from "./bindings/EditDragging";
 import type { EditGuides } from "./bindings/EditGuides";
 import type { EditModeState } from "./bindings/EditModeState";
 import type { EditSelected } from "./bindings/EditSelected";
+import type { GameOverlayState } from "./bindings/GameOverlayState";
 import type { GeneralPatch } from "./bindings/GeneralPatch";
 import type { GeoResult } from "./bindings/GeoResult";
 import type { MediaAction } from "./bindings/MediaAction";
@@ -77,6 +81,7 @@ export const ipc = {
   ) => invoke<void>("cluster_set_window_size", { id, width, height, anchor }),
   editSet: (on: boolean) => invoke<void>("edit_set", { on }),
   editBeginDrag: (id: string) => invoke<void>("edit_begin_drag", { id }),
+  editLongPressDrag: (id: string) => invoke<void>("edit_long_press_drag", { id }),
   editNudge: (id: string, dx: number, dy: number) => invoke<void>("edit_nudge", { id, dx, dy }),
   editCycleSize: (id: string) => invoke<WidgetInstance>("edit_cycle_size", { id }),
   monitorsList: () => invoke<MonitorInfo[]>("monitors_list"),
@@ -88,6 +93,9 @@ export const ipc = {
     invoke<void>("media_control", { action, source: source ?? null }),
   systemHistory: () => invoke<SystemSample[]>("system_history"),
   systemCaps: () => invoke<SystemCaps>("system_caps"),
+  cpuSensorStatus: () => invoke<CpuSensorStatus>("cpu_sensor_status"),
+  cpuSensorInstall: () => invoke<CpuSensorStatus>("cpu_sensor_install"),
+  cpuSensorUninstall: () => invoke<CpuSensorStatus>("cpu_sensor_uninstall"),
   weatherSearch: (query: string) => invoke<GeoResult[]>("weather_search", { query }),
   weatherLocationAdd: (result: GeoResult) => invoke<Config>("weather_location_add", { result }),
   weatherLocationRemove: (id: string) => invoke<Config>("weather_location_remove", { id }),
@@ -125,6 +133,19 @@ export const ipc = {
   wallpaperWindowsQualityGet: () => invoke<WindowsQualityStatus>("wallpaper_windows_quality_get"),
   wallpaperWindowsQualitySet: (enabled: boolean) =>
     invoke<WindowsQualityStatus>("wallpaper_windows_quality_set", { enabled }),
+  agentFocus: (agent: string, pid?: number | null, project?: string | null) =>
+    invoke<boolean>("agent_focus", { agent, pid: pid ?? null, project: project ?? null }),
+  discordRpcStatus: () => invoke<DiscordRpcStatus>("discord_rpc_status"),
+  discordRpcConnectCentral: () => invoke<DiscordRpcStatus>("discord_rpc_connect_central"),
+  discordRpcConnect: (clientId: string, clientSecret: string, redirectUri?: string | null) =>
+    invoke<DiscordRpcStatus>("discord_rpc_connect", {
+      clientId,
+      clientSecret,
+      redirectUri: redirectUri ?? null,
+    }),
+  discordRpcDisconnect: () => invoke<DiscordRpcStatus>("discord_rpc_disconnect"),
+  discordVoiceAction: (action: DiscordVoiceAction) =>
+    invoke<void>("discord_voice_action", { action }),
 };
 
 export const on = {
@@ -144,6 +165,8 @@ export const on = {
     listen<AppPaused>("app://paused", (event) => callback(event.payload)),
   visible: (callback: (state: AppVisible) => void) =>
     listen<AppVisible>("app://visible", (event) => callback(event.payload)),
+  gameOverlay: (callback: (state: GameOverlayState) => void) =>
+    listen<GameOverlayState>("app://game-overlay", (event) => callback(event.payload)),
   trayNotice: (callback: (message: string) => void) =>
     listen<string>("app://tray-notice", (event) => callback(event.payload)),
   monitors: (callback: (monitors: MonitorInfo[]) => void) =>
@@ -164,6 +187,8 @@ export const on = {
     listen<WeatherSnapshot>("provider://weather", (event) => callback(event.payload)),
   discord: (callback: (snapshot: DiscordSnapshot) => void) =>
     listen<DiscordSnapshot>("provider://discord", (event) => callback(event.payload)),
+  discordRpcStatus: (callback: (status: DiscordRpcStatus) => void) =>
+    listen<DiscordRpcStatus>("discord://rpc-status", (event) => callback(event.payload)),
   agents: (callback: (snapshot: AgentsSnapshot) => void) =>
     listen<AgentsSnapshot>("provider://agents", (event) => callback(event.payload)),
   wallpaperStatus: (callback: (status: WallpaperEngineStatus) => void) =>

@@ -19,12 +19,12 @@ use tauri::{AppHandle, Manager};
 
 use crate::{
     config::schema::{
-        Config, MonitorWallpaper, MonitorWallpaperPatch, WallpaperConfig,
+        Config, MonitorWallpaper, MonitorWallpaperPatch, SizeF, WallpaperConfig,
         WallpaperEngineSettingsPatch, WallpaperFit, WallpaperKind,
     },
-    desktop::monitors::MonitorInfo,
+    desktop::monitors::{list_tauri_monitors, MonitorInfo},
     error::AppError,
-    state::AppState,
+    state::{AppState, PauseReason},
 };
 
 use self::{
@@ -77,14 +77,89 @@ pub fn notify_monitors_changed(app: &AppHandle) {
     sync_runtime(app, &cfg);
 }
 
+pub fn notify_wallpaper_changed(_app: &AppHandle) {
+    send_cmd(EngineCmd::VerifyZOrder);
+}
+
 pub fn stop_all(app: &AppHandle) {
-    send_cmd(EngineCmd::StopAll);
+    send_cmd(EngineCmd::StopAll { ack: None });
     app.state::<AppState>().live_plate_overrides.write().clear();
     crate::desktop::wallpaper::trigger_refresh_now();
 }
 
 pub fn engine_status(app: &AppHandle) -> WallpaperEngineStatus {
     app.state::<AppState>().wallpaper_status.read().clone()
+}
+
+fn collect_monitors(app: &AppHandle) -> Vec<MonitorInfo> {
+    let existing: Vec<MonitorInfo> = app
+        .state::<AppState>()
+        .monitors
+        .read()
+        .iter()
+        .map(|e| e.info.clone())
+        .collect();
+    if !existing.is_empty() {
+        return existing;
+    }
+    list_tauri_monitors(app)
+        .into_iter()
+        .map(|m| {
+            let scale = m.scale.max(0.5);
+            MonitorInfo {
+                name: m.name,
+                rect: m.rect,
+                work_area: m.work_area,
+                scale: m.scale,
+                logical_size: SizeF {
+                    width: m.rect.width as f64 / scale,
+                    height: m.rect.height as f64 / scale,
+                },
+                plate_path: String::new(),
+                avg_luma: 0.15,
+                is_primary: m.is_primary,
+            }
+        })
+        .collect()
+}
+
+async fn sync_specs_and_wait(
+    wp_cfg: WallpaperConfig,
+    specs: Vec<ResolvedSurfaceSpec>,
+    global_pause: Option<PauseReason>,
+) -> Result<(), AppError> {
+    let (ack_tx, ack_rx) = std::sync::mpsc::channel();
+    let sent = {
+        let guard = tx_lock().lock();
+        if let Some(tx) = guard.as_ref() {
+            tx.send(EngineCmd::Sync {
+                config: wp_cfg,
+                specs,
+                global_pause,
+                ack: Some(ack_tx),
+            })
+            .is_ok()
+        } else {
+            false
+        }
+    };
+    if !sent {
+        return Err(AppError::Other("Baggrundsmotoren kører ikke".into()));
+    }
+
+    let res = tokio::task::spawn_blocking(move || {
+        ack_rx.recv_timeout(std::time::Duration::from_secs(6))
+    })
+    .await
+    .map_err(|e| AppError::Other(format!("Venten på baggrundsmotor afbrudt: {e}")))?;
+
+    match res {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(msg)) => Err(AppError::Other(msg)),
+        Err(_) => Err(AppError::Other(
+            "Baggrundsmotoren svarede ikke inden for tidsgrænsen".into(),
+        )),
+    }
 }
 
 pub async fn apply_wallpaper(
@@ -131,7 +206,15 @@ pub async fn apply_wallpaper(
     {
         match custom.kind {
             WallpaperKind::Photo => ResolvedTarget::Photo(PathBuf::from(&custom.file_path)),
-            WallpaperKind::Video => ResolvedTarget::Video,
+            WallpaperKind::Video => {
+                if !Path::new(&custom.file_path).is_file() {
+                    return Err(AppError::Other(format!(
+                        "Videofilen findes ikke: {}",
+                        custom.file_path
+                    )));
+                }
+                ResolvedTarget::Video
+            }
             WallpaperKind::Shader => ResolvedTarget::Shader,
         }
     } else {
@@ -140,26 +223,72 @@ pub async fn apply_wallpaper(
         )));
     };
 
-    if let ResolvedTarget::Photo(ref img_path) = resolved {
-        let img_clone = img_path.clone();
-        let target_opt = if target_key == "*" {
-            None
-        } else {
-            Some(target_key.clone())
-        };
-        let lossless = current_cfg.wallpaper.engine.lossless_png_apply;
-        let app_clone = app.clone();
-        tokio::task::spawn_blocking(move || {
-            static_apply::apply_static_wallpaper(
-                &app_clone,
-                target_opt.as_deref(),
-                &img_clone,
-                chosen_fit,
-                lossless,
-            )
-        })
-        .await
-        .map_err(|e| AppError::Other(format!("Kunne ikke anvende baggrund: {e}")))??;
+    let mut candidate_wp = current_cfg.wallpaper.clone();
+    let mut next_assignment = candidate_wp
+        .assignments
+        .get(&target_key)
+        .cloned()
+        .unwrap_or_else(|| MonitorWallpaper::new(wallpaper_id.clone(), chosen_fit));
+    next_assignment.wallpaper_id = wallpaper_id.clone();
+    if let Some(f) = fit {
+        next_assignment.fit = f;
+    }
+    if target_key == "*" {
+        candidate_wp.assignments.clear();
+    }
+    candidate_wp
+        .assignments
+        .insert(target_key.clone(), next_assignment);
+
+    let monitors = collect_monitors(app);
+    let global_pause = state.effective_pause.read().reason.clone();
+    let spec_map = engine::build_surface_specs(app, &candidate_wp, &monitors);
+    let specs: Vec<ResolvedSurfaceSpec> = monitors
+        .iter()
+        .filter_map(|m| spec_map.get(&m.name).cloned())
+        .collect();
+
+    match resolved {
+        ResolvedTarget::Photo(ref img_path) => {
+            // Stop any conflicting live surface on the target monitor(s) before applying static wallpaper.
+            let _ = sync_specs_and_wait(candidate_wp.clone(), specs.clone(), global_pause).await;
+
+            let img_clone = img_path.clone();
+            let target_opt = if target_key == "*" {
+                None
+            } else {
+                Some(target_key.clone())
+            };
+            let lossless = current_cfg.wallpaper.engine.lossless_png_apply;
+            let app_clone = app.clone();
+            let static_res = tokio::task::spawn_blocking(move || {
+                static_apply::apply_static_wallpaper(
+                    &app_clone,
+                    target_opt.as_deref(),
+                    &img_clone,
+                    chosen_fit,
+                    lossless,
+                )
+            })
+            .await
+            .map_err(|e| AppError::Other(format!("Kunne ikke anvende baggrund: {e}")))?;
+
+            if let Err(err) = static_res {
+                sync_runtime(app, &current_cfg);
+                return Err(err);
+            }
+        }
+        ResolvedTarget::Shader | ResolvedTarget::Video => {
+            if specs.is_empty() {
+                return Err(AppError::Other(
+                    "Ingen aktive skærme fundet til animeret baggrund".into(),
+                ));
+            }
+            if let Err(err) = sync_specs_and_wait(candidate_wp, specs.clone(), global_pause).await {
+                sync_runtime(app, &current_cfg);
+                return Err(err);
+            }
+        }
     }
 
     let updated = state.config.mutate(|cfg| {
@@ -180,7 +309,7 @@ pub async fn apply_wallpaper(
         Ok(cfg.clone())
     })?;
 
-    sync_runtime(app, &updated);
+    sync_glass_plate_overrides(app, &updated, &specs);
     Ok(updated)
 }
 
@@ -250,13 +379,26 @@ pub fn update_assignment(
                             .map(|c| PathBuf::from(c.file_path))
                     };
                     if let Some(p) = path_res {
-                        let _ = static_apply::apply_static_wallpaper(
-                            &app_clone,
-                            target_opt.as_deref(),
-                            &p,
-                            fit,
-                            lossless,
-                        );
+                        let app_for_block = app_clone.clone();
+                        match tokio::task::spawn_blocking(move || {
+                            static_apply::apply_static_wallpaper(
+                                &app_for_block,
+                                target_opt.as_deref(),
+                                &p,
+                                fit,
+                                lossless,
+                            )
+                        })
+                        .await
+                        {
+                            Ok(Ok(())) => {}
+                            Ok(Err(err)) => {
+                                log::warn!("Kunne ikke opdatere statisk baggrundstilpasning: {err}");
+                            }
+                            Err(err) => {
+                                log::warn!("Statisk baggrundsopgave afbrudt: {err}");
+                            }
+                        }
                     }
                 });
             }
@@ -379,13 +521,26 @@ pub fn reapply_static_assignments(app: &AppHandle) {
                     .map(|c| PathBuf::from(c.file_path))
             };
             if let Some(path) = path_opt {
-                let _ = static_apply::apply_static_wallpaper(
-                    &app_clone,
-                    target_opt.as_deref(),
-                    &path,
-                    fit,
-                    lossless,
-                );
+                let app_for_block = app_clone.clone();
+                match tokio::task::spawn_blocking(move || {
+                    static_apply::apply_static_wallpaper(
+                        &app_for_block,
+                        target_opt.as_deref(),
+                        &path,
+                        fit,
+                        lossless,
+                    )
+                })
+                .await
+                {
+                    Ok(Ok(())) => {}
+                    Ok(Err(err)) => {
+                        log::warn!("Kunne ikke genanvende statisk baggrund: {err}");
+                    }
+                    Err(err) => {
+                        log::warn!("Statisk genanvendelsesopgave afbrudt: {err}");
+                    }
+                }
             }
         });
     }
@@ -393,12 +548,7 @@ pub fn reapply_static_assignments(app: &AppHandle) {
 
 pub fn sync_runtime(app: &AppHandle, cfg: &Config) {
     let state = app.state::<AppState>();
-    let monitors: Vec<MonitorInfo> = state
-        .monitors
-        .read()
-        .iter()
-        .map(|e| e.info.clone())
-        .collect();
+    let monitors = collect_monitors(app);
     let global_pause = state.effective_pause.read().reason.clone();
 
     let spec_map = engine::build_surface_specs(app, &cfg.wallpaper, &monitors);
@@ -411,6 +561,7 @@ pub fn sync_runtime(app: &AppHandle, cfg: &Config) {
         config: cfg.wallpaper.clone(),
         specs: specs.clone(),
         global_pause,
+        ack: None,
     });
 
     sync_glass_plate_overrides(app, cfg, &specs);
@@ -514,24 +665,24 @@ mod tests {
         let mut wp = WallpaperConfig::default();
         wp.assignments.insert(
             "*".into(),
-            MonitorWallpaper::new("scene-nordic-aurora".into(), WallpaperFit::Fill),
+            MonitorWallpaper::new("scene-amber-dunes".into(), WallpaperFit::Fill),
         );
         wp.assignments.insert(
             r"\\.\DISPLAY2".into(),
-            MonitorWallpaper::new("scene-obsidian-silk".into(), WallpaperFit::Fill),
+            MonitorWallpaper::new("photo-deep-space".into(), WallpaperFit::Fill),
         );
 
         assert_eq!(
             resolve_assignment_for_monitor(&wp, r"\\.\DISPLAY1")
                 .unwrap()
                 .wallpaper_id,
-            "scene-nordic-aurora"
+            "scene-amber-dunes"
         );
         assert_eq!(
             resolve_assignment_for_monitor(&wp, r"\\.\DISPLAY2")
                 .unwrap()
                 .wallpaper_id,
-            "scene-obsidian-silk"
+            "photo-deep-space"
         );
     }
 }

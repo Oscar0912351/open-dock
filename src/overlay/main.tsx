@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState, type PointerEvent } from "react";
 import ReactDOM from "react-dom/client";
 import type { Guide } from "../shared/bindings/Guide";
 import type { ThemeId } from "../shared/bindings/ThemeId";
@@ -17,6 +17,7 @@ const monitorName = params.get("monitor") ?? "";
 function GridOverlay({ monitor }: { monitor: string }) {
   const [theme, setTheme] = useState<ThemeId>("aurora");
   const [lines, setLines] = useState<Guide[]>([]);
+  const lastTapRef = useRef<{ time: number; x: number; y: number } | null>(null);
 
   useEffect(() => {
     let active = true;
@@ -56,8 +57,31 @@ function GridOverlay({ monitor }: { monitor: string }) {
     };
   }, [monitor]);
 
+  const handlePointerDown = (event: PointerEvent<HTMLDivElement>) => {
+    if (event.button !== 0) return;
+    const now = performance.now();
+    const prev = lastTapRef.current;
+    if (
+      prev &&
+      now - prev.time <= 450 &&
+      Math.hypot(event.clientX - prev.x, event.clientY - prev.y) <= 12
+    ) {
+      lastTapRef.current = null;
+      void ipc.editSet(false);
+      return;
+    }
+    lastTapRef.current = { time: now, x: event.clientX, y: event.clientY };
+  };
+
   return (
-    <div className={`overlay-root theme-${theme}`} aria-hidden="true">
+    <div
+      className={`overlay-root is-grid theme-${theme}`}
+      onPointerDown={handlePointerDown}
+      onDoubleClick={() => {
+        lastTapRef.current = null;
+        void ipc.editSet(false);
+      }}
+    >
       <div className="grid-dots" />
       {lines.map((line, index) => {
         const span = Math.max(1, line.to - line.from);

@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import type { ControlTheme } from "../shared/bindings/ControlTheme";
 import { DockLogo } from "../shared/icons/DockLogo";
 import { WeatherSprite } from "../shared/icons/WeatherSprite";
-import { ipc, windowControls } from "../shared/ipc";
+import { windowControls } from "../shared/ipc";
 import { Sidebar } from "./components/Sidebar";
 import { TitleBar } from "./components/TitleBar";
 import { ToastStack } from "./components/Toast";
@@ -10,7 +10,6 @@ import { Desktop } from "./routes/Desktop";
 import { Gallery } from "./routes/Gallery";
 import { Onboarding } from "./routes/Onboarding";
 import { Settings } from "./routes/Settings";
-import { Themes } from "./routes/Themes";
 import { Wallpapers } from "./routes/Wallpapers";
 import { initControlStore, useControlStore } from "./store";
 
@@ -18,7 +17,6 @@ export function App() {
   const config = useControlStore((s) => s.config);
   const route = useControlStore((s) => s.route);
   const setRoute = useControlStore((s) => s.setRoute);
-  const selectedId = useControlStore((s) => s.selectedWidgetId);
   const isWindows11 = useControlStore((s) => s.isWindows11);
   const locale = useControlStore((s) => s.locale);
 
@@ -97,11 +95,6 @@ export function App() {
         }
         if (event.key === "4") {
           event.preventDefault();
-          setRoute("themes");
-          return;
-        }
-        if (event.key === "5") {
-          event.preventDefault();
           setRoute("settings");
           return;
         }
@@ -111,17 +104,11 @@ export function App() {
           return;
         }
       }
-
-      if (event.key === "Delete" && route === "desktop" && selectedId) {
-        if (document.querySelector(".cc-backdrop")) return;
-        event.preventDefault();
-        void ipc.widgetRemove(selectedId);
-      }
     };
 
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [showOnboarding, route, selectedId, setRoute]);
+  }, [showOnboarding, setRoute]);
 
   const shellClass = [
     "cc-window",
@@ -132,24 +119,16 @@ export function App() {
     .filter(Boolean)
     .join(" ");
 
-  const mainClass = [
-    "cc-main",
-    config && route === "desktop" ? "is-flush" : "",
-  ]
-    .filter(Boolean)
-    .join(" ");
-
   return (
     <section className={shellClass} data-ui-theme={uiTheme}>
       <WeatherSprite />
       <TitleBar
         maximized={maximized}
         showOnboarding={showOnboarding}
-        uiTheme={uiTheme}
       />
       <div className="cc-body">
         <Sidebar />
-        <main className={mainClass}>
+        <main className="cc-main">
           {!config ? (
             <div className="cc-boot-placeholder" aria-hidden="true">
               <DockLogo size={36} />
@@ -159,7 +138,6 @@ export function App() {
               {route === "gallery" && <Gallery key="gallery" />}
               {route === "desktop" && <Desktop key="desktop" />}
               {route === "wallpapers" && <Wallpapers key="wallpapers" />}
-              {route === "themes" && <Themes key="themes" />}
               {route === "settings" && <Settings key="settings" />}
             </>
           )}

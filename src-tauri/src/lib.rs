@@ -23,7 +23,7 @@ use tauri_plugin_log::{Target, TargetKind};
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    elevation::try_auto_elevate();
+    providers::cpu_sensor::maybe_handle_cli_action();
 
     let log_level = if cfg!(debug_assertions) {
         LevelFilter::Debug
@@ -92,12 +92,16 @@ pub fn run() {
             commands::widgets::monitors_list,
             commands::edit::edit_set,
             commands::edit::edit_begin_drag,
+            commands::edit::edit_long_press_drag,
             commands::edit::edit_nudge,
             commands::edit::edit_cycle_size,
             commands::media::media_control,
             commands::media::media_select_source,
             commands::system::system_history,
             commands::system::system_caps,
+            commands::system::cpu_sensor_status,
+            commands::system::cpu_sensor_install,
+            commands::system::cpu_sensor_uninstall,
             commands::weather::weather_search,
             commands::weather::weather_location_add,
             commands::weather::weather_location_remove,
@@ -114,6 +118,12 @@ pub fn run() {
             commands::wallpaper::wallpaper_engine_status,
             commands::wallpaper::wallpaper_windows_quality_get,
             commands::wallpaper::wallpaper_windows_quality_set,
+            commands::agents::agent_focus,
+            commands::discord::discord_rpc_status,
+            commands::discord::discord_rpc_connect,
+            commands::discord::discord_rpc_connect_central,
+            commands::discord::discord_rpc_disconnect,
+            commands::discord::discord_voice_action,
         ])
         .setup(|app| {
             if let Ok(resource_dir) = app.path().resource_dir() {
@@ -150,9 +160,10 @@ pub fn run() {
             let initial_cfg = config_store.get();
             let onboarded = initial_cfg.onboarded;
             let initial_autostart = initial_cfg.general.autostart;
-            let initial_control_theme = initial_cfg.general.control_theme;
             app.manage(AppState::new(config_store, Vec::new()));
-            app.manage(providers::scheduler::Scheduler::new(app.handle().clone()));
+            let scheduler = providers::scheduler::Scheduler::new(app.handle().clone());
+            scheduler.discord().configure(app.handle());
+            app.manage(scheduler);
 
             desktop::install(app.handle())?;
             wallpaper::install(app.handle());
@@ -164,14 +175,10 @@ pub fn run() {
             if onboarded && (launched_via_autostart || !cfg!(debug_assertions)) {
                 commands::config::sync_autostart(app.handle(), initial_autostart);
             }
-            if let Some(control) = app.get_webview_window("control") {
-                windows::control::configure(&control, initial_control_theme);
-                if !launched_via_autostart || !onboarded {
-                    control.show()?;
-                    control.set_focus()?;
+            if !launched_via_autostart || !onboarded {
+                if let Err(error) = windows::control::open(app.handle(), None) {
+                    warn!("Kunne ikke åbne kontrolvinduet under opstart: {error:?}");
                 }
-            } else if !launched_via_autostart || !onboarded {
-                warn!("Kontrolvinduet mangler under opstart");
             }
             Ok(())
         })
@@ -185,9 +192,8 @@ pub fn run() {
         })
         .on_window_event(|window, event| {
             if window.label() == "control" {
-                if let WindowEvent::CloseRequested { api, .. } = event {
-                    api.prevent_close();
-                    windows::control::hide_to_background(window.app_handle(), window);
+                if let WindowEvent::CloseRequested { .. } = event {
+                    windows::control::notify_closed_to_tray(window.app_handle());
                 }
             }
             if matches!(event, WindowEvent::Destroyed) {
@@ -200,13 +206,26 @@ pub fn run() {
 
     match result {
         Ok(app) => app.run(|app_handle, event| {
-            if matches!(event, tauri::RunEvent::Exit) {
-                if let Some(state) = app_handle.try_state::<AppState>() {
-                    if let Err(error) = state.config.flush() {
-                        error!("Kunne ikke gemme konfiguration ved lukning: {error:?}");
+            match event {
+                tauri::RunEvent::ExitRequested { api, .. } => {
+                    let quitting = app_handle
+                        .try_state::<AppState>()
+                        .map(|s| s.quitting.load(std::sync::atomic::Ordering::Acquire))
+                        .unwrap_or(true);
+                    if !quitting {
+                        api.prevent_exit();
                     }
                 }
-                desktop::shutdown();
+                tauri::RunEvent::Exit => {
+                    if let Some(state) = app_handle.try_state::<AppState>() {
+                        if let Err(error) = state.config.flush() {
+                            error!("Kunne ikke gemme konfiguration ved lukning: {error:?}");
+                        }
+                    }
+                    providers::cpu_sensor::shutdown();
+                    desktop::shutdown();
+                }
+                _ => {}
             }
         }),
         Err(error) => error!("Open Dock stoppede med en fejl: {error}"),

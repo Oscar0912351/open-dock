@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   formatBytes,
+  formatCallTimer,
   formatDateLong,
   formatDateShort,
   formatDuration,
@@ -44,6 +45,13 @@ describe("format", () => {
 
   it("formaterer timer og minutter", () => {
     expect(formatDuration((3 * 60 + 12) * 60 * 1000)).toBe("3 t 12 m");
+  });
+
+  it("formaterer live call-varighed som MM:SS og H:MM:SS", () => {
+    expect(formatCallTimer(0)).toBe("00:00");
+    expect(formatCallTimer(5_000)).toBe("00:05");
+    expect(formatCallTimer(263_000)).toBe("04:23");
+    expect(formatCallTimer(3_863_000)).toBe("1:04:23");
   });
 
   it("beregner ISO-ugenummer", () => {

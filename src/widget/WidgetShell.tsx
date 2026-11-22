@@ -1,5 +1,6 @@
 import { ArrowsOutSimple, X } from "@phosphor-icons/react";
 import {
+  useEffect,
   useLayoutEffect,
   useRef,
   type CSSProperties,
@@ -30,9 +31,15 @@ const SIZES: Record<WidgetSize, { width: number; height: number; paddingX: numbe
 };
 
 const RADII: Record<RadiusPreset, Record<WidgetSize, number>> = {
-  soft: { pill: 24, s: 18, m: 18, l: 22 },
-  round: { pill: 24, s: 28, m: 28, l: 32 },
+  soft: { pill: 8, s: 10, m: 10, l: 12 },
+  round: { pill: 14, s: 22, m: 22, l: 26 },
   extra: { pill: 24, s: 36, m: 36, l: 42 },
+};
+
+const CLUSTER_RADII: Record<RadiusPreset, number> = {
+  soft: 10,
+  round: 22,
+  extra: 34,
 };
 
 export function computeScrimAlpha(
@@ -87,6 +94,7 @@ interface WidgetShellProps {
   isDragging?: boolean;
   canCycleSize?: boolean;
   onBeginDrag?: () => void;
+  onLongPressDrag?: () => void;
   onRemoveWidget?: () => void;
   onCycleSize?: () => void;
   glass?: GlassPlacementInfo | null;
@@ -118,6 +126,7 @@ export function WidgetShell({
   isDragging = false,
   canCycleSize = true,
   onBeginDrag,
+  onLongPressDrag,
   onRemoveWidget,
   onCycleSize,
   glass,
@@ -129,7 +138,7 @@ export function WidgetShell({
 }: WidgetShellProps) {
   const contentRef = useRef<HTMLDivElement>(null);
   const dimensions = SIZES[size];
-  const rBase = clusterFrame ? 24 : RADII[radius][size];
+  const rBase = clusterFrame ? CLUSTER_RADII[radius] : RADII[radius][size];
   const scrimAlpha = computeScrimAlpha(theme, glass?.luma ?? 0.15, autoContrast);
 
   useLayoutEffect(() => {
@@ -172,6 +181,7 @@ export function WidgetShell({
     preview ? "is-preview" : "",
     `theme-${theme}`,
     `size-${size}`,
+    `radius-${radius}`,
     `engine-${engine}`,
     `motion-${motion}`,
     paused ? "is-paused" : "",
@@ -186,10 +196,107 @@ export function WidgetShell({
     .filter(Boolean)
     .join(" ");
 
+  const longPressCleanupRef = useRef<(() => void) | null>(null);
+  const suppressClickRef = useRef(false);
+  const suppressTimerRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    if (isEditing) {
+      longPressCleanupRef.current?.();
+      longPressCleanupRef.current = null;
+    }
+  }, [isEditing]);
+
+  useEffect(() => {
+    return () => {
+      longPressCleanupRef.current?.();
+      longPressCleanupRef.current = null;
+      if (suppressTimerRef.current !== null) {
+        window.clearTimeout(suppressTimerRef.current);
+        suppressTimerRef.current = null;
+      }
+    };
+  }, []);
+
   const handlePointerDown = (event: PointerEvent<HTMLDivElement>) => {
-    if (!isEditing || event.button !== 0) return;
-    if ((event.target as HTMLElement).closest(".ed-btn")) return;
-    onBeginDrag?.();
+    if (event.button !== 0) return;
+    if (isEditing) {
+      if ((event.target as HTMLElement).closest(".ed-btn")) return;
+      onBeginDrag?.();
+      return;
+    }
+    if (preview || !onLongPressDrag) return;
+    const target = event.target as HTMLElement | null;
+    if (
+      target?.closest(
+        "button, a, input, textarea, select, [role='button'], [role='slider'], [role='menuitem'], [role='tab'], [contenteditable='true'], [data-no-long-press]",
+      )
+    ) {
+      return;
+    }
+
+    longPressCleanupRef.current?.();
+    const startX = event.clientX;
+    const startY = event.clientY;
+
+    const clearSuppressSoon = () => {
+      if (suppressTimerRef.current !== null) {
+        window.clearTimeout(suppressTimerRef.current);
+      }
+      suppressTimerRef.current = window.setTimeout(() => {
+        suppressClickRef.current = false;
+        suppressTimerRef.current = null;
+      }, 600);
+    };
+
+    const cleanup = () => {
+      window.clearTimeout(timerId);
+      window.removeEventListener("pointermove", onMove, true);
+      window.removeEventListener("pointerup", onEnd, true);
+      window.removeEventListener("pointercancel", onEnd, true);
+      window.removeEventListener("blur", onEnd);
+      if (longPressCleanupRef.current === cleanup) {
+        longPressCleanupRef.current = null;
+      }
+    };
+
+    const onMove = (moveEvent: globalThis.PointerEvent) => {
+      if (
+        Math.abs(moveEvent.clientX - startX) > 6 ||
+        Math.abs(moveEvent.clientY - startY) > 6
+      ) {
+        cleanup();
+      }
+    };
+
+    const onEnd = () => {
+      cleanup();
+    };
+
+    const timerId = window.setTimeout(() => {
+      cleanup();
+      suppressClickRef.current = true;
+      window.addEventListener("pointerup", clearSuppressSoon, { once: true, capture: true });
+      clearSuppressSoon();
+      onLongPressDrag();
+    }, 420);
+
+    window.addEventListener("pointermove", onMove, true);
+    window.addEventListener("pointerup", onEnd, true);
+    window.addEventListener("pointercancel", onEnd, true);
+    window.addEventListener("blur", onEnd);
+    longPressCleanupRef.current = cleanup;
+  };
+
+  const handleClickCapture = (event: MouseEvent<HTMLDivElement>) => {
+    if (!suppressClickRef.current) return;
+    suppressClickRef.current = false;
+    if (suppressTimerRef.current !== null) {
+      window.clearTimeout(suppressTimerRef.current);
+      suppressTimerRef.current = null;
+    }
+    event.preventDefault();
+    event.stopPropagation();
   };
 
   return (
@@ -200,6 +307,7 @@ export function WidgetShell({
         role="group"
         aria-label={ariaLabel}
         onPointerDown={handlePointerDown}
+        onClickCapture={handleClickCapture}
         onContextMenu={onContextMenu}
         onTransitionEnd={(event) => {
           if (
@@ -236,7 +344,6 @@ export function WidgetShell({
         <div ref={contentRef} className="content">
           {children}
         </div>
-        <div key={theme} className="glass-sheen" aria-hidden="true" />
         <div className="edit-chrome" aria-hidden={!isEditing}>
           {isEditing && (
             <>

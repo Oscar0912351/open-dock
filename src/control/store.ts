@@ -8,7 +8,7 @@ import { setLocale, t, type Locale } from "../shared/i18n";
 import { ipc, on } from "../shared/ipc";
 import { reportError } from "../shared/logging";
 
-export type ControlRoute = "gallery" | "desktop" | "wallpapers" | "themes" | "settings";
+export type ControlRoute = "gallery" | "desktop" | "wallpapers" | "settings";
 
 export interface ControlToast {
   id: string;
@@ -52,24 +52,31 @@ function parseRouteNavigation(raw: string): { route: ControlRoute; selectId?: st
   const [pathPart = "", queryPart = ""] = raw.split("?");
   const cleaned = pathPart.replace(/^\//, "").trim();
   const route: ControlRoute =
-    cleaned === "desktop" ||
-    cleaned === "wallpapers" ||
-    cleaned === "themes" ||
-    cleaned === "settings" ||
-    cleaned === "gallery"
-      ? cleaned
-      : "gallery";
+    cleaned === "desktop" || cleaned === "themes"
+      ? "desktop"
+      : cleaned === "wallpapers" || cleaned === "settings" || cleaned === "gallery"
+        ? cleaned
+        : "gallery";
   const params = new URLSearchParams(queryPart);
   const selectId = params.get("select") ?? undefined;
   return { route, selectId };
 }
 
+function readInitialRoute(): { route: ControlRoute; selectedWidgetId: string | null } {
+  const raw = new URLSearchParams(window.location.search).get("route");
+  if (!raw) return { route: "gallery", selectedWidgetId: null };
+  const parsed = parseRouteNavigation(raw);
+  return { route: parsed.route, selectedWidgetId: parsed.selectId ?? null };
+}
+
+const initialRouteState = readInitialRoute();
+
 export const useControlStore = create<ControlStore>((set, get) => ({
   config: null,
   monitors: [],
   placements: {},
-  route: "gallery",
-  selectedWidgetId: null,
+  route: initialRouteState.route,
+  selectedWidgetId: initialRouteState.selectedWidgetId,
   editMode: false,
   visible: true,
   paused: { paused: false, reason: null },
@@ -78,15 +85,10 @@ export const useControlStore = create<ControlStore>((set, get) => ({
   locale: "da",
   toasts: [],
   setRoute: (route, selectId) => {
-    set((prev) => ({
+    set({
       route,
-      selectedWidgetId:
-        selectId !== undefined
-          ? selectId
-          : route === "desktop" && prev.selectedWidgetId
-            ? prev.selectedWidgetId
-            : prev.selectedWidgetId,
-    }));
+      selectedWidgetId: selectId !== undefined ? selectId : null,
+    });
   },
   setSelectedWidgetId: (selectedWidgetId) => set({ selectedWidgetId }),
   pushToast: (input) => {
@@ -144,14 +146,9 @@ export function showUndoRemoveToast(instance: WidgetInstance) {
     undo: true,
     durationMs: 5000,
     onAction: () => {
-      void ipc
-        .widgetRestore(instance)
-        .then((restored) => {
-          useControlStore.getState().setSelectedWidgetId(restored.id);
-        })
-        .catch((err) => {
-          void reportError(`widget_restore: ${String(err)}`);
-        });
+      void ipc.widgetRestore(instance).catch((err) => {
+        void reportError(`widget_restore: ${String(err)}`);
+      });
     },
   });
 }
@@ -167,13 +164,10 @@ export function initControlStore(): () => void {
       const stillExists =
         prev.selectedWidgetId !== null &&
         cfg.widgets.some((w) => w.id === prev.selectedWidgetId);
-      const nextSelected = stillExists
-        ? prev.selectedWidgetId
-        : (cfg.widgets[0]?.id ?? null);
       return {
         config: cfg,
         locale: cfg.general.language,
-        selectedWidgetId: prev.selectedWidgetId === null ? null : nextSelected,
+        selectedWidgetId: stillExists ? prev.selectedWidgetId : null,
       };
     });
   };
@@ -246,11 +240,6 @@ export function initControlStore(): () => void {
   });
   sub(on.editMode, (state) => {
     useControlStore.setState({ editMode: state.on });
-  });
-  sub(on.editSelected, (state) => {
-    if (state.id) {
-      useControlStore.setState({ selectedWidgetId: state.id });
-    }
   });
   sub(on.visible, (state) => {
     useControlStore.setState({ visible: state.visible });

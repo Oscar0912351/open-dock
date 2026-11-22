@@ -2,10 +2,14 @@ use tauri::{
     AppHandle, Emitter, Manager, PhysicalPosition, PhysicalSize, WebviewUrl, WebviewWindowBuilder,
 };
 use windows::Win32::{
-    Foundation::HWND,
-    UI::WindowsAndMessaging::{
-        SetWindowPos, HWND_BOTTOM, HWND_TOPMOST, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
-        SWP_SHOWWINDOW,
+    Foundation::{HWND, LPARAM, LRESULT, WPARAM},
+    UI::{
+        Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass},
+        WindowsAndMessaging::{
+            SetWindowPos, WINDOWPOS, HWND_BOTTOM, HWND_TOPMOST, MA_NOACTIVATE, SWP_NOACTIVATE,
+            SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SWP_SHOWWINDOW, WM_MOUSEACTIVATE, WM_NCDESTROY,
+            WM_WINDOWPOSCHANGING,
+        },
     },
 };
 
@@ -20,9 +24,36 @@ use crate::{
     state::AppState,
 };
 
-const BAR_LOGICAL_WIDTH: f64 = 500.0;
+const GRID_SUBCLASS_ID: usize = 0xD61A57;
+const BAR_LOGICAL_WIDTH: f64 = 560.0;
 const BAR_LOGICAL_HEIGHT: f64 = 40.0;
 const BAR_TOP_OFFSET: f64 = 12.0;
+
+unsafe extern "system" fn grid_overlay_proc(
+    hwnd: HWND,
+    msg: u32,
+    wp: WPARAM,
+    lp: LPARAM,
+    id: usize,
+    _data: usize,
+) -> LRESULT {
+    match msg {
+        WM_WINDOWPOSCHANGING if lp.0 != 0 => {
+            let pos = &mut *(lp.0 as *mut WINDOWPOS);
+            if !pos.flags.contains(SWP_NOZORDER) {
+                pos.hwndInsertAfter = HWND_BOTTOM;
+            }
+        }
+        WM_MOUSEACTIVATE => {
+            return LRESULT(MA_NOACTIVATE as isize);
+        }
+        WM_NCDESTROY => {
+            let _ = RemoveWindowSubclass(hwnd, Some(grid_overlay_proc), id);
+        }
+        _ => {}
+    }
+    DefSubclassProc(hwnd, msg, wp, lp)
+}
 
 #[derive(Clone)]
 struct OverlayMonitorRect {
@@ -98,7 +129,7 @@ pub fn open_all(app: &AppHandle) -> Result<(), AppError> {
             mon.work_area.width.max(1) as u32,
             mon.work_area.height.max(1) as u32,
         ))?;
-        window.set_ignore_cursor_events(true)?;
+        window.set_ignore_cursor_events(false)?;
 
         let raw_hwnd = window.hwnd()?.0 as isize;
         let wx = mon.work_area.x;
@@ -109,6 +140,7 @@ pub fn open_all(app: &AppHandle) -> Result<(), AppError> {
             let hwnd = HWND(raw_hwnd as _);
             unsafe {
                 styles::apply_widget_styles(hwnd)?;
+                SetWindowSubclass(hwnd, Some(grid_overlay_proc), GRID_SUBCLASS_ID, 0).ok()?;
                 SetWindowPos(
                     hwnd,
                     Some(HWND_BOTTOM),

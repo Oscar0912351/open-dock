@@ -1,6 +1,7 @@
 use super::schema::{
     clamp_glass_strength, clamp_scale, clamp_wallpaper_brightness, clamp_wallpaper_speed,
-    normalize_system_interval, normalize_wallpaper_fps, Config, CONFIG_VERSION,
+    normalize_system_interval, normalize_wallpaper_fps, AutoRule, Config, ModuleMode, WidgetKind,
+    CONFIG_VERSION,
 };
 
 pub fn migrate(value: serde_json::Value) -> Result<Config, String> {
@@ -15,12 +16,36 @@ pub fn migrate(value: serde_json::Value) -> Result<Config, String> {
     let mut value = value;
     strip_legacy_focus(&mut value);
     let mut config = match version {
-        1 => serde_json::from_value::<Config>(value).map_err(|error| error.to_string())?,
+        1 | 2 => serde_json::from_value::<Config>(value).map_err(|error| error.to_string())?,
         other => return Err(format!("Ukendt config-version: {other}")),
     };
 
+    if version < 2 {
+        migrate_v1_discord_auto_hide(&mut config);
+    }
+
     sanitize(&mut config);
     Ok(config)
+}
+
+/// I v1 startede Discord-modulet i klynger som `compact` + `none`, hvilket holdt
+/// "Discord lukket" / "Ikke i call" synlig konstant. I v2 skjules det automatisk,
+/// når brugeren ikke er i et call.
+fn migrate_v1_discord_auto_hide(config: &mut Config) {
+    for widget in &mut config.widgets {
+        let Some(cluster) = &mut widget.cluster else {
+            continue;
+        };
+        for module in &mut cluster.modules {
+            if module.kind == WidgetKind::Discord
+                && module.default_mode == ModuleMode::Compact
+                && module.auto_rule == AutoRule::None
+            {
+                module.default_mode = ModuleMode::Hidden;
+                module.auto_rule = AutoRule::ExpandWhenInCall;
+            }
+        }
+    }
 }
 
 /// Fokus-widgetten (Pomodoro) er fjernet. Ældre layouts kan indeholde fokus-widgets,

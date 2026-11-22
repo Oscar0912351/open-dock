@@ -131,10 +131,14 @@ pub enum EngineCmd {
         config: WallpaperConfig,
         specs: Vec<ResolvedSurfaceSpec>,
         global_pause: Option<PauseReason>,
+        ack: Option<Sender<Result<(), String>>>,
     },
     SetGlobalPause(Option<PauseReason>),
     ExplorerRestarted,
-    StopAll,
+    VerifyZOrder,
+    StopAll {
+        ack: Option<Sender<Result<(), String>>>,
+    },
     Shutdown,
 }
 
@@ -260,6 +264,17 @@ impl Presenter {
     }
 }
 
+impl Drop for Presenter {
+    fn drop(&mut self) {
+        if let Self::DirectComposition { _dcomp, _target, .. } = self {
+            unsafe {
+                let _ = _target.SetRoot(None);
+                let _ = _dcomp.Commit();
+            }
+        }
+    }
+}
+
 struct ShaderRunner {
     vs: ID3D11VertexShader,
     ps: ID3D11PixelShader,
@@ -365,14 +380,17 @@ struct MonitorSurface {
     render_w: u32,
     render_h: u32,
     adapter_name: String,
-    host: WallpaperHostWindow,
-    _device: ID3D11Device,
-    context: ID3D11DeviceContext,
-    presenter: Presenter,
-    back_buffer: ID3D11Texture2D,
+    // Drop order matters: release content/swapchain/DirectComposition/D3D11 before destroying host HWND.
     content: SurfaceContent,
+    back_buffer: ID3D11Texture2D,
+    presenter: Presenter,
+    context: ID3D11DeviceContext,
+    _device: ID3D11Device,
+    host: WallpaperHostWindow,
     anim_time: f64,
     last_tick: Instant,
+    created_at: Instant,
+    has_presented: bool,
     covered: bool,
 }
 
@@ -387,17 +405,21 @@ impl MonitorSurface {
         let presenter = create_presenter(&device, host.hwnd(), render_w, render_h, mon_w, mon_h)?;
         let back_buffer: ID3D11Texture2D = unsafe { presenter.swap_chain().GetBuffer(0)? };
 
-        let content = match spec.kind {
+        let anim_time = 12.0;
+        let (content, has_presented) = match spec.kind {
             WallpaperKind::Shader => {
+                let brightness = clamp_wallpaper_brightness(spec.assignment.brightness);
                 let runner = ShaderRunner::new(
                     &device,
                     &back_buffer,
                     &spec.assignment.wallpaper_id,
                     render_w,
                     render_h,
-                    clamp_wallpaper_brightness(spec.assignment.brightness),
+                    brightness,
                 )?;
-                SurfaceContent::Shader(runner)
+                runner.render(&context, render_w, render_h, anim_time as f32, brightness)?;
+                presenter.present().map_err(AppError::Win)?;
+                (SurfaceContent::Shader(runner), true)
             }
             WallpaperKind::Video => {
                 let path = spec
@@ -410,26 +432,29 @@ impl MonitorSurface {
                     spec.assignment.muted,
                     clamp_wallpaper_speed(spec.assignment.speed),
                 )?;
-                SurfaceContent::Video(player)
+                (SurfaceContent::Video(player), false)
             }
             WallpaperKind::Photo => {
                 return Err(AppError::Other("Statisk foto skal ikke startes i live-motor".into()));
             }
         };
 
+        let now = Instant::now();
         Ok(Self {
             spec,
             render_w,
             render_h,
             adapter_name,
-            host,
-            _device: device,
-            context,
-            presenter,
-            back_buffer,
             content,
-            anim_time: 12.0,
-            last_tick: Instant::now(),
+            back_buffer,
+            presenter,
+            context,
+            _device: device,
+            host,
+            anim_time,
+            last_tick: now,
+            created_at: now,
+            has_presented,
             covered: false,
         })
     }
@@ -443,7 +468,9 @@ impl MonitorSurface {
     }
 
     fn step_and_present(&mut self, global_paused: bool) -> Result<bool, AppError> {
-        let paused = global_paused || self.covered;
+        let awaiting_first_frame =
+            !self.has_presented && self.created_at.elapsed() < Duration::from_secs(3);
+        let paused = !awaiting_first_frame && (global_paused || self.covered);
         let now = Instant::now();
         let dt = (now - self.last_tick).as_secs_f64().min(0.2);
         self.last_tick = now;
@@ -463,6 +490,7 @@ impl MonitorSurface {
                     clamp_wallpaper_brightness(self.spec.assignment.brightness),
                 )?;
                 self.presenter.present().map_err(AppError::Win)?;
+                self.has_presented = true;
                 Ok(true)
             }
             SurfaceContent::Video(player) => {
@@ -483,6 +511,7 @@ impl MonitorSurface {
                 )?;
                 if drew {
                     self.presenter.present().map_err(AppError::Win)?;
+                    self.has_presented = true;
                 }
                 Ok(drew)
             }
@@ -513,6 +542,7 @@ fn engine_loop(app: AppHandle, rx: mpsc::Receiver<EngineCmd>) {
     let mut engine_cfg = crate::config::schema::WallpaperEngineSettings::default();
     let mut global_pause: Option<PauseReason> = None;
     let mut last_error: Option<String> = None;
+    let mut pending_cmd: Option<EngineCmd> = None;
 
     let mut last_occlusion_check = Instant::now() - Duration::from_secs(1);
     let mut last_status_emit = Instant::now() - Duration::from_secs(2);
@@ -522,12 +552,16 @@ fn engine_loop(app: AppHandle, rx: mpsc::Receiver<EngineCmd>) {
     let mut last_present_time = Instant::now();
     let mut battery_cached = false;
     let mut locked_cached = false;
+    let mut was_locked = false;
 
     loop {
-        let cmd = if surfaces.is_empty() && specs_cache.is_empty() {
-            match rx.recv() {
+        let cmd = if let Some(c) = pending_cmd.take() {
+            Some(c)
+        } else if surfaces.is_empty() {
+            match rx.recv_timeout(Duration::from_millis(250)) {
                 Ok(c) => Some(c),
-                Err(_) => break,
+                Err(RecvTimeoutError::Timeout) => None,
+                Err(RecvTimeoutError::Disconnected) => break,
             }
         } else {
             match rx.try_recv() {
@@ -537,10 +571,15 @@ fn engine_loop(app: AppHandle, rx: mpsc::Receiver<EngineCmd>) {
             }
         };
 
+        let mut force_status = false;
+
         if let Some(first_cmd) = cmd {
             let mut rebuild_needed = false;
             let mut should_exit = false;
             let mut explorer_restarted = false;
+            let mut verify_zorder_needed = false;
+            let mut sync_acks: Vec<Sender<Result<(), String>>> = Vec::new();
+            let mut stop_acks: Vec<Sender<Result<(), String>>> = Vec::new();
 
             let mut batch = vec![first_cmd];
             while let Ok(more) = rx.try_recv() {
@@ -553,34 +592,50 @@ fn engine_loop(app: AppHandle, rx: mpsc::Receiver<EngineCmd>) {
                         should_exit = true;
                         break;
                     }
-                    EngineCmd::StopAll => {
+                    EngineCmd::StopAll { ack } => {
                         specs_cache.clear();
                         surfaces.clear();
                         last_error = None;
+                        rebuild_needed = false;
+                        force_status = true;
+                        if let Some(tx) = ack {
+                            stop_acks.push(tx);
+                        }
                     }
                     EngineCmd::ExplorerRestarted => {
                         explorer_restarted = true;
                     }
+                    EngineCmd::VerifyZOrder => {
+                        verify_zorder_needed = true;
+                    }
                     EngineCmd::SetGlobalPause(reason) => {
                         global_pause = reason;
+                        force_status = true;
                     }
                     EngineCmd::Sync {
                         config,
                         specs,
                         global_pause: gp,
+                        ack,
                     } => {
                         global_pause = gp;
                         let res_changed = engine_cfg.resolution != config.engine.resolution;
                         engine_cfg = config.engine.clone();
+                        force_status = true;
+                        if let Some(tx) = ack {
+                            sync_acks.push(tx);
+                        }
 
                         if specs.is_empty() {
                             specs_cache.clear();
                             surfaces.clear();
                             last_error = None;
+                            rebuild_needed = false;
                             continue;
                         }
 
-                        if !res_changed && specs_match_topology(&surfaces, &specs) {
+                        if !res_changed && !rebuild_needed && specs_match_topology(&surfaces, &specs)
+                        {
                             for (surface, next_spec) in surfaces.iter_mut().zip(specs.iter()) {
                                 surface.update_assignment_in_place(&next_spec.assignment);
                             }
@@ -595,10 +650,19 @@ fn engine_loop(app: AppHandle, rx: mpsc::Receiver<EngineCmd>) {
 
             if should_exit {
                 surfaces.clear();
+                for tx in sync_acks {
+                    let _ = tx.send(Err("Baggrundsmotoren blev lukket".into()));
+                }
+                for tx in stop_acks {
+                    let _ = tx.send(Ok(()));
+                }
                 break;
             }
 
-            if explorer_restarted && !specs_cache.is_empty() {
+            if (explorer_restarted || verify_zorder_needed)
+                && !specs_cache.is_empty()
+                && !rebuild_needed
+            {
                 let mut z_ok = !surfaces.is_empty();
                 for s in &surfaces {
                     if !s.host.verify_zorder() {
@@ -630,6 +694,23 @@ fn engine_loop(app: AppHandle, rx: mpsc::Receiver<EngineCmd>) {
                 last_occlusion_check = Instant::now() - Duration::from_secs(1);
                 ema_frame_ms = 0.0;
                 ema_fps = 0.0;
+                force_status = true;
+            }
+
+            if !specs_cache.is_empty() && surfaces.is_empty() {
+                let err_msg = last_error
+                    .clone()
+                    .unwrap_or_else(|| "Kunne ikke starte animeret baggrund".into());
+                for tx in sync_acks {
+                    let _ = tx.send(Err(err_msg.clone()));
+                }
+            } else {
+                for tx in sync_acks {
+                    let _ = tx.send(Ok(()));
+                }
+            }
+            for tx in stop_acks {
+                let _ = tx.send(Ok(()));
             }
         }
 
@@ -651,14 +732,45 @@ fn engine_loop(app: AppHandle, rx: mpsc::Receiver<EngineCmd>) {
                 render_height: 0,
                 last_error: last_error.clone(),
             };
-            publish_status_if_needed(&app, &status, &mut last_published, &mut last_status_emit, true);
+            publish_status_if_needed(&app, &status, &mut last_published, &mut last_status_emit, force_status);
             continue;
         }
 
         let now = Instant::now();
         if now.duration_since(last_occlusion_check) >= Duration::from_millis(250) {
             last_occlusion_check = now;
-            locked_cached = is_workstation_locked();
+            let next_locked = is_workstation_locked();
+            if was_locked && !next_locked && !specs_cache.is_empty() {
+                let mut z_ok = true;
+                for s in &surfaces {
+                    if !s.host.verify_zorder() {
+                        z_ok = false;
+                        break;
+                    }
+                }
+                if !z_ok {
+                    surfaces.clear();
+                    last_error = None;
+                    for spec in &specs_cache {
+                        match MonitorSurface::build(spec.clone(), engine_cfg.resolution) {
+                            Ok(s) => surfaces.push(s),
+                            Err(error) => {
+                                let msg = error.to_string();
+                                log::error!(
+                                    "Kunne ikke genskabe live-baggrund efter oplåsning på {}: {msg}",
+                                    spec.monitor_name
+                                );
+                                last_error = Some(msg);
+                            }
+                        }
+                    }
+                    ema_frame_ms = 0.0;
+                    ema_fps = 0.0;
+                    force_status = true;
+                }
+            }
+            was_locked = next_locked;
+            locked_cached = next_locked;
             battery_cached = engine_cfg.pause_on_battery && system_on_battery();
             for s in &mut surfaces {
                 s.covered = engine_cfg.pause_when_covered
@@ -666,9 +778,34 @@ fn engine_loop(app: AppHandle, rx: mpsc::Receiver<EngineCmd>) {
             }
         }
 
+        if surfaces.is_empty() {
+            let status = WallpaperEngineStatus {
+                run_state: if last_error.is_some() {
+                    EngineRunState::Error
+                } else {
+                    EngineRunState::Idle
+                },
+                active_surfaces: 0,
+                actual_fps: 0.0,
+                frame_time_ms: 0.0,
+                backend: String::new(),
+                adapter_name: String::new(),
+                render_width: 0,
+                render_height: 0,
+                last_error: last_error.clone(),
+            };
+            publish_status_if_needed(&app, &status, &mut last_published, &mut last_status_emit, true);
+            continue;
+        }
+
+        let fullscreen_active = app
+            .state::<AppState>()
+            .fullscreen_active
+            .load(std::sync::atomic::Ordering::Acquire);
         let effective_pause = compute_effective_pause(
             &engine_cfg,
             &global_pause,
+            fullscreen_active,
             locked_cached,
             battery_cached,
             &surfaces,
@@ -686,23 +823,18 @@ fn engine_loop(app: AppHandle, rx: mpsc::Receiver<EngineCmd>) {
                 0.0,
                 last_error.clone(),
             );
-            publish_status_if_needed(&app, &status, &mut last_published, &mut last_status_emit, false);
+            publish_status_if_needed(
+                &app,
+                &status,
+                &mut last_published,
+                &mut last_status_emit,
+                force_status,
+            );
 
             match rx.recv_timeout(Duration::from_millis(200)) {
                 Ok(next) => {
-                    // Re-inject via self? Can't re-push to mpsc::Receiver; handle minimal state next loop
-                    if matches!(next, EngineCmd::Shutdown) {
-                        surfaces.clear();
-                        break;
-                    }
-                    handle_single_idle_cmd(
-                        next,
-                        &mut surfaces,
-                        &mut specs_cache,
-                        &mut engine_cfg,
-                        &mut global_pause,
-                        &mut last_error,
-                    );
+                    pending_cmd = Some(next);
+                    continue;
                 }
                 Err(RecvTimeoutError::Timeout) => {}
                 Err(RecvTimeoutError::Disconnected) => break,
@@ -771,7 +903,13 @@ fn engine_loop(app: AppHandle, rx: mpsc::Receiver<EngineCmd>) {
             ema_frame_ms,
             last_error.clone(),
         );
-        publish_status_if_needed(&app, &status, &mut last_published, &mut last_status_emit, false);
+        publish_status_if_needed(
+            &app,
+            &status,
+            &mut last_published,
+            &mut last_status_emit,
+            force_status,
+        );
 
         let target_fps = normalize_wallpaper_fps(engine_cfg.fps_cap);
         let frame_budget = Duration::from_secs_f64(1.0 / target_fps as f64);
@@ -783,57 +921,6 @@ fn engine_loop(app: AppHandle, rx: mpsc::Receiver<EngineCmd>) {
                 thread::sleep(remaining);
             }
         }
-    }
-}
-
-fn handle_single_idle_cmd(
-    cmd: EngineCmd,
-    surfaces: &mut Vec<MonitorSurface>,
-    specs_cache: &mut Vec<ResolvedSurfaceSpec>,
-    engine_cfg: &mut crate::config::schema::WallpaperEngineSettings,
-    global_pause: &mut Option<PauseReason>,
-    last_error: &mut Option<String>,
-) {
-    match cmd {
-        EngineCmd::StopAll => {
-            specs_cache.clear();
-            surfaces.clear();
-            *last_error = None;
-        }
-        EngineCmd::SetGlobalPause(r) => *global_pause = r,
-        EngineCmd::ExplorerRestarted => {
-            for s in surfaces.iter() {
-                let _ = s.host.verify_zorder();
-            }
-        }
-        EngineCmd::Sync {
-            config,
-            specs,
-            global_pause: gp,
-        } => {
-            *global_pause = gp;
-            let res_changed = engine_cfg.resolution != config.engine.resolution;
-            *engine_cfg = config.engine;
-            if specs.is_empty() {
-                specs_cache.clear();
-                surfaces.clear();
-                *last_error = None;
-            } else if !res_changed && specs_match_topology(surfaces, &specs) {
-                for (surface, next_spec) in surfaces.iter_mut().zip(specs.iter()) {
-                    surface.update_assignment_in_place(&next_spec.assignment);
-                }
-                *specs_cache = specs;
-            } else {
-                *specs_cache = specs;
-                surfaces.clear();
-                for spec in specs_cache.iter() {
-                    if let Ok(s) = MonitorSurface::build(spec.clone(), engine_cfg.resolution) {
-                        surfaces.push(s);
-                    }
-                }
-            }
-        }
-        EngineCmd::Shutdown => {}
     }
 }
 
@@ -853,6 +940,7 @@ fn specs_match_topology(surfaces: &[MonitorSurface], specs: &[ResolvedSurfaceSpe
 fn compute_effective_pause(
     cfg: &crate::config::schema::WallpaperEngineSettings,
     global_pause: &Option<PauseReason>,
+    fullscreen_active: bool,
     locked: bool,
     on_battery: bool,
     surfaces: &[MonitorSurface],
@@ -870,10 +958,16 @@ fn compute_effective_pause(
         }
         _ => {}
     }
+    if fullscreen_active && cfg.pause_on_fullscreen {
+        return Some(EngineRunState::PausedFullscreen);
+    }
     if on_battery {
         return Some(EngineRunState::PausedBattery);
     }
-    if !surfaces.is_empty() && surfaces.iter().all(|s| s.covered) {
+    let awaiting_first_frame = surfaces
+        .iter()
+        .any(|s| !s.has_presented && s.created_at.elapsed() < Duration::from_secs(3));
+    if !awaiting_first_frame && !surfaces.is_empty() && surfaces.iter().all(|s| s.covered) {
         return Some(EngineRunState::PausedCovered);
     }
     None

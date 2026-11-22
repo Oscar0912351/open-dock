@@ -326,7 +326,7 @@ export function System({ size, theme, settings, onAriaChange }: SystemProps) {
                   </div>
                 </div>
               ) : (
-                <div className="row g6 grow" style={{ minWidth: 0 }} data-enter>
+                <div className="row g6 grow sys-pill-metric" style={{ minWidth: 0 }} data-enter>
                   <Ring size={28} stroke={2.8} pct={info.pct ?? 0} tone={tone}>
                     <MetricIcon metric={metricKey} size={11} />
                   </Ring>

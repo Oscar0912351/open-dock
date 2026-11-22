@@ -1,5 +1,6 @@
 import type { WidgetKind } from "../shared/bindings/WidgetKind";
 import type { WidgetSize } from "../shared/bindings/WidgetSize";
+import { defaultAgentsSettings } from "./kinds/agents/Agents";
 import { defaultClockSettings } from "./kinds/clock/Clock";
 import { defaultNoteSettings } from "./kinds/note/Note";
 import { defaultNowPlayingSettings } from "./kinds/nowPlaying/NowPlaying";
@@ -190,7 +191,7 @@ export const WIDGET_REGISTRY: Record<FreeWidgetKind, WidgetMeta> = {
   discord: {
     kind: "discord",
     name: "Discord",
-    description: "Se om Discord kører, og om du er i et call (lydbaseret).",
+    description: "Vis aktivt Discord-call med deltagere, tale-indikator og mute-styring.",
     allowedSizes: ["pill", "s", "m"],
     defaultSize: "m",
     defaultSettings: {},
@@ -199,11 +200,23 @@ export const WIDGET_REGISTRY: Record<FreeWidgetKind, WidgetMeta> = {
   agents: {
     kind: "agents",
     name: "AI Agenter",
-    description: "Se dine AI-agenter arbejde – Claude, Codex, Cline m.fl.",
+    description:
+      "Se aktive lokale AI-agenter – Antigravity, Devin, Claude Code, Codex, Cursor m.fl.",
     allowedSizes: ["s", "m", "l"],
     defaultSize: "m",
-    defaultSettings: {},
-    settingsSchema: [],
+    defaultSettings: { recentWindowMin: String(defaultAgentsSettings.recentWindowMin) },
+    settingsSchema: [
+      {
+        key: "recentWindowMin",
+        type: "segmented",
+        label: "Vis afsluttede",
+        options: [
+          { value: "0", label: "Kun aktive" },
+          { value: "15", label: "15 min" },
+          { value: "60", label: "1 time" },
+        ],
+      },
+    ],
   },
 };
 

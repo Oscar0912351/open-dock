@@ -425,7 +425,7 @@ pub async fn cluster_add(
         .into_iter()
         .map(|mut cluster| {
             cluster.modules.retain(|m| m.kind != WidgetKind::Cluster);
-            cluster.modules.truncate(5);
+            cluster.modules.truncate(7);
             cluster
         })
         .filter(|cluster| !cluster.modules.is_empty())

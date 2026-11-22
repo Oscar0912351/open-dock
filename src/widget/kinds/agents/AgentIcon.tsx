@@ -1,10 +1,11 @@
 import { OpenAiLogo, Robot } from "@phosphor-icons/react";
-import type { ComponentType } from "react";
+import type { ComponentType, CSSProperties } from "react";
 import aiderLogo from "./logos/aider.png";
 import antigravityLogo from "./logos/antigravity.png";
 import claudeLogo from "./logos/claude.svg";
 import clineLogo from "./logos/cline.svg";
 import cursorLogo from "./logos/cursor.svg";
+import devinLogo from "./logos/devin.png";
 import freebuffLogo from "./logos/freebuff.png";
 import geminiLogo from "./logos/googlegemini.svg";
 import kiloLogo from "./logos/kilo.png";
@@ -12,50 +13,59 @@ import opencodeLogo from "./logos/opencode.svg";
 import qoderLogo from "./logos/qoder.png";
 import windsurfLogo from "./logos/windsurf.svg";
 
-type Glyph = { kind: "img"; src: string } | { kind: "icon"; Icon: ComponentType<{ size?: number | string }> };
+type Glyph =
+  | { kind: "img"; src: string }
+  | { kind: "icon"; Icon: ComponentType<{ size?: number | string }> };
 
 interface AgentStyle {
   glyph: Glyph;
-  /** Farve brugt til tile og status-prik. */
-  tint: string;
+  /** Hvid monokrom grafik inverteres automatisk på lyse temaer som Creme/Lærk. */
+  mono?: boolean;
 }
 
-/** Rigtige app-logoer pr. understøttet agent. Fallback: neutral robot. */
 const AGENT_STYLES: Record<string, AgentStyle> = {
-  "claude-code": { glyph: { kind: "img", src: claudeLogo }, tint: "#E0824D" },
-  codex: { glyph: { kind: "icon", Icon: OpenAiLogo }, tint: "#E7E9EE" },
-  gemini: { glyph: { kind: "img", src: geminiLogo }, tint: "#8E75B2" },
-  opencode: { glyph: { kind: "img", src: opencodeLogo }, tint: "#D4D4D8" },
-  cline: { glyph: { kind: "img", src: clineLogo }, tint: "#4ADE80" },
-  kilo: { glyph: { kind: "img", src: kiloLogo }, tint: "#A78BFA" },
-  cursor: { glyph: { kind: "img", src: cursorLogo }, tint: "#D4D4D8" },
-  windsurf: { glyph: { kind: "img", src: windsurfLogo }, tint: "#22D3EE" },
-  qoder: { glyph: { kind: "img", src: qoderLogo }, tint: "#FBBF24" },
-  antigravity: { glyph: { kind: "img", src: antigravityLogo }, tint: "#C084FC" },
-  aider: { glyph: { kind: "img", src: aiderLogo }, tint: "#4ADE80" },
-  freebuff: { glyph: { kind: "img", src: freebuffLogo }, tint: "#F472B6" },
+  antigravity: { glyph: { kind: "img", src: antigravityLogo } },
+  devin: { glyph: { kind: "img", src: devinLogo }, mono: true },
+  "claude-code": { glyph: { kind: "img", src: claudeLogo } },
+  codex: { glyph: { kind: "icon", Icon: OpenAiLogo } },
+  gemini: { glyph: { kind: "img", src: geminiLogo } },
+  opencode: { glyph: { kind: "img", src: opencodeLogo }, mono: true },
+  cline: { glyph: { kind: "img", src: clineLogo }, mono: true },
+  kilo: { glyph: { kind: "img", src: kiloLogo } },
+  cursor: { glyph: { kind: "img", src: cursorLogo }, mono: true },
+  windsurf: { glyph: { kind: "img", src: windsurfLogo }, mono: true },
+  qoder: { glyph: { kind: "img", src: qoderLogo } },
+  aider: { glyph: { kind: "img", src: aiderLogo } },
+  freebuff: { glyph: { kind: "img", src: freebuffLogo } },
 };
 
-const FALLBACK: AgentStyle = { glyph: { kind: "icon", Icon: Robot }, tint: "#94A3B8" };
-
-export function agentTint(agent: string): string {
-  return (AGENT_STYLES[agent] ?? FALLBACK).tint;
-}
+const FALLBACK: AgentStyle = { glyph: { kind: "icon", Icon: Robot } };
 
 export function AgentIcon({
   agent,
-  size = 15,
+  size,
+  variant = "default",
 }: {
   agent: string;
   size?: number;
+  variant?: "default" | "compact";
 }) {
-  const { glyph, tint } = AGENT_STYLES[agent] ?? FALLBACK;
+  const { glyph, mono } = AGENT_STYLES[agent] ?? FALLBACK;
+  const resolvedSize = size ?? (variant === "compact" ? 11 : 13);
+  const classes = [
+    "ag-icon",
+    variant === "compact" ? "ag-icon-sm" : "",
+    mono ? "is-mono" : "",
+  ]
+    .filter(Boolean)
+    .join(" ");
+
   return (
-    <span className="ag-icon" style={{ background: `${tint}26`, color: tint }}>
+    <span className={classes} style={{ "--ag-logo": resolvedSize } as CSSProperties}>
       {glyph.kind === "img" ? (
-        <img className="ag-logo" src={glyph.src} width={size} height={size} alt="" />
+        <img className="ag-logo" src={glyph.src} alt="" />
       ) : (
-        <glyph.Icon size={size} />
+        <glyph.Icon size={`calc(${resolvedSize} * var(--u))`} />
       )}
     </span>
   );

@@ -23,7 +23,7 @@ use windows::{
 
 use crate::{
     config::schema::{RectI, WallpaperFit},
-    desktop::monitors::MonitorInfo,
+    desktop::monitors::{list_tauri_monitors, MonitorInfo},
     error::AppError,
     state::AppState,
 };
@@ -82,16 +82,40 @@ pub fn apply_static_wallpaper(
         .collect();
 
     let all_monitors = matches!(target_monitor, None | Some("*"));
-    let target_info = if all_monitors {
+    let target_rect = if all_monitors {
         monitors
             .iter()
             .max_by_key(|m| (m.rect.width.max(1) as u64) * (m.rect.height.max(1) as u64))
+            .map(|m| m.rect)
+            .or_else(|| {
+                list_tauri_monitors(app)
+                    .into_iter()
+                    .max_by_key(|m| (m.rect.width.max(1) as u64) * (m.rect.height.max(1) as u64))
+                    .map(|m| m.rect)
+            })
     } else {
-        target_monitor.and_then(|name| monitors.iter().find(|m| m.name == name))
+        target_monitor.and_then(|name| {
+            monitors
+                .iter()
+                .find(|m| m.name == name)
+                .map(|m| m.rect)
+                .or_else(|| {
+                    list_tauri_monitors(app)
+                        .into_iter()
+                        .find(|m| m.name == name)
+                        .map(|m| m.rect)
+                })
+        })
     };
 
-    let final_path = if lossless_enabled {
-        prepare_lossless_png(app, image_path, target_info, fit)?
+    let ext = image_path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|s| s.to_ascii_lowercase())
+        .unwrap_or_default();
+
+    let final_path = if lossless_enabled || ext == "webp" {
+        prepare_lossless_png(app, image_path, target_rect, fit)?
     } else {
         image_path.to_path_buf()
     };
@@ -99,6 +123,7 @@ pub fn apply_static_wallpaper(
     let _com = ComAptGuard::init();
     let dw: IDesktopWallpaper = unsafe { CoCreateInstance(&DesktopWallpaper, None, CLSCTX_ALL)? };
 
+    let _ = unsafe { dw.Enable(true) };
     unsafe {
         dw.SetPosition(map_fit_to_dwpos(fit))?;
     }
@@ -109,46 +134,50 @@ pub fn apply_static_wallpaper(
         .chain(std::iter::once(0))
         .collect();
 
-    let count = unsafe { dw.GetMonitorDevicePathCount()? };
-    let mut applied_any = false;
-
-    for i in 0..count {
-        let Ok(raw_id) = (unsafe { dw.GetMonitorDevicePathAt(i) }) else {
-            continue;
-        };
-        let _id_guard = CoTaskStr(raw_id);
-        let Ok(rect) = (unsafe { dw.GetMonitorRECT(PCWSTR(raw_id.0)) }) else {
-            continue;
-        };
-        let dw_rect = RectI {
-            x: rect.left,
-            y: rect.top,
-            width: rect.right - rect.left,
-            height: rect.bottom - rect.top,
-        };
-
-        let should_apply = if all_monitors {
-            true
-        } else if let Some(target) = target_info {
-            rect_matches_or_overlaps(target.rect, dw_rect)
-        } else {
-            i == 0
-        };
-
-        if should_apply {
-            unsafe {
-                dw.SetWallpaper(PCWSTR(raw_id.0), PCWSTR(wide_path.as_ptr()))?;
-            }
-            applied_any = true;
-            if !all_monitors {
-                break;
-            }
-        }
-    }
-
-    if !applied_any {
+    if all_monitors {
         unsafe {
             dw.SetWallpaper(PCWSTR::null(), PCWSTR(wide_path.as_ptr()))?;
+        }
+    } else {
+        let count = unsafe { dw.GetMonitorDevicePathCount()? };
+        let mut applied_any = false;
+
+        if let Some(target) = target_rect {
+            for i in 0..count {
+                let Ok(raw_id) = (unsafe { dw.GetMonitorDevicePathAt(i) }) else {
+                    continue;
+                };
+                let _id_guard = CoTaskStr(raw_id);
+                let Ok(rect) = (unsafe { dw.GetMonitorRECT(PCWSTR(raw_id.0)) }) else {
+                    continue;
+                };
+                let dw_rect = RectI {
+                    x: rect.left,
+                    y: rect.top,
+                    width: rect.right - rect.left,
+                    height: rect.bottom - rect.top,
+                };
+
+                if rect_matches_or_overlaps(target, dw_rect) {
+                    unsafe {
+                        dw.SetWallpaper(PCWSTR(raw_id.0), PCWSTR(wide_path.as_ptr()))?;
+                    }
+                    applied_any = true;
+                    break;
+                }
+            }
+        }
+
+        if !applied_any {
+            if count <= 1 {
+                unsafe {
+                    dw.SetWallpaper(PCWSTR::null(), PCWSTR(wide_path.as_ptr()))?;
+                }
+            } else {
+                return Err(AppError::Other(
+                    "Kunne ikke finde den valgte skærm til baggrunden".into(),
+                ));
+            }
         }
     }
 
@@ -159,7 +188,7 @@ pub fn apply_static_wallpaper(
 fn prepare_lossless_png(
     app: &AppHandle,
     source_path: &Path,
-    target_monitor: Option<&MonitorInfo>,
+    target_rect: Option<RectI>,
     fit: WallpaperFit,
 ) -> Result<PathBuf, AppError> {
     let applied_dir = app.path().app_cache_dir()?.join("wallpapers").join("applied");
@@ -171,11 +200,11 @@ fn prepare_lossless_png(
         .map(|s| s.to_ascii_lowercase())
         .unwrap_or_default();
 
-    let target_w = target_monitor
-        .map(|m| m.rect.width.max(1) as u32)
+    let target_w = target_rect
+        .map(|r| r.width.max(1) as u32)
         .unwrap_or(3840);
-    let target_h = target_monitor
-        .map(|m| m.rect.height.max(1) as u32)
+    let target_h = target_rect
+        .map(|r| r.height.max(1) as u32)
         .unwrap_or(2160);
 
     let mtime = fs::metadata(source_path)

@@ -18,7 +18,7 @@ use crate::{
         styles, zorder,
     },
     error::AppError,
-    state::{AppState, PauseReason, WidgetBoot, WidgetGlassState},
+    state::{AppState, GameOverlayState, PauseReason, WidgetBoot, WidgetGlassState},
 };
 
 pub fn spawn_all(app: &AppHandle) -> Result<(), AppError> {
@@ -127,7 +127,13 @@ pub fn spawn_one(app: &AppHandle, instance: &WidgetInstance) -> Result<(), AppEr
         }
         Ok(())
     })??;
-    if let Err(error) = window.set_ignore_cursor_events(instance.click_through && !edit_mode) {
+    let game_overlay = app
+        .state::<AppState>()
+        .game_overlay_active
+        .load(Ordering::Acquire);
+    if let Err(error) =
+        window.set_ignore_cursor_events((game_overlay || instance.click_through) && !edit_mode)
+    {
         log::warn!("Kunne ikke sætte click-through på {label}: {error}");
     }
 
@@ -225,18 +231,22 @@ pub fn ready(app: &AppHandle, id: &str) -> Result<WidgetBoot, AppError> {
     apply_window_geometry(app, &window, &instance, &monitor_infos)?;
 
     let appearance = config.appearance;
-    let effective_engine = glass::effective_engine(
+    let game_overlay = state.game_overlay_active.load(Ordering::Acquire);
+    let effective_engine = glass::effective_engine_in_context(
         appearance.glass_engine,
         instance.glass_override_engine,
         instance.layer,
         instance.size,
         glass::is_windows_11(),
+        game_overlay,
     );
     let effective_theme = instance.theme_override.unwrap_or(appearance.theme_id);
     glass::apply_window_glass(&window, effective_engine, effective_theme);
 
     let edit_mode = state.edit_mode.load(Ordering::Acquire);
-    if let Err(error) = window.set_ignore_cursor_events(instance.click_through && !edit_mode) {
+    if let Err(error) =
+        window.set_ignore_cursor_events((game_overlay || instance.click_through) && !edit_mode)
+    {
         log::warn!("Kunne ikke opdatere click-through på {label}: {error}");
     }
 
@@ -268,7 +278,33 @@ pub fn ready(app: &AppHandle, id: &str) -> Result<WidgetBoot, AppError> {
         start_delay_ms,
         edit_mode,
         paused: state.paused.load(Ordering::Acquire),
+        game_overlay_active: game_overlay,
     })
+}
+
+pub fn apply_game_overlay(app: &AppHandle, active: bool) {
+    let state = app.state::<AppState>();
+    let config = state.config.get();
+    let edit_mode = state.edit_mode.load(Ordering::Acquire);
+
+    zorder::set_game_overlay(active);
+
+    for widget in &config.widgets {
+        let label = widget.window_label();
+        if let Some(window) = app.get_webview_window(&label) {
+            let ignore_cursor = (active || widget.click_through) && !edit_mode;
+            if let Err(error) = window.set_ignore_cursor_events(ignore_cursor) {
+                log::warn!("Kunne ikke opdatere overlay click-through for {label}: {error}");
+            }
+        }
+    }
+
+    reapply_glass_all(app);
+
+    if let Err(error) = app.emit("app://game-overlay", GameOverlayState { active }) {
+        log::warn!("Kunne ikke sende app://game-overlay: {error}");
+    }
+    log::info!("Spil-overlay {}", if active { "aktiveret" } else { "deaktiveret" });
 }
 
 pub fn apply_instance_live(app: &AppHandle, instance: &WidgetInstance) {
@@ -290,7 +326,10 @@ pub fn apply_instance_live(app: &AppHandle, instance: &WidgetInstance) {
     }
 
     let edit_mode = state.edit_mode.load(Ordering::Acquire);
-    if let Err(error) = window.set_ignore_cursor_events(instance.click_through && !edit_mode) {
+    let game_overlay = state.game_overlay_active.load(Ordering::Acquire);
+    if let Err(error) =
+        window.set_ignore_cursor_events((game_overlay || instance.click_through) && !edit_mode)
+    {
         log::warn!("Kunne ikke opdatere click-through på {label}: {error}");
     }
 
@@ -298,12 +337,13 @@ pub fn apply_instance_live(app: &AppHandle, instance: &WidgetInstance) {
         log::warn!("Kunne ikke opdatere størrelse/placering på {label}: {error:?}");
     }
 
-    let effective_engine = glass::effective_engine(
+    let effective_engine = glass::effective_engine_in_context(
         config.appearance.glass_engine,
         instance.glass_override_engine,
         instance.layer,
         instance.size,
         glass::is_windows_11(),
+        game_overlay,
     );
     let effective_theme = instance
         .theme_override
@@ -327,18 +367,20 @@ pub fn reapply_glass_all(app: &AppHandle) {
     let state = app.state::<AppState>();
     let config = state.config.get();
     let win11 = glass::is_windows_11();
+    let game_overlay = state.game_overlay_active.load(Ordering::Acquire);
 
     for widget in &config.widgets {
         let label = widget.window_label();
         let Some(window) = app.get_webview_window(&label) else {
             continue;
         };
-        let effective_engine = glass::effective_engine(
+        let effective_engine = glass::effective_engine_in_context(
             config.appearance.glass_engine,
             widget.glass_override_engine,
             widget.layer,
             widget.size,
             win11,
+            game_overlay,
         );
         let effective_theme = widget
             .theme_override
@@ -385,11 +427,12 @@ pub fn reposition_all(app: AppHandle) {
 pub fn apply_edit_mode(app: &AppHandle, on: bool) {
     let state = app.state::<AppState>();
     let config = state.config.get();
+    let game_overlay = state.game_overlay_active.load(Ordering::Acquire);
 
     for widget in &config.widgets {
         let label = widget.window_label();
         if let Some(window) = app.get_webview_window(&label) {
-            let ignore_cursor = widget.click_through && !on;
+            let ignore_cursor = (game_overlay || widget.click_through) && !on;
             if let Err(error) = window.set_ignore_cursor_events(ignore_cursor) {
                 log::warn!("Kunne ikke opdatere redigerings-input for {label}: {error}");
             }

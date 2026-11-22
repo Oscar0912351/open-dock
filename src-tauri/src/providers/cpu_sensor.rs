@@ -5,12 +5,55 @@ use std::{
 };
 
 use parking_lot::Mutex;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use ts_rs::TS;
 
 static RESOURCE_DIR: OnceLock<PathBuf> = OnceLock::new();
 static STATE: LazyLock<Mutex<SensorState>> = LazyLock::new(|| Mutex::new(SensorState::default()));
 
 const SOURCE: &str = "lhm-direct-package";
+pub const SERVICE_NAME: &str = "OpenDockCpuSensor";
+const SERVICE_DISPLAY_NAME: &str = "Open Dock CPU-sensor";
+const SERVICE_DESCRIPTION: &str =
+    "Læser lokal CPU-temperatur til Open Dock uden administratorrettigheder i hovedappen.";
+#[cfg(all(windows, target_arch = "x86_64"))]
+const PIPE_PATH: &str = r"\\.\pipe\OpenDock.CpuSensor";
+
+const INSTALL_FLAG: &str = "--install-cpu-sensor-service";
+const UNINSTALL_FLAG: &str = "--uninstall-cpu-sensor-service";
+const SOURCE_DIR_FLAG: &str = "--source-dir";
+
+const EXIT_OK: i32 = 0;
+const EXIT_NOT_ELEVATED: i32 = 10;
+const EXIT_HELPER_MISSING: i32 = 11;
+const EXIT_INTEGRITY_FAILED: i32 = 12;
+const EXIT_STOP_FAILED: i32 = 13;
+const EXIT_COPY_FAILED: i32 = 14;
+const EXIT_REGISTER_FAILED: i32 = 15;
+const EXIT_START_FAILED: i32 = 16;
+const EXIT_REMOVE_FAILED: i32 = 17;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../src/shared/bindings/")]
+pub enum CpuSensorServiceState {
+    Running,
+    Stopped,
+    NotInstalled,
+    Unsupported,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../src/shared/bindings/")]
+pub struct CpuSensorStatus {
+    pub state: CpuSensorServiceState,
+    pub driver_installed: bool,
+    pub outdated: bool,
+    pub elevated_fallback: bool,
+    pub active: bool,
+}
 
 pub fn configure(resource_dir: PathBuf) {
     let _ = RESOURCE_DIR.set(resource_dir);
@@ -18,6 +61,8 @@ pub fn configure(resource_dir: PathBuf) {
 
 #[derive(Default)]
 struct SensorState {
+    #[cfg(all(windows, target_arch = "x86_64"))]
+    pipe: Option<pipe_client::PipeClient>,
     #[cfg(all(windows, target_arch = "x86_64"))]
     worker: Option<worker::Worker>,
     retry_at: Option<Instant>,
@@ -106,28 +151,162 @@ pub fn parse_reply(raw: &[u8], expected_sequence: u64, now: i64) -> Result<Value
     Ok(reply)
 }
 
-pub fn sample_celsius() -> Option<f32> {
-    if !crate::elevation::process_is_elevated() {
-        return None;
+pub fn parse_sc_query_state(exit_code: Option<i32>, stdout: &str, stderr: &str) -> CpuSensorServiceState {
+    if exit_code == Some(1060)
+        || stdout.contains("1060")
+        || stderr.contains("1060")
+    {
+        return CpuSensorServiceState::NotInstalled;
     }
+    for line in stdout.lines() {
+        let trimmed = line.trim_start();
+        if !trimmed.starts_with("STATE") {
+            continue;
+        }
+        if let Some((_, rhs)) = trimmed.split_once(':') {
+            if let Some(code_str) = rhs.split_whitespace().next() {
+                return match code_str {
+                    "4" => CpuSensorServiceState::Running,
+                    _ => CpuSensorServiceState::Stopped,
+                };
+            }
+        }
+    }
+    CpuSensorServiceState::NotInstalled
+}
 
+/// Checks for one-shot elevated CLI flags (`--install-cpu-sensor-service` /
+/// `--uninstall-cpu-sensor-service`) before Tauri initializes and exits immediately.
+pub fn maybe_handle_cli_action() {
+    #[cfg(all(windows, target_arch = "x86_64"))]
+    {
+        let args: Vec<String> = std::env::args().skip(1).collect();
+        if args.iter().any(|a| a == INSTALL_FLAG) {
+            let source_dir = args
+                .windows(2)
+                .find(|w| w[0] == SOURCE_DIR_FLAG)
+                .map(|w| PathBuf::from(&w[1]));
+            let code = service_mgmt::elevated_install(source_dir.as_deref());
+            std::process::exit(code);
+        }
+        if args.iter().any(|a| a == UNINSTALL_FLAG) {
+            let code = service_mgmt::elevated_uninstall();
+            std::process::exit(code);
+        }
+    }
+}
+
+pub fn service_status() -> CpuSensorStatus {
+    #[cfg(all(windows, target_arch = "x86_64"))]
+    {
+        service_mgmt::query_status()
+    }
+    #[cfg(not(all(windows, target_arch = "x86_64")))]
+    {
+        CpuSensorStatus {
+            state: CpuSensorServiceState::Unsupported,
+            driver_installed: false,
+            outdated: false,
+            elevated_fallback: false,
+            active: false,
+        }
+    }
+}
+
+pub fn is_available() -> bool {
+    let status = service_status();
+    status.active
+}
+
+pub fn install_service() -> Result<CpuSensorStatus, String> {
+    #[cfg(all(windows, target_arch = "x86_64"))]
+    {
+        shutdown();
+        let source_dir = helper_directory(RESOURCE_DIR.get().map(PathBuf::as_path))?;
+        let code = if crate::elevation::process_is_elevated() {
+            service_mgmt::elevated_install(Some(&source_dir))
+        } else {
+            let args = vec![
+                INSTALL_FLAG.to_string(),
+                SOURCE_DIR_FLAG.to_string(),
+                source_dir.to_string_lossy().to_string(),
+            ];
+            match crate::elevation::run_elevated_self_and_wait(&args, 30_000) {
+                Ok(c) => c as i32,
+                Err(crate::elevation::ElevatedRunError::Cancelled) => {
+                    return Err("Administratoradgang blev annulleret".to_string());
+                }
+                Err(crate::elevation::ElevatedRunError::Failed(msg)) => return Err(msg),
+            }
+        };
+        if code != EXIT_OK {
+            return Err(exit_code_message(code).to_string());
+        }
+        reset_backoff();
+        Ok(service_mgmt::query_status())
+    }
+    #[cfg(not(all(windows, target_arch = "x86_64")))]
+    {
+        Err("CPU-sensortjenesten understøttes kun på Windows (x64)".to_string())
+    }
+}
+
+pub fn uninstall_service() -> Result<CpuSensorStatus, String> {
+    #[cfg(all(windows, target_arch = "x86_64"))]
+    {
+        shutdown();
+        let code = if crate::elevation::process_is_elevated() {
+            service_mgmt::elevated_uninstall()
+        } else {
+            let args = vec![UNINSTALL_FLAG.to_string()];
+            match crate::elevation::run_elevated_self_and_wait(&args, 30_000) {
+                Ok(c) => c as i32,
+                Err(crate::elevation::ElevatedRunError::Cancelled) => {
+                    return Err("Administratoradgang blev annulleret".to_string());
+                }
+                Err(crate::elevation::ElevatedRunError::Failed(msg)) => return Err(msg),
+            }
+        };
+        if code != EXIT_OK {
+            return Err(exit_code_message(code).to_string());
+        }
+        reset_backoff();
+        Ok(service_mgmt::query_status())
+    }
+    #[cfg(not(all(windows, target_arch = "x86_64")))]
+    {
+        Err("CPU-sensortjenesten understøttes kun på Windows (x64)".to_string())
+    }
+}
+
+fn exit_code_message(code: i32) -> &'static str {
+    match code {
+        EXIT_NOT_ELEVATED => "Kræver administratorrettigheder for at ændre baggrundstjenesten",
+        EXIT_HELPER_MISSING => "CPU-sensor hjælpefiler blev ikke fundet",
+        EXIT_INTEGRITY_FAILED => "Integritetstjek af CPU-sensor filer fejlede",
+        EXIT_STOP_FAILED => "Kunne ikke stoppe den eksisterende CPU-sensortjeneste",
+        EXIT_COPY_FAILED => "Kunne ikke kopiere CPU-sensor filer til Program Files",
+        EXIT_REGISTER_FAILED => "Kunne ikke registrere Windows-tjenesten",
+        EXIT_START_FAILED => "Tjenesten blev installeret, men kunne ikke startes",
+        EXIT_REMOVE_FAILED => "Kunne ikke fjerne CPU-sensortjenesten helt",
+        _ => "Uventet fejl under konfiguration af CPU-sensortjenesten",
+    }
+}
+
+fn reset_backoff() {
+    let mut state = STATE.lock();
+    state.retry_at = None;
+    state.last_status = None;
+}
+
+pub fn sample_celsius() -> Option<f32> {
     let mut state = STATE.lock();
     if state.retry_at.is_some_and(|at| Instant::now() < at) {
         return None;
     }
 
     #[cfg(all(windows, target_arch = "x86_64"))]
-    let result = (|| {
-        if state.worker.is_none() {
-            let directory = helper_directory(RESOURCE_DIR.get().map(PathBuf::as_path))?;
-            state.worker = Some(worker::Worker::start(&directory)?);
-        }
-        let worker = state
-            .worker
-            .as_mut()
-            .ok_or_else(|| "CPU sensor worker unavailable".to_string())?;
-        worker.sample()
-    })();
+    let result = sample_windows(&mut state);
 
     #[cfg(not(all(windows, target_arch = "x86_64")))]
     let result: Result<Value, String> = Ok(unavailable("platform-unsupported"));
@@ -144,15 +323,16 @@ pub fn sample_celsius() -> Option<f32> {
     if status != "ready" {
         #[cfg(all(windows, target_arch = "x86_64"))]
         {
+            state.pipe = None;
             state.worker = None;
         }
         if state.last_status.as_deref() != Some(status) {
             log::info!(target: "provider:system", "CPU-sensor status: {status}");
         }
-        let backoff_secs = if matches!(status, "driver-required" | "admin-required") {
-            30
-        } else {
-            10
+        let backoff_secs = match status {
+            "driver-required" | "admin-required" => 30,
+            "service-unavailable" => 5,
+            _ => 10,
         };
         state.retry_at = Some(Instant::now() + Duration::from_secs(backoff_secs));
         state.last_status = Some(status.to_string());
@@ -174,14 +354,441 @@ pub fn sample_celsius() -> Option<f32> {
     }
 }
 
+#[cfg(all(windows, target_arch = "x86_64"))]
+fn sample_windows(state: &mut SensorState) -> Result<Value, String> {
+    // 1. Prefer the local Windows Service over Named Pipe (works without admin in Open Dock).
+    if state.pipe.is_some() {
+        if let Some(client) = state.pipe.as_mut() {
+            match client.sample() {
+                Ok(val) => return Ok(val),
+                Err(err) => {
+                    log::debug!(target: "provider:system", "CPU-sensor pipe afbrudt: {err}");
+                    state.pipe = None;
+                }
+            }
+        }
+    }
+
+    if state.worker.is_none() {
+        match pipe_client::PipeClient::connect() {
+            Ok(mut client) => {
+                let val = client.sample();
+                match val {
+                    Ok(v) => {
+                        state.pipe = Some(client);
+                        return Ok(v);
+                    }
+                    Err(err) => {
+                        log::debug!(target: "provider:system", "CPU-sensor pipe svar fejlede: {err}");
+                    }
+                }
+            }
+            Err(pipe_client::ConnectError::NotAvailable) => {}
+            Err(pipe_client::ConnectError::Other(err)) => {
+                log::debug!(target: "provider:system", "CPU-sensor pipe kunne ikke åbnes: {err}");
+            }
+        }
+    }
+
+    // 2. Fallback: if Open Dock itself happens to be running elevated, spawn the local worker directly.
+    if !crate::elevation::process_is_elevated() {
+        return Ok(unavailable("service-unavailable"));
+    }
+
+    if state.worker.is_none() {
+        let directory = helper_directory(RESOURCE_DIR.get().map(PathBuf::as_path))?;
+        state.worker = Some(worker::Worker::start(&directory)?);
+    }
+    let worker = state
+        .worker
+        .as_mut()
+        .ok_or_else(|| "CPU sensor worker unavailable".to_string())?;
+    worker.sample()
+}
+
 pub fn shutdown() {
     if let Some(mut state) = STATE.try_lock() {
         #[cfg(all(windows, target_arch = "x86_64"))]
         {
+            state.pipe = None;
             state.worker = None;
         }
         state.retry_at = None;
         state.last_status = None;
+    }
+}
+
+#[cfg(all(windows, target_arch = "x86_64"))]
+fn expected_helper_hash() -> String {
+    use sha2::{Digest, Sha256};
+    format!(
+        "{:x}",
+        Sha256::digest(include_bytes!(concat!(
+            env!("OUT_DIR"),
+            "/OpenDock.CpuSensors.exe"
+        )))
+    )
+}
+
+#[cfg(all(windows, target_arch = "x86_64"))]
+fn manifest_files() -> Result<Vec<(String, String)>, String> {
+    let manifest: Value =
+        serde_json::from_str(include_str!("../../resources/cpu-sensor/libraries.json"))
+            .map_err(|e| e.to_string())?;
+    let mut list = Vec::new();
+    for entry in manifest["files"]
+        .as_array()
+        .ok_or("missing CPU sensor assets")?
+    {
+        let name = entry["file"].as_str().ok_or("invalid CPU sensor asset")?;
+        if name.contains(['/', '\\']) {
+            return Err("invalid CPU sensor asset path".into());
+        }
+        let hash = entry["sha256"].as_str().unwrap_or("").to_string();
+        list.push((name.to_string(), hash));
+    }
+    Ok(list)
+}
+
+#[cfg(all(windows, target_arch = "x86_64"))]
+mod pipe_client {
+    use super::*;
+    use std::{
+        fs::OpenOptions,
+        io::{BufRead, BufReader, ErrorKind, Read, Write},
+        sync::mpsc::{self, Receiver, SyncSender},
+        thread,
+    };
+
+    pub(super) enum ConnectError {
+        NotAvailable,
+        Other(String),
+    }
+
+    pub(super) struct PipeClient {
+        requests: Option<SyncSender<()>>,
+        replies: Receiver<Result<Vec<u8>, String>>,
+        sequence: u64,
+    }
+
+    impl PipeClient {
+        pub(super) fn connect() -> Result<Self, ConnectError> {
+            let mut last_err = None;
+            for attempt in 0..4 {
+                match OpenOptions::new().read(true).write(true).open(PIPE_PATH) {
+                    Ok(pipe) => {
+                        let (req_tx, req_rx) = mpsc::sync_channel::<()>(1);
+                        let (rep_tx, rep_rx) = mpsc::sync_channel::<Result<Vec<u8>, String>>(1);
+
+                        // Owns the synchronous pipe handle on a single thread so
+                        // WriteFile and ReadFile never run concurrently on it.
+                        thread::spawn(move || {
+                            let mut reader = BufReader::new(pipe);
+                            while req_rx.recv().is_ok() {
+                                if let Err(err) = reader
+                                    .get_mut()
+                                    .write_all(b"sample\n")
+                                    .and_then(|_| reader.get_mut().flush())
+                                {
+                                    let _ = rep_tx.send(Err(err.to_string()));
+                                    break;
+                                }
+                                let mut line = Vec::new();
+                                match reader.by_ref().take(4097).read_until(b'\n', &mut line) {
+                                    Ok(0) => {
+                                        let _ = rep_tx.send(Err("pipe closed".into()));
+                                        break;
+                                    }
+                                    Ok(_) if line.len() <= 4096 => {
+                                        if rep_tx.send(Ok(line)).is_err() {
+                                            break;
+                                        }
+                                    }
+                                    Ok(_) => {
+                                        let _ = rep_tx.send(Err("oversized pipe reply".into()));
+                                        break;
+                                    }
+                                    Err(err) => {
+                                        let _ = rep_tx.send(Err(err.to_string()));
+                                        break;
+                                    }
+                                }
+                            }
+                        });
+
+                        return Ok(Self {
+                            requests: Some(req_tx),
+                            replies: rep_rx,
+                            sequence: 0,
+                        });
+                    }
+                    Err(err) if err.raw_os_error() == Some(231) && attempt < 3 => {
+                        // ERROR_PIPE_BUSY: brief retry while previous instance resets.
+                        thread::sleep(Duration::from_millis(50));
+                        last_err = Some(err);
+                    }
+                    Err(err) if err.kind() == ErrorKind::NotFound => {
+                        return Err(ConnectError::NotAvailable);
+                    }
+                    Err(err) => {
+                        last_err = Some(err);
+                        break;
+                    }
+                }
+            }
+            Err(ConnectError::Other(
+                last_err
+                    .map(|e| e.to_string())
+                    .unwrap_or_else(|| "pipe unavailable".to_string()),
+            ))
+        }
+
+        pub(super) fn sample(&mut self) -> Result<Value, String> {
+            self.sequence += 1;
+            let req = self.requests.as_ref().ok_or("CPU sensor pipe closed")?;
+            req.send(()).map_err(|_| "CPU sensor pipe thread closed")?;
+            let raw = self
+                .replies
+                .recv_timeout(Duration::from_secs(if self.sequence == 1 { 5 } else { 2 }))
+                .map_err(|_| "CPU sensor service timeout or exit")??;
+            parse_reply(&raw, self.sequence, unix_now_ms())
+        }
+    }
+
+    impl Drop for PipeClient {
+        fn drop(&mut self) {
+            self.requests.take();
+        }
+    }
+}
+
+#[cfg(all(windows, target_arch = "x86_64"))]
+mod service_mgmt {
+    use super::*;
+    use std::{
+        fs,
+        os::windows::process::CommandExt,
+        process::Command,
+        thread,
+    };
+
+    const CREATE_NO_WINDOW: u32 = 0x08000000;
+
+    fn sc_exe() -> PathBuf {
+        PathBuf::from(std::env::var_os("WINDIR").unwrap_or_else(|| "C:\\Windows".into()))
+            .join("System32")
+            .join("sc.exe")
+    }
+
+    pub(super) fn install_directory() -> PathBuf {
+        PathBuf::from(
+            std::env::var_os("ProgramFiles").unwrap_or_else(|| "C:\\Program Files".into()),
+        )
+        .join("Open Dock Sensor")
+    }
+
+    fn run_sc(args: &[&str]) -> Option<(Option<i32>, String, String)> {
+        let output = Command::new(sc_exe())
+            .args(args)
+            .creation_flags(CREATE_NO_WINDOW)
+            .output()
+            .ok()?;
+        Some((
+            output.status.code(),
+            String::from_utf8_lossy(&output.stdout).into_owned(),
+            String::from_utf8_lossy(&output.stderr).into_owned(),
+        ))
+    }
+
+    fn query_named_service(name: &str) -> CpuSensorServiceState {
+        match run_sc(&["query", name]) {
+            Some((code, stdout, stderr)) => parse_sc_query_state(code, &stdout, &stderr),
+            None => CpuSensorServiceState::NotInstalled,
+        }
+    }
+
+    pub(super) fn query_status() -> CpuSensorStatus {
+        let state = query_named_service(SERVICE_NAME);
+        let driver_installed = query_named_service("PawnIO") != CpuSensorServiceState::NotInstalled;
+        let outdated = if state == CpuSensorServiceState::NotInstalled {
+            false
+        } else {
+            let installed_exe = install_directory().join("OpenDock.CpuSensors.exe");
+            worker::checked_file(&installed_exe, &expected_helper_hash()).is_err()
+        };
+        let elevated = crate::elevation::process_is_elevated();
+        let elevated_fallback = elevated && state != CpuSensorServiceState::Running;
+        let active =
+            driver_installed && (state == CpuSensorServiceState::Running || elevated);
+
+        CpuSensorStatus {
+            state,
+            driver_installed,
+            outdated,
+            elevated_fallback,
+            active,
+        }
+    }
+
+    fn stop_and_wait() -> bool {
+        let state = query_named_service(SERVICE_NAME);
+        if state == CpuSensorServiceState::NotInstalled || state == CpuSensorServiceState::Stopped {
+            return true;
+        }
+        let _ = run_sc(&["stop", SERVICE_NAME]);
+        for _ in 0..40 {
+            thread::sleep(Duration::from_millis(150));
+            let current = query_named_service(SERVICE_NAME);
+            if current == CpuSensorServiceState::Stopped
+                || current == CpuSensorServiceState::NotInstalled
+            {
+                return true;
+            }
+        }
+        false
+    }
+
+    fn copy_with_retry(src: &Path, dst: &Path) -> bool {
+        for attempt in 0..10 {
+            if fs::copy(src, dst).is_ok() {
+                return true;
+            }
+            if attempt < 9 {
+                thread::sleep(Duration::from_millis(150));
+            }
+        }
+        false
+    }
+
+    pub(super) fn elevated_install(explicit_source: Option<&Path>) -> i32 {
+        if !crate::elevation::process_is_elevated() {
+            return EXIT_NOT_ELEVATED;
+        }
+
+        let source_dir = match explicit_source {
+            Some(dir) if has_helper_files(dir) => dir.to_path_buf(),
+            _ => match helper_directory(None) {
+                Ok(dir) => dir,
+                Err(_) => return EXIT_HELPER_MISSING,
+            },
+        };
+
+        let files = match manifest_files() {
+            Ok(list) => list,
+            Err(_) => return EXIT_INTEGRITY_FAILED,
+        };
+
+        // Verify SHA-256 of every single asset against compile-time pinned hashes
+        // before copying into the privileged Program Files directory.
+        let src_exe = source_dir.join("OpenDock.CpuSensors.exe");
+        let Ok(_exe_guard) = worker::checked_file(&src_exe, &expected_helper_hash()) else {
+            return EXIT_INTEGRITY_FAILED;
+        };
+        let mut _dll_guards = Vec::with_capacity(files.len());
+        for (name, hash) in &files {
+            let Ok(guard) = worker::checked_file(&source_dir.join(name), hash) else {
+                return EXIT_INTEGRITY_FAILED;
+            };
+            _dll_guards.push(guard);
+        }
+
+        if !stop_and_wait() {
+            return EXIT_STOP_FAILED;
+        }
+
+        let target_dir = install_directory();
+        if fs::create_dir_all(&target_dir).is_err() {
+            return EXIT_COPY_FAILED;
+        }
+        let target_exe = target_dir.join("OpenDock.CpuSensors.exe");
+        if !copy_with_retry(&src_exe, &target_exe) {
+            return EXIT_COPY_FAILED;
+        }
+        for (name, _) in &files {
+            if !copy_with_retry(&source_dir.join(name), &target_dir.join(name)) {
+                return EXIT_COPY_FAILED;
+            }
+        }
+
+        let bin_path = format!("\"{}\" --service", target_exe.display());
+        let existing = query_named_service(SERVICE_NAME) != CpuSensorServiceState::NotInstalled;
+        let verb = if existing { "config" } else { "create" };
+        let reg_ok = run_sc(&[
+            verb,
+            SERVICE_NAME,
+            "binPath=",
+            &bin_path,
+            "start=",
+            "auto",
+            "DisplayName=",
+            SERVICE_DISPLAY_NAME,
+        ])
+        .is_some_and(|(code, _, _)| code == Some(0));
+
+        if !reg_ok {
+            return EXIT_REGISTER_FAILED;
+        }
+
+        let _ = run_sc(&["description", SERVICE_NAME, SERVICE_DESCRIPTION]);
+        let _ = run_sc(&[
+            "failure",
+            SERVICE_NAME,
+            "reset=",
+            "86400",
+            "actions=",
+            "restart/5000/restart/15000//0",
+        ]);
+
+        let start_res = run_sc(&["start", SERVICE_NAME]);
+        let started_ok = start_res
+            .is_some_and(|(code, _, _)| code == Some(0) || code == Some(1056));
+        if !started_ok {
+            return EXIT_START_FAILED;
+        }
+
+        for _ in 0..40 {
+            if query_named_service(SERVICE_NAME) == CpuSensorServiceState::Running {
+                return EXIT_OK;
+            }
+            thread::sleep(Duration::from_millis(150));
+        }
+
+        EXIT_START_FAILED
+    }
+
+    pub(super) fn elevated_uninstall() -> i32 {
+        if !crate::elevation::process_is_elevated() {
+            return EXIT_NOT_ELEVATED;
+        }
+
+        if query_named_service(SERVICE_NAME) != CpuSensorServiceState::NotInstalled {
+            let _ = stop_and_wait();
+            let deleted = run_sc(&["delete", SERVICE_NAME])
+                .is_some_and(|(code, _, _)| code == Some(0) || code == Some(1060) || code == Some(1072));
+            if !deleted {
+                return EXIT_REMOVE_FAILED;
+            }
+            for _ in 0..20 {
+                if query_named_service(SERVICE_NAME) == CpuSensorServiceState::NotInstalled {
+                    break;
+                }
+                thread::sleep(Duration::from_millis(150));
+            }
+        }
+
+        let target_dir = install_directory();
+        if target_dir.exists() {
+            for attempt in 0..15 {
+                if fs::remove_dir_all(&target_dir).is_ok() {
+                    break;
+                }
+                if attempt < 14 {
+                    thread::sleep(Duration::from_millis(150));
+                }
+            }
+        }
+
+        EXIT_OK
     }
 }
 
@@ -251,32 +858,13 @@ mod worker {
 
     impl Worker {
         pub(super) fn start(directory: &Path) -> Result<Self, String> {
-            let manifest: Value =
-                serde_json::from_str(include_str!("../../resources/cpu-sensor/libraries.json"))
-                    .map_err(|e| e.to_string())?;
+            let files = manifest_files()?;
             let mut assets = Vec::new();
             let executable = directory.join("OpenDock.CpuSensors.exe");
-            let helper_hash = format!(
-                "{:x}",
-                Sha256::digest(include_bytes!(concat!(
-                    env!("OUT_DIR"),
-                    "/OpenDock.CpuSensors.exe"
-                )))
-            );
-            assets.push(checked_file(&executable, &helper_hash)?);
+            assets.push(checked_file(&executable, &expected_helper_hash())?);
 
-            for entry in manifest["files"]
-                .as_array()
-                .ok_or("missing CPU sensor assets")?
-            {
-                let name = entry["file"].as_str().ok_or("invalid CPU sensor asset")?;
-                if name.contains(['/', '\\']) {
-                    return Err("invalid CPU sensor asset path".into());
-                }
-                assets.push(checked_file(
-                    &directory.join(name),
-                    entry["sha256"].as_str().unwrap_or(""),
-                )?);
+            for (name, hash) in &files {
+                assets.push(checked_file(&directory.join(name), hash)?);
             }
 
             let job = Job(unsafe { CreateJobObjectW(None, None) }.map_err(|e| e.to_string())?);
@@ -406,7 +994,9 @@ mod worker {
 
 #[cfg(test)]
 mod tests {
-    use super::{helper_directory, parse_reply, SOURCE};
+    use super::{
+        helper_directory, parse_reply, parse_sc_query_state, CpuSensorServiceState, SOURCE,
+    };
     use serde_json::{json, Value};
     use std::path::PathBuf;
 
@@ -434,6 +1024,24 @@ mod tests {
         assert_eq!(
             dir,
             PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("resources").join("cpu-sensor")
+        );
+    }
+
+    #[test]
+    fn parses_sc_query_states_across_locales() {
+        let running = "SERVICE_NAME: OpenDockCpuSensor\n        STATE              : 4  RUNNING\n";
+        assert_eq!(
+            parse_sc_query_state(Some(0), running, ""),
+            CpuSensorServiceState::Running
+        );
+        let stopped = "SERVICE_NAME: OpenDockCpuSensor\n        STATE              : 1  STOPPED\n";
+        assert_eq!(
+            parse_sc_query_state(Some(0), stopped, ""),
+            CpuSensorServiceState::Stopped
+        );
+        assert_eq!(
+            parse_sc_query_state(Some(1060), "[SC] OpenService FAILED 1060:", ""),
+            CpuSensorServiceState::NotInstalled
         );
     }
 

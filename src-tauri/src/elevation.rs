@@ -1,5 +1,8 @@
-#[cfg(any(target_os = "windows", test))]
-pub const ELEVATED_HANDOFF_FLAG: &str = "--open-dock-elevated-handoff";
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ElevatedRunError {
+    Cancelled,
+    Failed(String),
+}
 
 #[cfg(target_os = "windows")]
 pub fn process_is_elevated() -> bool {
@@ -36,29 +39,61 @@ pub fn process_is_elevated() -> bool {
 }
 
 #[cfg(any(target_os = "windows", test))]
-fn build_elevated_args<I: IntoIterator<Item = String>>(args: I) -> String {
-    let mut parts = vec![ELEVATED_HANDOFF_FLAG.to_string()];
-    for arg in args {
-        if arg == ELEVATED_HANDOFF_FLAG || arg.is_empty() {
+pub fn quote_windows_args<S: AsRef<str>>(args: &[S]) -> String {
+    let mut parts = Vec::with_capacity(args.len());
+    for raw in args {
+        let arg = raw.as_ref();
+        if !arg.is_empty() && !arg.chars().any(|c| c.is_whitespace() || c == '"') {
+            parts.push(arg.to_string());
             continue;
         }
-        if arg.chars().any(|c| c.is_whitespace() || c == '"') {
-            parts.push(format!("\"{}\"", arg.replace('"', "\\\"")));
-        } else {
-            parts.push(arg);
+        let mut out = String::with_capacity(arg.len() + 2);
+        out.push('"');
+        let mut backslashes = 0usize;
+        for ch in arg.chars() {
+            if ch == '\\' {
+                backslashes += 1;
+            } else if ch == '"' {
+                for _ in 0..(backslashes * 2 + 1) {
+                    out.push('\\');
+                }
+                out.push('"');
+                backslashes = 0;
+            } else {
+                for _ in 0..backslashes {
+                    out.push('\\');
+                }
+                backslashes = 0;
+                out.push(ch);
+            }
         }
+        for _ in 0..(backslashes * 2) {
+            out.push('\\');
+        }
+        out.push('"');
+        parts.push(out);
     }
     parts.join(" ")
 }
 
+/// Launches the current executable once with UAC (`runas`) hidden in the background,
+/// waits for completion (up to `timeout_ms`), and returns its exit code.
 #[cfg(target_os = "windows")]
-fn relaunch_windows() -> Result<(), String> {
+pub fn run_elevated_self_and_wait(
+    args: &[String],
+    timeout_ms: u32,
+) -> Result<u32, ElevatedRunError> {
     use windows::core::PCWSTR;
-    use windows::Win32::UI::Shell::{ShellExecuteW, SE_ERR_ACCESSDENIED};
-    use windows::Win32::UI::WindowsAndMessaging::SW_SHOW;
+    use windows::Win32::Foundation::{CloseHandle, ERROR_CANCELLED, WAIT_OBJECT_0};
+    use windows::Win32::System::Threading::{GetExitCodeProcess, WaitForSingleObject};
+    use windows::Win32::UI::Shell::{
+        ShellExecuteExW, SEE_MASK_NOASYNC, SEE_MASK_NOCLOSEPROCESS, SHELLEXECUTEINFOW,
+    };
+    use windows::Win32::UI::WindowsAndMessaging::SW_HIDE;
 
-    let exe = std::env::current_exe().map_err(|e| format!("Kunne ikke finde exe-sti: {e}"))?;
-    let args_line = build_elevated_args(std::env::args().skip(1));
+    let exe = std::env::current_exe()
+        .map_err(|e| ElevatedRunError::Failed(format!("Kunne ikke finde programstien: {e}")))?;
+    let args_line = quote_windows_args(args);
 
     let verb: Vec<u16> = "runas".encode_utf16().chain(std::iter::once(0)).collect();
     let file: Vec<u16> = exe
@@ -67,69 +102,78 @@ fn relaunch_windows() -> Result<(), String> {
         .chain(std::iter::once(0))
         .collect();
     let parameters: Vec<u16> = args_line.encode_utf16().chain(std::iter::once(0)).collect();
-    let directory: [u16; 1] = [0];
 
-    let code = unsafe {
-        ShellExecuteW(
-            None,
-            PCWSTR(verb.as_ptr()),
-            PCWSTR(file.as_ptr()),
-            PCWSTR(parameters.as_ptr()),
-            PCWSTR(directory.as_ptr()),
-            SW_SHOW,
-        )
-    }
-    .0 as usize;
+    let mut info = SHELLEXECUTEINFOW {
+        cbSize: std::mem::size_of::<SHELLEXECUTEINFOW>() as u32,
+        fMask: SEE_MASK_NOCLOSEPROCESS | SEE_MASK_NOASYNC,
+        lpVerb: PCWSTR(verb.as_ptr()),
+        lpFile: PCWSTR(file.as_ptr()),
+        lpParameters: PCWSTR(parameters.as_ptr()),
+        nShow: SW_HIDE.0,
+        ..Default::default()
+    };
 
-    if code <= 32 {
-        return Err(if code as u32 == SE_ERR_ACCESSDENIED {
-            "Administratoradgang blev afvist af bruger eller UAC".to_string()
-        } else {
-            format!("Kunne ikke starte som administrator (ShellExecuteW kode {code})")
-        });
+    if let Err(err) = unsafe { ShellExecuteExW(&mut info) } {
+        if err.code() == ERROR_CANCELLED.to_hresult() {
+            return Err(ElevatedRunError::Cancelled);
+        }
+        return Err(ElevatedRunError::Failed(format!(
+            "Kunne ikke bede om administratoradgang: {err}"
+        )));
     }
-    Ok(())
+
+    if info.hProcess.is_invalid() {
+        return Err(ElevatedRunError::Failed(
+            "Kunne ikke følge administrator-processen".to_string(),
+        ));
+    }
+
+    let wait = unsafe { WaitForSingleObject(info.hProcess, timeout_ms) };
+    let mut exit_code = 1u32;
+    let got_code = if wait == WAIT_OBJECT_0 {
+        unsafe { GetExitCodeProcess(info.hProcess, &mut exit_code) }.is_ok()
+    } else {
+        false
+    };
+    let _ = unsafe { CloseHandle(info.hProcess) };
+
+    if wait != WAIT_OBJECT_0 {
+        return Err(ElevatedRunError::Failed(
+            "Handling med administratoradgang tog for lang tid".to_string(),
+        ));
+    }
+    if !got_code {
+        return Err(ElevatedRunError::Failed(
+            "Kunne ikke aflæse resultat fra administrator-processen".to_string(),
+        ));
+    }
+    Ok(exit_code)
 }
 
-/// Prompts for UAC elevation once on process startup before initializing Tauri or
-/// single-instance locks. If declined, Open Dock continues unelevated (CPU temp unavailable).
-pub fn try_auto_elevate() {
-    #[cfg(target_os = "windows")]
-    {
-        if process_is_elevated() {
-            return;
-        }
-        if std::env::args().any(|a| a == ELEVATED_HANDOFF_FLAG) {
-            return;
-        }
-
-        match relaunch_windows() {
-            Ok(()) => std::process::exit(0),
-            Err(err) => {
-                eprintln!("[elevation] fortsætter uden administratorrettigheder: {err}");
-            }
-        }
-    }
+#[cfg(not(target_os = "windows"))]
+pub fn run_elevated_self_and_wait(
+    _args: &[String],
+    _timeout_ms: u32,
+) -> Result<u32, ElevatedRunError> {
+    Err(ElevatedRunError::Failed(
+        "Kun understøttet på Windows".to_string(),
+    ))
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{build_elevated_args, ELEVATED_HANDOFF_FLAG};
+    use super::quote_windows_args;
 
     #[test]
-    fn builds_elevated_args_with_handoff_flag_and_quoting() {
+    fn quotes_windows_args_safely() {
         assert_eq!(
-            build_elevated_args(Vec::<String>::new()),
-            ELEVATED_HANDOFF_FLAG
-        );
-        assert_eq!(
-            build_elevated_args([
-                ELEVATED_HANDOFF_FLAG.to_string(),
-                "--autostart".to_string(),
-                "C:\\Program Files\\Open Dock\\open-dock.exe".to_string(),
-                "has\"quote".to_string(),
+            quote_windows_args(&[
+                "--install-cpu-sensor-service",
+                "--source-dir",
+                "C:\\Program Files\\Open Dock\\cpu-sensor\\",
+                "has\"quote",
             ]),
-            "--open-dock-elevated-handoff --autostart \"C:\\Program Files\\Open Dock\\open-dock.exe\" \"has\\\"quote\""
+            "--install-cpu-sensor-service --source-dir \"C:\\Program Files\\Open Dock\\cpu-sensor\\\\\" \"has\\\"quote\""
         );
     }
 }

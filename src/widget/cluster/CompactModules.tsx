@@ -3,6 +3,7 @@ import {
   Headset,
   CheckSquare,
   MapPin,
+  MicrophoneSlash,
   MusicNotesSimple,
   Pause,
   Play,
@@ -12,6 +13,7 @@ import {
   Shuffle,
   SkipBack,
   SkipForward,
+  SpeakerSlash,
   Square,
 } from "@phosphor-icons/react";
 import {
@@ -41,9 +43,10 @@ import {
   formatFrequencyGhz,
   formatPercent,
   formatSpeed,
+  formatCallTimer,
   formatTemperature,
   formatTime,
-  timeZoneCity, formatDuration,
+  timeZoneCity,
 } from "../../shared/format";
 import { t } from "../../shared/i18n";
 import { WeatherIcon } from "../../shared/icons/WeatherSprite";
@@ -60,8 +63,23 @@ import {
   serializeChecklist,
   type ChecklistRow,
 } from "../kinds/note/Note";
-import { AgentRow } from "../kinds/agents/Agents";
-import { agentTint } from "../kinds/agents/AgentIcon";
+import { AgentIcon } from "../kinds/agents/AgentIcon";
+import {
+  AgentRow,
+  AgentStatusDot,
+  agentStatusLine,
+  filterAgentSessions,
+  formatAgentSummary,
+  overallAgentStatus,
+  resolveAgentsSettings,
+  statusToneClass,
+  todoRatio,
+} from "../kinds/agents/Agents";
+import {
+  DiscordAvatarStack,
+  DiscordParticipantRow,
+  DiscordVoiceControls,
+} from "../kinds/discord/Discord";
 import { Equalizer } from "../kinds/nowPlaying/Equalizer";
 import { resolveNowPlayingSettings } from "../kinds/nowPlaying/NowPlaying";
 import { formatTrackTime, Progress } from "../kinds/nowPlaying/Progress";
@@ -86,6 +104,7 @@ export interface ClusterModuleSharedData {
   weatherByLoc: ReadonlyMap<string, { status: string; data: WeatherSnapshot | null }>;
   discord: { status: string; data: DiscordSnapshot | null };
   agents: { status: string; data: AgentsSnapshot | null };
+  agentsNowMs: number;
 }
 
 interface ModuleCardProps {
@@ -190,6 +209,7 @@ export function ClusterModuleView({ mod, mode, shared, onToggleExpand }: ModuleC
           mod={mod}
           mode={mode}
           data={shared.agents.data}
+          nowMs={shared.agentsNowMs}
           preview={shared.preview}
           onClick={handleSurfaceClick}
         />
@@ -803,7 +823,7 @@ function WeatherClusterMod({
       onClick={onClick}
     >
       <div className="row between g6">
-        <div className="row g6" style={{ minWidth: 0 }}>
+        <div className="row g6 grow">
           <WeatherIcon id={wmo?.icon ?? "wx-cloud-sun"} size={15} />
           <span className="value" style={{ fontSize: "calc(13 * var(--u))" }}>
             {current ? fmtT(current.tempC) : t("state.dash")}
@@ -833,23 +853,24 @@ function DiscordClusterMod({
 }) {
   const running = Boolean(data?.running);
   const inCall = Boolean(data?.inCall);
-  const label = !running
-    ? t("discord.closed")
-    : inCall
-      ? t("discord.inCall")
-      : t("discord.notInCall");
+  const participants = data?.participants ?? [];
+  const channelLabel =
+    data?.channelName?.trim() ||
+    (inCall && data?.mode === "rpc" ? t("discord.privateCall") : t("discord.inCall"));
+  const label = !running ? t("discord.closed") : inCall ? channelLabel : t("discord.notInCall");
+
   const [nowMs, setNowMs] = useState(() => Date.now());
   useEffect(() => {
     if (!inCall || preview) return;
-    const id = window.setInterval(() => setNowMs(Date.now()), 10_000);
+    const id = window.setInterval(() => setNowMs(Date.now()), 1_000);
     return () => window.clearInterval(id);
   }, [inCall, preview]);
+
   const callMs =
     inCall && data?.callStartedAt != null
       ? Math.max(0, nowMs - Number(data.callStartedAt))
       : null;
-  const sub =
-    callMs !== null ? formatDuration(callMs) : running ? t("discord.running") : t("discord.closedBody");
+  const timerStr = callMs !== null ? formatCallTimer(callMs) : null;
 
   if (mode === "expanded") {
     return (
@@ -858,20 +879,52 @@ function DiscordClusterMod({
         style={viewTransitionStyle(mod.id, preview)}
         onClick={onClick}
       >
-        <div className="row g10">
-          <div className={`dc-icon${inCall ? " is-call" : ""}`}>
-            <Headset size="calc(16 * var(--u))" weight={inCall ? "fill" : "regular"} />
-          </div>
-          <div className="col grow" style={{ minWidth: 0 }}>
-            <div className="row between">
-              <span className="title-s trunc">{label}</span>
+        <div className="col dc-exp-inner">
+          <div className="row between g8" style={{ flex: "none", width: "100%" }}>
+            <div className="row g6" style={{ minWidth: 0, flex: "1 1 0" }}>
               <span className={`dc-dot${inCall ? " is-call" : ""}`} />
+              <span className="title-s trunc" style={{ fontSize: "calc(12 * var(--u))" }}>
+                {label}
+              </span>
+              {inCall && participants.length > 0 && (
+                <span className="micro tabular ink3" style={{ flex: "none" }}>
+                  · {participants.length}
+                </span>
+              )}
             </div>
-            <div className="meta trunc">{sub}</div>
-            <div className="micro ink3" style={{ marginTop: "calc(4 * var(--u))", lineHeight: 1.35 }}>
-              {t("discord.detection")}
-            </div>
+            {timerStr && (
+              <span className="micro tabular ink2" style={{ flex: "none" }}>
+                {timerStr}
+              </span>
+            )}
           </div>
+
+          {inCall && participants.length > 0 ? (
+            <>
+              <div className="dc-list">
+                {participants.map((p) => (
+                  <DiscordParticipantRow key={p.id} participant={p} />
+                ))}
+              </div>
+              {data?.canControlVoice && (
+                <DiscordVoiceControls
+                  selfMute={data.selfMute}
+                  selfDeaf={data.selfDeaf}
+                  preview={preview}
+                />
+              )}
+            </>
+          ) : inCall ? (
+            <span className="micro ink3 dc-m-foot">{t("discord.fallbackHint")}</span>
+          ) : (
+            <span className="micro ink3 dc-m-foot">
+              {!running
+                ? t("discord.closedBody")
+                : data?.mode === "rpc"
+                  ? t("discord.running")
+                  : t("discord.fallbackHint")}
+            </span>
+          )}
         </div>
       </div>
     );
@@ -883,16 +936,25 @@ function DiscordClusterMod({
       style={viewTransitionStyle(mod.id, preview)}
       onClick={onClick}
     >
-      <div className="row g8">
-        <span className={`c-discord-ico${inCall ? " is-call" : ""}`}>
-          <Headset size="calc(13 * var(--u))" weight={inCall ? "fill" : "regular"} />
-        </span>
-        <span className="title-s trunc" style={{ fontSize: "calc(12 * var(--u))" }}>
+      <div className="row g8" style={{ width: "100%", minWidth: 0 }}>
+        {inCall && participants.length > 0 ? (
+          <DiscordAvatarStack participants={participants} max={3} sizeU={20} />
+        ) : (
+          <span className={`c-discord-ico${inCall ? " is-call" : ""}`}>
+            <Headset size="calc(13 * var(--u))" weight={inCall ? "fill" : "regular"} />
+          </span>
+        )}
+        <span className="title-s trunc" style={{ fontSize: "calc(12 * var(--u))", flex: "1 1 0" }}>
           {label}
         </span>
-        <span className="grow" />
-        {callMs !== null && <span className="micro tabular ink3">{formatDuration(callMs)}</span>}
+        {timerStr && <span className="micro tabular ink2">{timerStr}</span>}
+        {inCall && data?.selfDeaf ? (
+          <SpeakerSlash size="calc(11 * var(--u))" className="dc-badge is-warn" weight="bold" />
+        ) : inCall && data?.selfMute ? (
+          <MicrophoneSlash size="calc(11 * var(--u))" className="dc-badge is-warn" weight="bold" />
+        ) : null}
         <span className={`dc-dot${inCall ? " is-call" : ""}`} />
+        <HintBadge label={t("cluster.more")} />
       </div>
     </div>
   );
@@ -902,58 +964,113 @@ function AgentsClusterMod({
   mod,
   mode,
   data,
+  nowMs,
   preview,
   onClick,
 }: {
   mod: ClusterModule;
   mode: "compact" | "expanded";
   data: AgentsSnapshot | null;
+  nowMs: number;
   preview?: boolean;
   onClick: (e: MouseEvent<HTMLDivElement>) => void;
 }) {
-  const [nowMs, setNowMs] = useState(() => Date.now());
-  const sessions = data?.sessions ?? [];
-  const working = sessions.filter((s) => s.status === "working").length;
-
-  useEffect(() => {
-    if (sessions.length === 0 || preview) return;
-    const id = window.setInterval(() => setNowMs(Date.now()), 10_000);
-    return () => window.clearInterval(id);
-  }, [sessions.length, preview]);
+  const resolved = resolveAgentsSettings(mod.settings);
+  const allSessions = data?.sessions ?? [];
+  const visible = filterAgentSessions(allSessions, resolved.recentWindowMin, nowMs);
 
   if (mode === "expanded") {
-    const rows = sessions.slice(0, 3);
-    const more = sessions.length - rows.length;
     return (
       <div
         className="c-mod is-exp c-mod-agents-exp"
         style={viewTransitionStyle(mod.id, preview)}
         onClick={onClick}
       >
-        <div className="col" style={{ gap: "calc(7 * var(--u))" }}>
-          <div className="row between">
-            <span className="meta" style={{ color: "var(--ink-2)" }}>
-              {sessions.length === 0
-                ? t("agents.empty.title")
-                : t("agents.summary", { total: sessions.length, working })}
+        <div className="col ag-exp-inner">
+          <div className="row between g8" style={{ flex: "none" }}>
+            <span className="meta ag-trunc" style={{ color: "var(--ink-2)" }}>
+              {visible.length === 0 ? t("agents.empty.title") : formatAgentSummary(visible)}
             </span>
-            <span className={`ag-dot${working > 0 ? " is-live" : ""}`} />
+            {visible.length > 0 && <AgentStatusDot status={overallAgentStatus(visible)} />}
           </div>
-          {sessions.length === 0 ? (
-            <span className="micro ink3">{t("agents.empty.body")}</span>
+          {visible.length === 0 ? (
+            <span className="micro ink3 ag-empty-copy">{t("agents.empty.body")}</span>
           ) : (
-            <>
-              {rows.map((session) => (
-                <AgentRow key={session.id} session={session} nowMs={nowMs} />
+            <div className="ag-list">
+              {visible.map((session) => (
+                <AgentRow key={session.id} session={session} nowMs={nowMs} preview={preview} />
               ))}
-              {more > 0 && <span className="micro ink3">{t("agents.more", { n: more })}</span>}
-            </>
+            </div>
           )}
         </div>
       </div>
     );
   }
 
+  if (visible.length === 0) {
+    return (
+      <div
+        className="c-mod c-mod-agents-cmp"
+        style={viewTransitionStyle(mod.id, preview)}
+        onClick={onClick}
+      >
+        <div className="row g8">
+          <span className="c-discord-ico">
+            <Robot size="calc(13 * var(--u))" />
+          </span>
+          <span className="meta ag-trunc" style={{ color: "var(--ink-3)" }}>
+            {t("agents.empty.title")}
+          </span>
+        </div>
+      </div>
+    );
+  }
+
+  if (visible.length === 1) {
+    const only = visible[0]!;
+    const tone = statusToneClass(only.status);
+    return (
+      <div
+        className={`c-mod c-mod-agents-cmp${only.todo ? " has-todo" : ""}`}
+        style={viewTransitionStyle(mod.id, preview)}
+        onClick={onClick}
+      >
+        <div className="row g8">
+          <AgentIcon agent={only.agent} variant="compact" />
+          <div className="row g6 grow" style={{ minWidth: 0 }}>
+            <span className="title-s ag-trunc" style={{ fontSize: "calc(12 * var(--u))" }}>
+              {only.agentLabel}
+            </span>
+            <span
+              className={`micro ag-trunc ${only.status === "waiting" ? "ag-status-wait" : "ink3"}`}
+            >
+              {agentStatusLine(only, nowMs)}
+            </span>
+          </div>
+          {only.todo && (
+            <span className="micro tabular ag-todo-chip">
+              {t("agents.todoProgress", {
+                done: only.todo.done,
+                total: only.todo.total,
+              })}
+            </span>
+          )}
+          <AgentStatusDot status={only.status} />
+          <HintBadge label={t("cluster.more")} />
+        </div>
+        {only.todo && (
+          <div className="c-ag-prog-edge" aria-hidden="true">
+            <i
+              className={tone || undefined}
+              style={{ transform: `scaleX(${todoRatio(only.todo).toFixed(4)})` }}
+            />
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  const distinctAgents = Array.from(new Set(visible.map((s) => s.agent))).slice(0, 3);
   return (
     <div
       className="c-mod c-mod-agents-cmp"
@@ -961,33 +1078,20 @@ function AgentsClusterMod({
       onClick={onClick}
     >
       <div className="row g8">
-        <span className="c-discord-ico">
-          <Robot size="calc(13 * var(--u))" />
+        <div className="ag-stack">
+          {distinctAgents.map((agentId) => (
+            <AgentIcon key={agentId} agent={agentId} variant="compact" />
+          ))}
+        </div>
+        <span className="title-s ag-trunc grow" style={{ fontSize: "calc(12 * var(--u))" }}>
+          {formatAgentSummary(visible)}
         </span>
-        <span className="title-s ag-trunc" style={{ fontSize: "calc(12 * var(--u))" }}>
-          {sessions.length === 0
-            ? t("agents.empty.title")
-            : working > 0
-              ? t("agents.workingN", { n: working })
-              : t("agents.allIdle")}
-        </span>
-        <span className="grow" />
-        {sessions.length > 0 && (
-          <div className="row g4">
-            {sessions.slice(0, 5).map((session) => (
-              <span
-                key={session.id}
-                className={`ag-dot${session.status === "working" ? " is-live" : ""}`}
-                style={
-                  session.status === "working"
-                    ? undefined
-                    : { background: agentTint(session.agent) }
-                }
-              />
-            ))}
-          </div>
-        )}
-        {sessions.length > 0 && <HintBadge label={t("cluster.more")} />}
+        <div className="ag-dots">
+          {visible.slice(0, 4).map((session) => (
+            <AgentStatusDot key={session.id} status={session.status} />
+          ))}
+        </div>
+        <HintBadge label={t("cluster.more")} />
       </div>
     </div>
   );

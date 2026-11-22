@@ -3,4 +3,4 @@ import type { ControlTheme } from "./ControlTheme";
 import type { Hotkeys } from "./Hotkeys";
 import type { Language } from "./Language";
 
-export type GeneralPatch = { language?: Language, controlTheme?: ControlTheme, autostart?: boolean, pauseOnFullscreen?: boolean, pauseOnBattery?: boolean, systemIntervalMs?: number, gridSnap?: boolean, hotkeys?: Hotkeys, };
+export type GeneralPatch = { language?: Language, controlTheme?: ControlTheme, autostart?: boolean, pauseOnFullscreen?: boolean, gameOverlay?: boolean, pauseOnBattery?: boolean, systemIntervalMs?: number, gridSnap?: boolean, hotkeys?: Hotkeys, };

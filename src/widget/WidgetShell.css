@@ -1,6 +1,6 @@
 .widget-root {
   --u: calc(100vw / var(--base-w));
-  --blur: calc(var(--blur-base) * var(--gs, 1) * var(--u));
+  --blur: calc(var(--blur-base) * max(0.25, (var(--gs, 1) - 0.44) * 1.785) * var(--u));
   --r-widget: calc(var(--r-base) * var(--r-mult) * var(--u));
   --r-panel: max(calc(8 * var(--u)), calc(var(--r-widget) - var(--px) * var(--u)));
   position: fixed;
@@ -27,15 +27,25 @@
   position: absolute;
   inset: 0;
   overflow: hidden;
+  contain: layout paint;
   border-radius: var(--r-widget);
   isolation: isolate;
-  animation: od-form 640ms var(--e-out) both;
+  animation: od-form 640ms var(--e-out) backwards;
   animation-delay: var(--t0, 0ms);
+  transition: border-radius 220ms var(--e-out);
+}
+.widget-root.is-preview .widget,
+.widget-root.is-preview .clock-second {
+  animation: none !important;
 }
 @supports (corner-shape: squircle) {
   .widget { corner-shape: squircle; border-radius: calc(var(--r-widget) * 1.5); }
-  .widget::before,
-  .glass-sheen { corner-shape: squircle; }
+  .widget::before { corner-shape: squircle; }
+  .size-pill.radius-extra .widget,
+  .size-pill.radius-extra .widget::before {
+    corner-shape: round;
+    border-radius: var(--r-widget);
+  }
 }
 .widget::before {
   content: "";
@@ -45,8 +55,9 @@
   pointer-events: none;
   z-index: var(--z-edge);
   box-shadow: inset 0 0 0 1px var(--edge), inset 0 1px 0 0 var(--edge-top);
+  transition: border-radius 220ms var(--e-out);
 }
-.glass-scrim, .glass-ambient, .glass-surface, .glass-veil, .glass-sheen, .edit-chrome {
+.glass-scrim, .glass-ambient, .glass-surface, .glass-veil, .edit-chrome {
   position: absolute;
   inset: 0;
   pointer-events: none;
@@ -117,25 +128,52 @@
   filter: blur(var(--blur)) saturate(var(--sat));
   transform: translateZ(0);
 }
-.engine-acrylic { --r-widget: 8px; }
+.widget-root:not(.is-preview).engine-acrylic { --r-widget: 8px; }
 @supports (corner-shape: squircle) {
-  .engine-acrylic .widget { corner-shape: round; border-radius: 8px; }
-  .engine-acrylic .widget::before,
-  .engine-acrylic .glass-sheen { corner-shape: round; }
+  .widget-root:not(.is-preview).engine-acrylic .widget { corner-shape: round; border-radius: 8px; }
+  .widget-root:not(.is-preview).engine-acrylic .widget::before { corner-shape: round; }
 }
 .engine-acrylic .glass-plate,
 .engine-tint .glass-plate {
   display: none;
 }
+/* Kontrolcenter-previews kan ikke bruge ægte DWM-acrylic;
+   backdrop-blur + temaets acrylic-tint fra src-tauri efterligner den. */
+.is-preview.engine-acrylic .glass-surface {
+  /* Overscan: .widget klipper backdrop-blurs kant-fade væk */
+  inset: -56px;
+  -webkit-backdrop-filter: blur(calc(max(4px, (var(--gs, 1) - 0.44) * 28px))) saturate(1.15);
+  backdrop-filter: blur(calc(max(4px, (var(--gs, 1) - 0.44) * 28px))) saturate(1.15);
+}
+.theme-aurora.is-preview.engine-acrylic .glass-surface {
+  background: rgba(18, 18, 22, 0.46);
+  opacity: clamp(0.36, calc(0.36 + (var(--gs, 1) - 0.6) * 1.6), 1);
+}
+.theme-laerk.is-preview.engine-acrylic .glass-surface {
+  background: rgba(244, 240, 233, 0.74);
+  opacity: clamp(0.42, calc(0.42 + (var(--gs, 1) - 0.6) * 1.45), 1);
+}
+.theme-grafit.is-preview.engine-acrylic .glass-surface {
+  background: rgba(18, 20, 24, 0.58);
+  opacity: clamp(0.36, calc(0.36 + (var(--gs, 1) - 0.6) * 1.6), 1);
+}
 .glass-scrim { background: rgba(var(--scrim-rgb), var(--scrim-a, 0)); }
 .glass-surface {
   background: var(--surface);
-  opacity: clamp(.55, calc(.55 + (var(--gs, 1) - .6) * 1.125), 1);
+  opacity: clamp(0.32, calc(0.32 + (var(--gs, 1) - 0.6) * 1.7), 1);
+}
+.glass-surface::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: inherit;
+  opacity: clamp(0, calc((var(--gs, 1) - 1) * 1.85), 0.74);
 }
 .engine-acrylic .glass-surface {
-  opacity: calc(0.6 * clamp(.55, calc(.55 + (var(--gs, 1) - .6) * 1.125), 1));
+  opacity: calc(0.6 * clamp(0.32, calc(0.32 + (var(--gs, 1) - 0.6) * 1.7), 1));
 }
 .engine-tint .glass-surface { background: var(--surface-solid); opacity: 1; }
+.engine-tint .glass-surface::after { display: none; }
 .is-paused .eq i,
 .is-paused .prog > i,
 .is-paused .c-media-prog-edge > i,
@@ -157,23 +195,6 @@
   text-shadow: var(--text-shadow);
   display: flex;
   flex-direction: column;
-}
-.glass-sheen {
-  z-index: var(--z-sheen);
-  overflow: hidden;
-  border-radius: inherit;
-}
-.glass-sheen::after {
-  content: "";
-  position: absolute;
-  top: 0;
-  bottom: 0;
-  left: 0;
-  width: 38%;
-  background: linear-gradient(100deg, transparent 0%, var(--sheen) 50%, transparent 100%);
-  transform: translate3d(-150%, 0, 0) skewX(-18deg);
-  animation: od-sheen 1150ms var(--e-soft) both;
-  animation-delay: calc(var(--t0, 0ms) + 1100ms);
 }
 .edit-chrome {
   z-index: var(--z-edit);

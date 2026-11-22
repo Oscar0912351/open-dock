@@ -370,18 +370,6 @@ fn tray_icon_image(paused: bool) -> Image<'static> {
     Image::new_owned(rgba, ICON_SIZE, ICON_SIZE)
 }
 
-fn dist_to_segment(px: f32, py: f32, ax: f32, ay: f32, bx: f32, by: f32) -> f32 {
-    let abx = bx - ax;
-    let aby = by - ay;
-    let denom = abx * abx + aby * aby;
-    let t = if denom > 1e-6 {
-        (((px - ax) * abx + (py - ay) * aby) / denom).clamp(0.0, 1.0)
-    } else {
-        0.0
-    };
-    (px - (ax + abx * t)).hypot(py - (ay + aby * t))
-}
-
 fn sd_round_box(px: f32, py: f32, cx: f32, cy: f32, hx: f32, hy: f32, r: f32) -> f32 {
     let qx = (px - cx).abs() - (hx - r);
     let qy = (py - cy).abs() - (hy - r);
@@ -389,43 +377,23 @@ fn sd_round_box(px: f32, py: f32, cx: f32, cy: f32, hx: f32, hy: f32, r: f32) ->
 }
 
 fn tray_mark_coverage(x: f32, y: f32) -> f32 {
-    // Two interlocking dock planes above the horizontal dock bar on 40x40 grid
-    let front_sd = sd_round_box(x, y, 17.6, 13.8, 8.8, 5.4, 2.0);
-    let back_sd = sd_round_box(x, y, 22.4, 18.4, 8.8, 5.4, 2.0);
-
-    let front_cov = if front_sd.abs() <= 1.25 {
-        1.0_f32
-    } else if front_sd < -1.25 {
-        0.34_f32
+    // Three rounded bento tiles matching the Open Dock 512x512 mark
+    let tl_sd = sd_round_box(x, y, 164.0, 180.0, 48.0, 64.0, 18.0);
+    let tr_sd = sd_round_box(x, y, 316.0, 180.0, 80.0, 64.0, 18.0);
+    let bot_sd = sd_round_box(x, y, 256.0, 332.0, 140.0, 64.0, 18.0);
+    if tl_sd.min(tr_sd).min(bot_sd) <= 0.0 {
+        1.0
     } else {
-        0.0_f32
-    };
-
-    let back_cov = if front_sd < 0.9 {
-        0.0_f32
-    } else if back_sd.abs() <= 1.2 {
-        0.92_f32
-    } else if back_sd < -1.2 {
-        0.22_f32
-    } else {
-        0.0_f32
-    };
-
-    let bar_cov = if dist_to_segment(x, y, 13.2, 29.8, 26.8, 29.8) <= 1.75 {
-        1.0_f32
-    } else {
-        0.0_f32
-    };
-
-    front_cov.max(back_cov).max(bar_cov)
+        0.0
+    }
 }
 
 fn render_tray_icons() -> (Vec<u8>, Vec<u8>) {
     let mut normal = Vec::with_capacity((ICON_SIZE * ICON_SIZE * 4) as usize);
     let mut dimmed = Vec::with_capacity((ICON_SIZE * ICON_SIZE * 4) as usize);
 
-    // Map 32x32 tray canvas onto the Open Dock 40x40 mark
-    let view_scale = 27.0_f32 / 28.0_f32;
+    // Map 32x32 tray canvas onto the inner 280x280 bento block centered at (256, 256)
+    let view_scale = 280.0_f32 / 28.0_f32;
     let samples = (SUPERSAMPLE * SUPERSAMPLE) as f32;
 
     for py in 0..ICON_SIZE {
@@ -433,10 +401,10 @@ fn render_tray_icons() -> (Vec<u8>, Vec<u8>) {
             let mut coverage_sum = 0.0_f32;
             for sy in 0..SUPERSAMPLE {
                 let y = py as f32 + (sy as f32 + 0.5) / SUPERSAMPLE as f32;
-                let vy = 20.0 + (y - 16.0) * view_scale;
+                let vy = 256.0 + (y - 16.0) * view_scale;
                 for sx in 0..SUPERSAMPLE {
                     let x = px as f32 + (sx as f32 + 0.5) / SUPERSAMPLE as f32;
-                    let vx = 20.0 + (x - 16.0) * view_scale;
+                    let vx = 256.0 + (x - 16.0) * view_scale;
                     coverage_sum += tray_mark_coverage(vx, vy);
                 }
             }

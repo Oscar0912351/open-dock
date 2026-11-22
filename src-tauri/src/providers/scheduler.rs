@@ -141,7 +141,7 @@ impl Scheduler {
                 .and_then(|loc_id| self.weather.snapshot(loc_id))
                 .map(ProviderSnapshot::Weather),
             ProviderKind::Discord => self.discord.snapshot().map(ProviderSnapshot::Discord),
-            ProviderKind::Agents => Some(ProviderSnapshot::Agents(self.agents.snapshot())),
+            ProviderKind::Agents => self.agents.snapshot().map(ProviderSnapshot::Agents),
         }
     }
 

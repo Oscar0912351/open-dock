@@ -4,6 +4,7 @@ import {
   Clock,
   CloudSun,
   Gauge,
+  Headset,
   MusicNote,
   NotePencil,
   Plus,
@@ -13,6 +14,7 @@ import {
   type Icon,
 } from "@phosphor-icons/react";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import type { Appearance } from "../../shared/bindings/Appearance";
 import type { AutoRule } from "../../shared/bindings/AutoRule";
 import type { ClusterConfig } from "../../shared/bindings/ClusterConfig";
@@ -20,8 +22,10 @@ import type { ClusterModule } from "../../shared/bindings/ClusterModule";
 import type { Location } from "../../shared/bindings/Location";
 import { t } from "../../shared/i18n";
 import { ipc, toAssetUrl } from "../../shared/ipc";
+import { reportError } from "../../shared/logging";
 import { CLUSTER_PRESETS, WIDGET_REGISTRY, type FreeWidgetKind } from "../../widget/registry";
 import { Button } from "../components/Button";
+import { getOverlayPortalRoot } from "../components/Drawer";
 import { Segmented } from "../components/Segmented";
 import { WidgetPreview } from "../components/WidgetPreview";
 import { useControlStore } from "../store";
@@ -36,20 +40,41 @@ const CUSTOM_MODULE_CHOICES: ReadonlyArray<{
   { id: "clock", kinds: ["clock"], icon: Clock },
   { id: "weather", kinds: ["weather"], icon: CloudSun },
   { id: "system", kinds: ["system"], icon: Gauge },
-  { id: "media", kinds: ["nowPlaying", "discord"], icon: MusicNote },
+  { id: "nowPlaying", kinds: ["nowPlaying"], icon: MusicNote },
+  { id: "discord", kinds: ["discord"], icon: Headset },
   { id: "note", kinds: ["note"], icon: NotePencil },
   { id: "agents", kinds: ["agents"], icon: Robot },
 ];
 
-const MAX_CUSTOM_MODULES = 5;
+const MAX_CUSTOM_MODULES = 7;
 
 type CustomShape = "box" | "pill";
 
+interface CustomDialogSeed {
+  seq: number;
+  shape: CustomShape;
+  selected: FreeWidgetKind[];
+  editingWidgetId: string | null;
+  baseCluster: ClusterConfig | null;
+}
+
 function customAutoRule(kind: FreeWidgetKind, shape: CustomShape): AutoRule {
   if (kind === "nowPlaying") return "expandWhenPlaying";
+  if (kind === "discord") return "expandWhenInCall";
   if (shape === "box" && kind === "system") return "expandWhenHighLoad";
+  if (shape === "box" && kind === "agents") return "expandWhenActive";
   if (shape === "box" && kind === "weather") return "fillRemainingSpace";
   return "none";
+}
+
+function createCustomModule(kind: FreeWidgetKind, shape: CustomShape): ClusterModule {
+  return {
+    id: crypto.randomUUID(),
+    kind,
+    defaultMode: kind === "nowPlaying" || kind === "discord" ? "hidden" : "compact",
+    autoRule: customAutoRule(kind, shape),
+    settings: { ...WIDGET_REGISTRY[kind].defaultSettings },
+  };
 }
 
 function buildCustomCluster(shape: CustomShape, selected: FreeWidgetKind[]): ClusterConfig {
@@ -59,13 +84,51 @@ function buildCustomCluster(shape: CustomShape, selected: FreeWidgetKind[]): Clu
     maxHeight: shape === "pill" ? 240 : 320,
     resizeBehavior: "adaptive",
     anchor: "top",
-    modules: selected.map((kind) => ({
-      id: crypto.randomUUID(),
-      kind,
-      defaultMode: kind === "nowPlaying" ? "hidden" : "compact",
-      autoRule: customAutoRule(kind, shape),
-      settings: { ...WIDGET_REGISTRY[kind].defaultSettings },
-    })),
+    modules: selected.map((kind) => createCustomModule(kind, shape)),
+  };
+}
+
+function updateExistingCluster(
+  base: ClusterConfig,
+  shape: CustomShape,
+  selected: FreeWidgetKind[],
+): ClusterConfig {
+  const baseShape: CustomShape = base.presetId === "pillBar" ? "pill" : "box";
+  const shapeChanged = shape !== baseShape;
+  const existingByKind = new Map<FreeWidgetKind, ClusterModule>();
+  for (const m of base.modules) {
+    if (m.kind !== "cluster" && !existingByKind.has(m.kind)) {
+      existingByKind.set(m.kind, m);
+    }
+  }
+
+  const modules: ClusterModule[] = selected.map((kind) => {
+    const existing = existingByKind.get(kind);
+    if (!existing) {
+      return createCustomModule(kind, shape);
+    }
+    if (!shapeChanged) {
+      return existing;
+    }
+    let autoRule = existing.autoRule;
+    if (
+      shape === "pill" &&
+      (autoRule === "fillRemainingSpace" ||
+        autoRule === "expandWhenHighLoad" ||
+        autoRule === "expandWhenActive")
+    ) {
+      autoRule = "none";
+    } else if (shape === "box" && autoRule === "none") {
+      autoRule = customAutoRule(kind, "box");
+    }
+    return { ...existing, autoRule };
+  });
+
+  return {
+    ...base,
+    presetId: shapeChanged ? (shape === "pill" ? "pillBar" : null) : base.presetId,
+    maxHeight: shapeChanged ? (shape === "pill" ? 240 : 320) : base.maxHeight,
+    modules,
   };
 }
 
@@ -99,7 +162,7 @@ export function buildPresetClusters(presetId: "allInOne" | "miniTrio" | "pillBar
           mod("aio", "weather", "compact", "fillRemainingSpace"),
           mod("aio", "system", "compact", "expandWhenHighLoad"),
           mod("aio", "nowPlaying", "hidden", "expandWhenPlaying"),
-          mod("aio", "discord", "compact", "none"),
+          mod("aio", "discord", "hidden", "expandWhenInCall"),
         ],
       },
     ];
@@ -184,10 +247,8 @@ export function Gallery() {
   const pushToast = useControlStore((s) => s.pushToast);
 
   const [addedKey, setAddedKey] = useState<string | null>(null);
-  const [customSeed, setCustomSeed] = useState<{
-    shape: CustomShape;
-    selected: FreeWidgetKind[];
-  } | null>(null);
+  const [customSeed, setCustomSeed] = useState<CustomDialogSeed | null>(null);
+  const dialogSeqRef = useRef(0);
   const addedTimerRef = useRef<number | null>(null);
 
   useEffect(() => {
@@ -197,6 +258,11 @@ export function Gallery() {
   }, []);
 
   if (!config) return null;
+
+  const openCustomizeDialog = (params: Omit<CustomDialogSeed, "seq">) => {
+    dialogSeqRef.current += 1;
+    setCustomSeed({ seq: dialogSeqRef.current, ...params });
+  };
 
   const markAdded = (key: string) => {
     setAddedKey(key);
@@ -232,12 +298,32 @@ export function Gallery() {
     });
   };
 
+  const handleSaveExisting = async (
+    widgetId: string,
+    cluster: ClusterConfig,
+  ): Promise<boolean> => {
+    try {
+      await ipc.widgetUpdate(widgetId, { cluster });
+      pushToast({
+        message: t("toast.saved", { name: t("cluster.title") }),
+        actionLabel: t("toast.show"),
+        onAction: () => setRoute("desktop", widgetId),
+      });
+      return true;
+    } catch (reason) {
+      void reportError(`widgetUpdate (${widgetId}): ${String(reason)}`);
+      pushToast({ message: t("gallery.custom.saveError") });
+      return false;
+    }
+  };
+
   const primaryMonitor = monitors.find((m) => m.isPrimary) ?? monitors[0] ?? null;
   const plateUrl = toAssetUrl(primaryMonitor?.platePath ?? "");
 
-  // "Din egen" shows the cluster the user actually runs; default box if none.
-  const ownCluster =
-    config.widgets.find((w) => w.kind === "cluster" && w.cluster)?.cluster ?? null;
+  // "Nuværende" shows and edits the cluster the user actually runs; falls back to "Din egen" if none.
+  const ownWidget =
+    config.widgets.find((w) => w.kind === "cluster" && w.cluster) ?? null;
+  const ownCluster = ownWidget?.cluster ?? null;
   const ownSeed = ownCluster
     ? {
         shape: (ownCluster.presetId === "pillBar" ? "pill" : "box") as CustomShape,
@@ -246,6 +332,13 @@ export function Gallery() {
           .filter((k, i, a) => a.indexOf(k) === i),
       }
     : { shape: "box" as CustomShape, selected: ["clock", "weather", "system"] as FreeWidgetKind[] };
+  const isEditingOwn = ownWidget !== null && ownCluster !== null;
+  const openOwnDialog = () =>
+    openCustomizeDialog({
+      ...ownSeed,
+      editingWidgetId: ownWidget?.id ?? null,
+      baseCluster: ownCluster,
+    });
 
   return (
     <div className="cc-route">
@@ -311,10 +404,16 @@ export function Gallery() {
                       </div>
                     </div>
 
-                    <div className="cc-gallery-foot" style={{ justifyContent: "flex-end" }}>
+                    <div className="cc-gallery-foot">
                       <Button
                         variant="secondary"
-                        onClick={() => setCustomSeed(seedFromPreset(preset.presetId))}
+                        onClick={() =>
+                          openCustomizeDialog({
+                            ...seedFromPreset(preset.presetId),
+                            editingWidgetId: null,
+                            baseCluster: null,
+                          })
+                        }
                       >
                         <span>{t("gallery.customize")}</span>
                       </Button>
@@ -333,7 +432,7 @@ export function Gallery() {
               <button
                 type="button"
                 className="cc-gallery-stage cc-custom-cta"
-                onClick={() => setCustomSeed(ownSeed)}
+                onClick={openOwnDialog}
               >
                 {plateUrl && (
                   <div
@@ -359,19 +458,33 @@ export function Gallery() {
 
               <div className="cc-gallery-body">
                 <div className="cc-gallery-meta">
-                  <div className="cc-gallery-title">{t("gallery.custom.title")}</div>
-                  <div className="cc-gallery-desc" title={t("gallery.custom.desc")}>
-                    {t("gallery.custom.desc")}
+                  <div className="cc-gallery-title">
+                    {isEditingOwn ? t("gallery.custom.currentTitle") : t("gallery.custom.title")}
+                  </div>
+                  <div
+                    className="cc-gallery-desc"
+                    title={isEditingOwn ? t("gallery.custom.currentDesc") : t("gallery.custom.desc")}
+                  >
+                    {isEditingOwn ? t("gallery.custom.currentDesc") : t("gallery.custom.desc")}
                   </div>
                 </div>
 
-                <div className="cc-gallery-foot" style={{ justifyContent: "flex-end" }}>
+                <div className="cc-gallery-foot is-end">
                   <Button
                     variant="secondary"
-                    onClick={() => setCustomSeed(ownSeed)}
+                    onClick={openOwnDialog}
                   >
-                    <Sparkle size={13} weight="bold" aria-hidden="true" />
-                    <span>{t("gallery.custom.open")}</span>
+                    {isEditingOwn ? (
+                      <>
+                        <NotePencil size={13} weight="bold" aria-hidden="true" />
+                        <span>{t("gallery.custom.edit")}</span>
+                      </>
+                    ) : (
+                      <>
+                        <Sparkle size={13} weight="bold" aria-hidden="true" />
+                        <span>{t("gallery.custom.open")}</span>
+                      </>
+                    )}
                   </Button>
                 </div>
               </div>
@@ -381,7 +494,7 @@ export function Gallery() {
 
       {customSeed && (
         <CustomizeDialog
-          key={JSON.stringify(customSeed)}
+          key={customSeed.seq}
           seed={customSeed}
           open
           monitors={monitors}
@@ -390,6 +503,7 @@ export function Gallery() {
           plateUrl={plateUrl}
           onClose={() => setCustomSeed(null)}
           onAdd={(cluster, mon) => void handleAddCustom(cluster, mon)}
+          onSave={handleSaveExisting}
         />
       )}
     </div>
@@ -487,8 +601,9 @@ function CustomizeDialog({
   plateUrl,
   onClose,
   onAdd,
+  onSave,
 }: {
-  seed: { shape: CustomShape; selected: FreeWidgetKind[] };
+  seed: CustomDialogSeed;
   open: boolean;
   monitors: MonitorInfo[];
   locations: Location[];
@@ -496,9 +611,11 @@ function CustomizeDialog({
   plateUrl: string;
   onClose: () => void;
   onAdd: (cluster: ClusterConfig, monitor?: string) => void;
+  onSave: (widgetId: string, cluster: ClusterConfig) => Promise<boolean>;
 }) {
   const [shape, setShape] = useState<CustomShape>(seed.shape);
   const [selected, setSelected] = useState<FreeWidgetKind[]>(seed.selected);
+  const [saving, setSaving] = useState(false);
 
   useEffect(() => {
     if (!open) return;
@@ -513,11 +630,32 @@ function CustomizeDialog({
   }, [open, onClose]);
 
   const cluster = useMemo(
-    () => buildCustomCluster(shape, selected),
-    [shape, selected],
+    () =>
+      seed.baseCluster
+        ? updateExistingCluster(seed.baseCluster, shape, selected)
+        : buildCustomCluster(shape, selected),
+    [seed.baseCluster, shape, selected],
   );
 
   if (!open) return null;
+
+  const isEditing = seed.editingWidgetId !== null;
+  const isDirty =
+    shape !== seed.shape ||
+    selected.length !== seed.selected.length ||
+    selected.some((kind, i) => seed.selected[i] !== kind);
+  const heading = isEditing ? t("gallery.custom.editHeading") : t("gallery.custom.heading");
+
+  const handleSave = async () => {
+    if (!seed.editingWidgetId || saving) return;
+    setSaving(true);
+    const ok = await onSave(seed.editingWidgetId, cluster);
+    if (ok) {
+      onClose();
+    } else {
+      setSaving(false);
+    }
+  };
 
   const toggleChoice = (kinds: FreeWidgetKind[]) => {
     setSelected((prev) => {
@@ -528,17 +666,17 @@ function CustomizeDialog({
     });
   };
 
-  return (
+  return createPortal(
     <div className="cc-backdrop" onClick={onClose}>
       <div
         className="cc-custom"
         role="dialog"
         aria-modal="true"
-        aria-label={t("gallery.custom.heading")}
+        aria-label={heading}
         onClick={(e) => e.stopPropagation()}
       >
         <div className="cc-custom-head">
-          <h3>{t("gallery.custom.heading")}</h3>
+          <h3>{heading}</h3>
           <button
             type="button"
             className="cc-iconbtn"
@@ -599,9 +737,7 @@ function CustomizeDialog({
                   onClick={() => toggleChoice(kinds)}
                 >
                   <ModuleIcon size={15} weight={isOn ? "fill" : "regular"} aria-hidden="true" />
-                  <span>
-                    {id === "media" ? t("gallery.custom.media") : t(`widgets.${id}.name`)}
-                  </span>
+                  <span>{t(`widgets.${id}.name`)}</span>
                 </button>
               );
             })}
@@ -626,7 +762,15 @@ function CustomizeDialog({
           <Button variant="ghost" onClick={onClose}>
             {t("gallery.custom.cancel")}
           </Button>
-          {selected.length === 0 ? (
+          {isEditing ? (
+            <Button
+              variant="primary"
+              disabled={selected.length === 0 || !isDirty || saving}
+              onClick={() => void handleSave()}
+            >
+              {t("gallery.custom.save")}
+            </Button>
+          ) : selected.length === 0 ? (
             <Button variant="primary" disabled>
               {t("gallery.placeOnDesktop")}
             </Button>
@@ -643,6 +787,7 @@ function CustomizeDialog({
           )}
         </div>
       </div>
-    </div>
+    </div>,
+    getOverlayPortalRoot(),
   );
 }

@@ -83,6 +83,13 @@ pub struct AppVisible {
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export, export_to = "../../src/shared/bindings/")]
+pub struct GameOverlayState {
+    pub active: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../src/shared/bindings/")]
 pub struct AppStatus {
     pub visible: bool,
     pub paused: bool,
@@ -104,6 +111,7 @@ pub struct WidgetBoot {
     pub start_delay_ms: u32,
     pub edit_mode: bool,
     pub paused: bool,
+    pub game_overlay_active: bool,
 }
 
 pub struct AppState {
@@ -111,9 +119,12 @@ pub struct AppState {
     pub paused: AtomicBool,
     pub widgets_visible: AtomicBool,
     pub manual_paused: AtomicBool,
+    pub fullscreen_active: AtomicBool,
+    pub game_overlay_active: AtomicBool,
     pub auto_pause_reason: RwLock<Option<PauseReason>>,
     pub effective_pause: RwLock<AppPaused>,
     pub tray_notice_shown: AtomicBool,
+    pub quitting: AtomicBool,
     pub edit_mode: AtomicBool,
     pub dragging: AtomicBool,
     pub selected_widget: RwLock<Option<Uuid>>,
@@ -133,12 +144,15 @@ impl AppState {
             paused: AtomicBool::new(false),
             widgets_visible: AtomicBool::new(true),
             manual_paused: AtomicBool::new(false),
+            fullscreen_active: AtomicBool::new(false),
+            game_overlay_active: AtomicBool::new(false),
             auto_pause_reason: RwLock::new(None),
             effective_pause: RwLock::new(AppPaused {
                 paused: false,
                 reason: None,
             }),
             tray_notice_shown: AtomicBool::new(false),
+            quitting: AtomicBool::new(false),
             edit_mode: AtomicBool::new(false),
             dragging: AtomicBool::new(false),
             selected_widget: RwLock::new(None),
@@ -192,7 +206,11 @@ mod tests {
         },
         desktop::snap::{EditGuides, Guide, GuideAxis},
         providers::{
-            discord::DiscordSnapshot,
+            agents::{AgentSession, AgentStatus, AgentTodoProgress, AgentsSnapshot},
+            discord::{
+                DiscordConnectionMode, DiscordParticipant, DiscordRpcStatus, DiscordSnapshot,
+                DiscordVoiceAction,
+            },
             gpu::SystemCaps,
             media::{MediaAction, MediaSnapshot, PlaybackStatus, RepeatMode},
             scheduler::{ProviderKind, ProviderSnapshot},
@@ -268,6 +286,7 @@ mod tests {
         AppPaused::export_all(&config).unwrap();
         AppStats::export_all(&config).unwrap();
         AppVisible::export_all(&config).unwrap();
+        GameOverlayState::export_all(&config).unwrap();
         AppStatus::export_all(&config).unwrap();
         EditModeState::export_all(&config).unwrap();
         ProviderKind::export_all(&config).unwrap();
@@ -288,6 +307,14 @@ mod tests {
         WeatherDaily::export_all(&config).unwrap();
         WeatherSnapshot::export_all(&config).unwrap();
         GeoResult::export_all(&config).unwrap();
+        DiscordConnectionMode::export_all(&config).unwrap();
+        DiscordParticipant::export_all(&config).unwrap();
+        DiscordRpcStatus::export_all(&config).unwrap();
+        DiscordVoiceAction::export_all(&config).unwrap();
         DiscordSnapshot::export_all(&config).unwrap();
+        AgentStatus::export_all(&config).unwrap();
+        AgentTodoProgress::export_all(&config).unwrap();
+        AgentSession::export_all(&config).unwrap();
+        AgentsSnapshot::export_all(&config).unwrap();
     }
 }

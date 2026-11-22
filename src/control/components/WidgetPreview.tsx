@@ -1,6 +1,7 @@
 import { useCallback, useMemo, useRef, useState } from "react";
 import type { Appearance } from "../../shared/bindings/Appearance";
 import type { ClusterConfig } from "../../shared/bindings/ClusterConfig";
+import type { GlassEngine } from "../../shared/bindings/GlassEngine";
 import type { Location } from "../../shared/bindings/Location";
 import type { MonitorInfo } from "../../shared/bindings/MonitorInfo";
 import type { ThemeId } from "../../shared/bindings/ThemeId";
@@ -11,7 +12,7 @@ import type { WidgetSize } from "../../shared/bindings/WidgetSize";
 import { toAssetUrl } from "../../shared/ipc";
 import { ClusterShell } from "../../widget/cluster/ClusterShell";
 import { computeClusterTargetHeight, DEFAULT_CLUSTER_SIGNALS, resolveModuleModes } from "../../widget/cluster/resolveLayout";
-import { Agents } from "../../widget/kinds/agents/Agents";
+import { Agents, resolveAgentsSettings } from "../../widget/kinds/agents/Agents";
 import { Clock, resolveClockSettings } from "../../widget/kinds/clock/Clock";
 import { useClock } from "../../widget/kinds/clock/useClock";
 import { Discord } from "../../widget/kinds/discord/Discord";
@@ -112,8 +113,8 @@ export function WidgetPreview({
   const effectiveTheme = themeOverride ?? instance?.themeOverride ?? appearance.themeId;
   const effectiveGlass = glassOverride ?? instance?.glassOverride ?? appearance.glassStrength;
 
-  // Forhåndsvisning viser altid Wallpaper-udseende når app/widget bruger Wallpaper eller Acrylic
-  const previewEngine = appearance.glassEngine === "tint" ? "tint" : "wallpaper";
+  // Forhåndsvisning viser den valgte motor ensartet på tværs af alle widgets i scenen.
+  const previewEngine: GlassEngine = appearance.glassEngine;
 
   const clockSettings = resolveClockSettings(kind === "clock" ? settings : undefined);
   const now = useClock(kind === "clock" && clockSettings.showSeconds);
@@ -248,7 +249,7 @@ export function WidgetPreview({
             size={size}
             theme={effectiveTheme}
             settings={resolveNowPlayingSettings(settings)}
-            pausedApp={false}
+            pausedApp={true}
             onAmbientChange={handleAmbientChange}
           />
         );
@@ -285,7 +286,13 @@ export function WidgetPreview({
           />
         );
       case "agents":
-        return <Agents size={size === "pill" ? "s" : size} />;
+        return (
+          <Agents
+            size={size === "pill" ? "s" : size}
+            settings={resolveAgentsSettings(settings)}
+            preview
+          />
+        );
       case "cluster":
         if (!cluster) return null;
         return (
@@ -295,7 +302,7 @@ export function WidgetPreview({
             theme={effectiveTheme}
             motion={appearance.motion}
             editMode={false}
-            pausedApp={false}
+            pausedApp={true}
             locations={locations}
             preview
             previewShowAll={previewShowAll}

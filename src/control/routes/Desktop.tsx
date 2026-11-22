@@ -1,25 +1,26 @@
 import {
   Clock,
   CloudSun,
-  Copy,
   Cpu,
+  Headset,
   MusicNote,
   Note,
   NotePencil,
   Plus,
   Robot,
+  SlidersHorizontal,
   SquaresFour,
-  Headset,
   X,
 } from "@phosphor-icons/react";
+import type { WidgetInstance } from "../../shared/bindings/WidgetInstance";
 import type { WidgetKind } from "../../shared/bindings/WidgetKind";
 import { t } from "../../shared/i18n";
 import { ipc } from "../../shared/ipc";
 import { Button } from "../components/Button";
 import { Inspector } from "../components/Inspector";
 import { Kbd } from "../components/Kbd";
-import { MonitorMap } from "../components/MonitorMap";
 import { formatWidgetTitle, useControlStore } from "../store";
+import { Themes } from "./Themes";
 
 const KIND_ICONS: Record<WidgetKind, typeof Clock> = {
   clock: Clock,
@@ -32,11 +33,49 @@ const KIND_ICONS: Record<WidgetKind, typeof Clock> = {
   agents: Robot,
 };
 
+function formatWidgetSummary(
+  w: WidgetInstance,
+  monitors: ReturnType<typeof useControlStore.getState>["monitors"],
+): string {
+  const parts: string[] = [];
+
+  if (w.kind === "cluster" && w.cluster) {
+    const names: string[] = [];
+    for (const m of w.cluster.modules) {
+      if (m.kind === "cluster") continue;
+      const label = t(`widgets.${m.kind}.name`);
+      if (!names.includes(label)) names.push(label);
+    }
+    if (names.length <= 3) {
+      parts.push(names.join(" · "));
+    } else {
+      parts.push(`${names.slice(0, 2).join(" · ")} +${names.length - 2}`);
+    }
+  } else {
+    parts.push(t(`size.${w.size}`));
+  }
+
+  if (monitors.length > 1) {
+    const monIdx = monitors.findIndex((m) => m.name === w.placement.monitor.name);
+    if (monIdx >= 0) {
+      parts.push(t("gallery.monitorNth", { n: monIdx + 1 }));
+    }
+  }
+
+  if (w.layer === "top") {
+    parts.push(t("desktop.badgeTop"));
+  }
+  if (w.clickThrough) {
+    parts.push(t("desktop.badgeClickThrough"));
+  }
+
+  return parts.join(" · ");
+}
+
 export function Desktop() {
   useControlStore((s) => s.locale);
   const config = useControlStore((s) => s.config);
   const monitors = useControlStore((s) => s.monitors);
-  const placements = useControlStore((s) => s.placements);
   const selectedId = useControlStore((s) => s.selectedWidgetId);
   const setSelectedWidgetId = useControlStore((s) => s.setSelectedWidgetId);
   const setRoute = useControlStore((s) => s.setRoute);
@@ -49,114 +88,112 @@ export function Desktop() {
     count === 1 ? t("desktop.widgetCountOne") : t("desktop.widgetCount", { n: count });
 
   return (
-    <div className="cc-desktop-studio">
-      <div className="cc-desktop-workspace">
-        <div className="cc-desktop-header">
-          <div className="cc-desktop-title-wrap">
-            <h1 className="cc-page-title">{t("desktop.title")}</h1>
-            <span className="cc-desktop-count">{countLabel}</span>
-          </div>
-
-          <div className="cc-desktop-toolbar-actions">
-            <Button
-              variant={editMode ? "primary" : "secondary"}
-              onClick={() => void ipc.editSet(!editMode)}
-            >
-              <NotePencil size={14} aria-hidden="true" />
-              <span>
-                {editMode ? t("desktop.stopEditing") : t("desktop.editOnDesktop")}
-              </span>
-              {!editMode && <Kbd keys={config.general.hotkeys.editMode} />}
-            </Button>
-
-            <Button variant="secondary" onClick={() => setRoute("gallery")}>
-              <Plus size={13} weight="bold" aria-hidden="true" />
-              <span>{t("desktop.addWidget")}</span>
-            </Button>
-          </div>
+    <div className="cc-route">
+      <div className="cc-page-header">
+        <div className="cc-page-header-copy">
+          <h1 className="cc-page-title">{t("desktop.title")}</h1>
+          <p className="cc-page-subtitle">{t("desktop.subtitle")}</p>
         </div>
 
-        <MonitorMap
-          monitors={monitors}
-          widgets={config.widgets}
-          placements={placements}
-          selectedId={selectedId}
-          onSelect={setSelectedWidgetId}
-        />
+        <div className="cc-desktop-toolbar-actions">
+          <Button
+            variant={editMode ? "primary" : "secondary"}
+            onClick={() => void ipc.editSet(!editMode)}
+          >
+            <NotePencil size={14} aria-hidden="true" />
+            <span>
+              {editMode ? t("desktop.stopEditing") : t("desktop.editOnDesktop")}
+            </span>
+            {!editMode && <Kbd keys={config.general.hotkeys.editMode} />}
+          </Button>
+
+          <Button variant="primary" onClick={() => setRoute("gallery")}>
+            <Plus size={13} weight="bold" aria-hidden="true" />
+            <span>{t("desktop.addWidget")}</span>
+          </Button>
+        </div>
+      </div>
+
+      <section className="cc-section">
+        <div className="cc-desk-sec-head">
+          <span className="cc-section-label">{t("desktop.onDesktop")}</span>
+          {count > 0 && <span className="cc-desk-sec-count">{countLabel}</span>}
+        </div>
 
         {count === 0 ? (
-          <div className="cc-empty">
-            <div className="cc-empty-illus" aria-hidden="true">
-              <div className="cc-empty-box" />
-              <div className="cc-empty-box is-tall" />
-              <div className="cc-empty-box" />
+          <div className="cc-desk-empty">
+            <div className="cc-desk-empty-copy">
+              <strong>{t("desktop.emptyTitle")}</strong>
+              <span>{t("desktop.emptyBody")}</span>
             </div>
-            <h3>{t("desktop.emptyTitle")}</h3>
-            <p>{t("desktop.emptyBody")}</p>
-            <Button variant="primary" onClick={() => setRoute("gallery")}>
+            <Button variant="secondary" onClick={() => setRoute("gallery")}>
               {t("desktop.goGallery")}
             </Button>
           </div>
         ) : (
-          <section className="cc-section">
-            <span className="cc-section-label">{t("desktop.onDesktop")}</span>
-            <div className="cc-widget-list">
-              {config.widgets.map((w) => {
-                const Icon = KIND_ICONS[w.kind];
-                const monIdx = monitors.findIndex((m) => m.name === w.placement.monitor.name);
-                const monLabel = t("gallery.monitorNth", { n: monIdx >= 0 ? monIdx + 1 : 1 });
-                const sizeText =
-                  w.kind === "cluster" && w.cluster
-                    ? `${w.cluster.width} px`
-                    : t(`size.${w.size}`);
-                const sub = `${sizeText} · ${monLabel} · ${t(`layer.${w.layer}`)}`;
-                const isSelected = selectedId === w.id;
+          <div className="cc-desk-grid">
+            {config.widgets.map((w) => {
+              const Icon = KIND_ICONS[w.kind];
+              const isSelected = selectedId === w.id;
+              const summary = formatWidgetSummary(w, monitors);
 
-                return (
-                  <div
-                    key={w.id}
-                    className={`cc-widget-row${isSelected ? " is-selected" : ""}`}
-                    onClick={() => setSelectedWidgetId(w.id)}
-                  >
-                    <div className="cc-widget-row-ic">
-                      <Icon size={15} aria-hidden="true" />
-                    </div>
-                    <div className="cc-widget-row-meta">
-                      <span className="cc-widget-row-title">{formatWidgetTitle(w)}</span>
-                      <span className="cc-widget-row-sub">{sub}</span>
-                    </div>
-                    <div
-                      style={{ display: "flex", gap: 4 }}
-                      onClick={(e) => e.stopPropagation()}
-                    >
-                      <button
-                        type="button"
-                        className="cc-iconbtn"
-                        aria-label={t("desktop.duplicate")}
-                        title={t("desktop.duplicate")}
-                        onClick={() => {
-                          void ipc.widgetDuplicate(w.id).then((copy) => setSelectedWidgetId(copy.id));
-                        }}
-                      >
-                        <Copy size={14} aria-hidden="true" />
-                      </button>
-                      <button
-                        type="button"
-                        className="cc-iconbtn is-danger"
-                        aria-label={t("desktop.remove")}
-                        title={t("desktop.remove")}
-                        onClick={() => void ipc.widgetRemove(w.id)}
-                      >
-                        <X size={14} aria-hidden="true" />
-                      </button>
-                    </div>
+              return (
+                <div
+                  key={w.id}
+                  role="button"
+                  tabIndex={0}
+                  className={`cc-desk-card${isSelected ? " is-selected" : ""}`}
+                  onClick={() => setSelectedWidgetId(w.id)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" || e.key === " ") {
+                      e.preventDefault();
+                      setSelectedWidgetId(w.id);
+                    }
+                  }}
+                >
+                  <div className="cc-desk-card-ic" aria-hidden="true">
+                    <Icon size={16} />
                   </div>
-                );
-              })}
-            </div>
-          </section>
+                  <div className="cc-desk-card-meta">
+                    <span className="cc-desk-card-title">{formatWidgetTitle(w)}</span>
+                    <span className="cc-desk-card-sub" title={summary}>
+                      {summary}
+                    </span>
+                  </div>
+                  <div
+                    className="cc-desk-card-actions"
+                    onClick={(e) => e.stopPropagation()}
+                  >
+                    <button
+                      type="button"
+                      className="cc-iconbtn"
+                      aria-label={t("desktop.customize")}
+                      title={t("desktop.customize")}
+                      onClick={() => setSelectedWidgetId(w.id)}
+                    >
+                      <SlidersHorizontal size={14} aria-hidden="true" />
+                    </button>
+                    <button
+                      type="button"
+                      className="cc-iconbtn is-danger"
+                      aria-label={t("desktop.remove")}
+                      title={t("desktop.remove")}
+                      onClick={() => void ipc.widgetRemove(w.id)}
+                    >
+                      <X size={14} aria-hidden="true" />
+                    </button>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
         )}
-      </div>
+      </section>
+
+      <section className="cc-desk-appearance">
+        <span className="cc-section-label">{t("desktop.appearanceHeading")}</span>
+        <Themes embedded />
+      </section>
 
       <Inspector />
     </div>

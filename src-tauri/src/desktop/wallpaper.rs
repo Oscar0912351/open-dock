@@ -217,11 +217,18 @@ fn compose_if_changed(
     let entries = compose_entries(&plates_dir, &snapshot, &tauri_monitors, &live_overrides);
     let infos: Vec<MonitorInfo> = entries.iter().map(|e| e.info.clone()).collect();
 
-    {
+    let was_empty = {
         let state = app.state::<AppState>();
-        *state.monitors.write() = entries.clone();
-    }
+        let mut guard = state.monitors.write();
+        let empty = guard.is_empty();
+        *guard = entries.clone();
+        empty
+    };
     *last_fingerprint = Some(fingerprint);
+
+    if was_empty && !entries.is_empty() {
+        crate::wallpaper::notify_monitors_changed(app);
+    }
 
     if let Err(error) = app.emit("desktop://monitors", &infos) {
         log::warn!("Kunne ikke sende desktop://monitors: {error}");

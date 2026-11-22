@@ -1,28 +1,22 @@
-import { Copy, Minus, Moon, NotePencil, Square, Sun, X } from "@phosphor-icons/react";
-import type { ControlTheme } from "../../shared/bindings/ControlTheme";
+import { Copy, Minus, NotePencil, Square, X } from "@phosphor-icons/react";
 import { t } from "../../shared/i18n";
 import { DockLogo } from "../../shared/icons/DockLogo";
-import { ipc, windowControls } from "../../shared/ipc";
+import { windowControls } from "../../shared/ipc";
 import { useControlStore } from "../store";
 
 interface TitleBarProps {
   maximized?: boolean;
   showOnboarding?: boolean;
-  uiTheme?: ControlTheme;
 }
 
 export function TitleBar({
   maximized = false,
   showOnboarding = false,
-  uiTheme = "dark",
 }: TitleBarProps) {
   useControlStore((s) => s.locale);
   const route = useControlStore((s) => s.route);
   const editMode = useControlStore((s) => s.editMode);
   const appVersion = useControlStore((s) => s.appVersion);
-
-  const nextTheme: ControlTheme = uiTheme === "dark" ? "light" : "dark";
-  const toggleLabel = uiTheme === "dark" ? t("window.switchLight") : t("window.switchDark");
 
   return (
     <header className="cc-titlebar">
@@ -56,22 +50,6 @@ export function TitleBar({
         </div>
 
         <div className="cc-titlebar-actions">
-          <button
-            type="button"
-            className="cc-titlebar-btn is-theme-toggle"
-            aria-label={toggleLabel}
-            title={toggleLabel}
-            onClick={() => void ipc.generalPatch({ controlTheme: nextTheme })}
-          >
-            {uiTheme === "dark" ? (
-              <Sun size={15} aria-hidden="true" />
-            ) : (
-              <Moon size={15} aria-hidden="true" />
-            )}
-          </button>
-
-          <span className="cc-titlebar-divider" aria-hidden="true" />
-
           <button
             type="button"
             className="cc-titlebar-btn"

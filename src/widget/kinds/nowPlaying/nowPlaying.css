@@ -10,15 +10,13 @@
   border-radius: calc(1.5 * var(--u));
   background: var(--accent);
   transform-origin: bottom;
-  animation: od-eq var(--d) ease-in-out infinite;
-  animation-delay: var(--dl);
+  transform: scaleY(var(--h, 0.35));
 }
 .theme-laerk .eq i {
   background: var(--ink-1);
 }
 .eq.paused i {
-  animation: none;
-  transform: scaleY(var(--h));
+  transform: scaleY(var(--h, 0.35));
 }
 
 .prog-hit {
@@ -53,9 +51,6 @@
   border-radius: inherit;
   transform-origin: left;
   transform: scaleX(var(--p-live, var(--p0, 0)));
-}
-.prog > i.is-playing {
-  animation: od-progress var(--rest, 1ms) linear forwards;
 }
 .theme-laerk .prog > i {
   background: var(--ink-1);

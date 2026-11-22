@@ -1,5 +1,16 @@
 import { describe, expect, it } from "vitest";
+import type { AgentSession } from "../../shared/bindings/AgentSession";
 import type { ClusterModule } from "../../shared/bindings/ClusterModule";
+import type { DiscordParticipant } from "../../shared/bindings/DiscordParticipant";
+import type { DiscordSnapshot } from "../../shared/bindings/DiscordSnapshot";
+import {
+  AGENTS_EXPANDED_MAX_INLINE_ROWS,
+  computeAgentsExpandedHeight,
+} from "../kinds/agents/Agents";
+import {
+  computeDiscordExpandedHeight,
+  DISCORD_EXPANDED_MAX_INLINE_ROWS,
+} from "../kinds/discord/Discord";
 import {
   computeClusterTargetHeight,
   nextManualExpandedId,
@@ -19,6 +30,8 @@ function mod(
 const idleSignals: ClusterSignals = {
   mediaActive: false,
   systemHighLoad: false,
+  agentsActive: false,
+  discordInCall: false,
 };
 
 function makeAllInOneModules(): ClusterModule[] {
@@ -45,7 +58,7 @@ describe("resolveModuleModes", () => {
     const modules = makeAllInOneModules();
     const modes = resolveModuleModes(
       modules,
-      { mediaActive: true, systemHighLoad: false },
+      { mediaActive: true, systemHighLoad: false, agentsActive: false, discordInCall: false },
       null,
       "adaptive",
     );
@@ -94,11 +107,30 @@ describe("resolveModuleModes", () => {
     expect(hot.get("system")).toBe("expanded");
   });
 
+  it("udvider AI Agenter når agenter er aktive (ExpandWhenActive)", () => {
+    const modules = [
+      mod("clock", "clock", "compact", "none"),
+      mod("agents", "agents", "compact", "expandWhenActive"),
+    ];
+
+    const calm = resolveModuleModes(modules, idleSignals, null, "adaptive");
+    expect(calm.get("agents")).toBe("compact");
+
+    const active = resolveModuleModes(
+      modules,
+      { ...idleSignals, agentsActive: true },
+      null,
+      "adaptive",
+    );
+    expect(active.get("agents")).toBe("expanded");
+    expect(computeClusterTargetHeight(modules, active, null, "adaptive", 320)).toBe(191);
+  });
+
   it("manuelt klik udvider valgt modul og komprimerer andre udvidede moduler uden at røre skjulte", () => {
     const modules = makeAllInOneModules();
     const modes = resolveModuleModes(
       modules,
-      { mediaActive: true, systemHighLoad: false },
+      { mediaActive: true, systemHighLoad: false, agentsActive: false, discordInCall: false },
       "system",
       "adaptive",
     );
@@ -167,11 +199,155 @@ describe("computeClusterTargetHeight", () => {
     const modules = makeAllInOneModules();
     const modes = resolveModuleModes(
       modules,
-      { mediaActive: true, systemHighLoad: true },
+      { mediaActive: true, systemHighLoad: true, agentsActive: false, discordInCall: false },
       null,
       "adaptive",
     );
     expect(computeClusterTargetHeight(modules, modes, "allInOne", "adaptive", 260)).toBe(260);
     expect(computeClusterTargetHeight(modules, modes, "allInOne", "fixed", 220)).toBe(220);
+  });
+
+  it("bruger heightOverrides til dynamisk udvidet modulhøjde i vertikal klynge og pillBar", () => {
+    const modules = [
+      mod("clock", "clock", "compact", "none"),
+      mod("agents", "agents", "compact", "expandWhenActive"),
+    ];
+    const modes = resolveModuleModes(
+      modules,
+      { ...idleSignals, agentsActive: true },
+      null,
+      "adaptive",
+    );
+    const overrides = new Map<string, number>([["agents", 148]]);
+
+    expect(
+      computeClusterTargetHeight(modules, modes, null, "adaptive", 480, overrides),
+    ).toBe(207);
+    expect(
+      computeClusterTargetHeight(modules, modes, null, "adaptive", 180, overrides),
+    ).toBe(180);
+    expect(
+      computeClusterTargetHeight(modules, modes, "pillBar", "adaptive", 480, overrides),
+    ).toBe(203);
+  });
+});
+
+function makeAgentSession(id: string, withTodo = false): AgentSession {
+  return {
+    id,
+    agent: "devin",
+    agentLabel: "Devin",
+    status: "ready",
+    title: "Session",
+    project: "APPS",
+    detail: null,
+    subagentCount: 0,
+    todo: withTodo ? { done: 2, total: 4, current: "Step" } : null,
+    pid: null,
+    processRunning: true,
+    lastActiveMs: BigInt(1000),
+  };
+}
+
+describe("computeAgentsExpandedHeight", () => {
+  it("skalerer udvidet agent-højde efter synlige sessioner og loft ved max inline rækker", () => {
+    expect(computeAgentsExpandedHeight([])).toBe(76);
+    expect(computeAgentsExpandedHeight([makeAgentSession("a", false)])).toBe(76);
+    expect(computeAgentsExpandedHeight([makeAgentSession("a", true)])).toBe(78);
+    expect(
+      computeAgentsExpandedHeight([
+        makeAgentSession("a", true),
+        makeAgentSession("b", false),
+        makeAgentSession("c", false),
+      ]),
+    ).toBe(148);
+
+    const six = Array.from({ length: AGENTS_EXPANDED_MAX_INLINE_ROWS }, (_, i) =>
+      makeAgentSession(`s-${i}`, false),
+    );
+    const nine = Array.from({ length: AGENTS_EXPANDED_MAX_INLINE_ROWS + 3 }, (_, i) =>
+      makeAgentSession(`s-${i}`, false),
+    );
+    expect(computeAgentsExpandedHeight(nine)).toBe(computeAgentsExpandedHeight(six));
+  });
+});
+
+function makeParticipant(id: string): DiscordParticipant {
+  return {
+    id,
+    username: `user_${id}`,
+    displayName: `User ${id}`,
+    avatarPath: null,
+    speaking: false,
+    muted: false,
+    deafened: false,
+    isSelf: false,
+  };
+}
+
+function makeDiscordSnapshot(
+  inCall: boolean,
+  participants: DiscordParticipant[] = [],
+  canControlVoice = true,
+): DiscordSnapshot {
+  return {
+    running: true,
+    inCall,
+    mode: participants.length > 0 ? "rpc" : "audio",
+    channelName: inCall ? "General" : null,
+    participants,
+    selfMute: false,
+    selfDeaf: false,
+    canControlVoice,
+    callStartedAt: inCall ? BigInt(1000) : null,
+    updatedAt: BigInt(2000),
+  };
+}
+
+describe("Discord autoRule og dynamisk højde", () => {
+  it("skjuler Discord med expandWhenInCall uden call og udvider under call", () => {
+    const modules = [
+      mod("clock", "clock", "compact", "none"),
+      mod("discord", "discord", "hidden", "expandWhenInCall"),
+    ];
+
+    const idle = resolveModuleModes(modules, idleSignals, null, "adaptive");
+    expect(idle.get("discord")).toBe("hidden");
+
+    const inCall = resolveModuleModes(
+      modules,
+      { ...idleSignals, discordInCall: true },
+      null,
+      "adaptive",
+    );
+    expect(inCall.get("discord")).toBe("expanded");
+
+    const manualOther = resolveModuleModes(
+      modules,
+      { ...idleSignals, discordInCall: true },
+      "clock",
+      "adaptive",
+    );
+    expect(manualOther.get("clock")).toBe("expanded");
+    expect(manualOther.get("discord")).toBe("compact");
+  });
+
+  it("beregner dynamisk højde for Discord-modul efter deltagere og loft", () => {
+    expect(computeDiscordExpandedHeight(null)).toBe(76);
+    expect(computeDiscordExpandedHeight(makeDiscordSnapshot(false))).toBe(76);
+    expect(computeDiscordExpandedHeight(makeDiscordSnapshot(true, [], false))).toBe(86);
+
+    const two = [makeParticipant("1"), makeParticipant("2")];
+    expect(computeDiscordExpandedHeight(makeDiscordSnapshot(true, two, true))).toBe(131);
+
+    const five = Array.from({ length: DISCORD_EXPANDED_MAX_INLINE_ROWS }, (_, i) =>
+      makeParticipant(String(i)),
+    );
+    const eight = Array.from({ length: DISCORD_EXPANDED_MAX_INLINE_ROWS + 3 }, (_, i) =>
+      makeParticipant(String(i)),
+    );
+    expect(computeDiscordExpandedHeight(makeDiscordSnapshot(true, eight, true))).toBe(
+      computeDiscordExpandedHeight(makeDiscordSnapshot(true, five, true)),
+    );
   });
 });

@@ -26,6 +26,7 @@ pub use crate::config::schema::Layer;
 
 const SUBCLASS_ID: usize = 0xD61A55;
 static SHOW_DESKTOP: AtomicBool = AtomicBool::new(false);
+static GAME_OVERLAY: AtomicBool = AtomicBool::new(false);
 static REGISTRY: LazyLock<Mutex<HashMap<isize, Arc<HwndState>>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
@@ -84,6 +85,7 @@ unsafe extern "system" fn widget_proc(
             let pos = &mut *(lp.0 as *mut WINDOWPOS);
             if state.layer() == Layer::Desktop
                 && !SHOW_DESKTOP.load(Ordering::Acquire)
+                && !GAME_OVERLAY.load(Ordering::Acquire)
                 && !pos.flags.contains(SWP_NOZORDER)
             {
                 pos.hwndInsertAfter = HWND_BOTTOM;
@@ -176,6 +178,48 @@ pub fn show_desktop() -> bool {
     SHOW_DESKTOP.load(Ordering::Acquire)
 }
 
+pub fn set_game_overlay(active: bool) -> bool {
+    let previous = GAME_OVERLAY.swap(active, Ordering::AcqRel);
+    if previous == active {
+        return false;
+    }
+    reapply_all();
+    true
+}
+
+pub fn game_overlay() -> bool {
+    GAME_OVERLAY.load(Ordering::Acquire)
+}
+
+pub fn reassert_game_overlay() {
+    if !GAME_OVERLAY.load(Ordering::Acquire) {
+        return;
+    }
+    let visible = super::app_handle()
+        .map(|app| {
+            app.state::<crate::state::AppState>()
+                .widgets_visible
+                .load(Ordering::Acquire)
+        })
+        .unwrap_or(true);
+    if !visible {
+        return;
+    }
+    for (hwnd, _) in registry_snapshot() {
+        unsafe {
+            let _ = SetWindowPos(
+                hwnd,
+                Some(HWND_TOPMOST),
+                0,
+                0,
+                0,
+                0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+            );
+        }
+    }
+}
+
 pub fn top_widget_labels() -> Vec<String> {
     registry_snapshot()
         .into_iter()
@@ -213,7 +257,8 @@ fn registry_snapshot() -> Vec<(HWND, Arc<HwndState>)> {
 
 fn place(hwnd: HWND, layer: Layer) -> windows::core::Result<()> {
     // Tauri styrer også vinduets z-orden og ex-styles; synkronisér derfor i denne rækkefølge.
-    let always_on_top = layer == Layer::Top || (layer == Layer::Desktop && show_desktop());
+    let overlay = game_overlay();
+    let always_on_top = overlay || layer == Layer::Top || (layer == Layer::Desktop && show_desktop());
     if let (Some(app), Some(state)) = (super::app_handle(), state_for(hwnd)) {
         if let Some(window) = app.get_webview_window(&state.label) {
             if let Err(error) = window.set_always_on_top(always_on_top) {
@@ -221,11 +266,15 @@ fn place(hwnd: HWND, layer: Layer) -> windows::core::Result<()> {
             }
         }
     }
-    let insert_after = match layer {
-        Layer::Desktop if show_desktop() => Some(HWND_TOPMOST),
-        Layer::Desktop => Some(HWND_BOTTOM),
-        Layer::Top => Some(HWND_TOPMOST),
-        Layer::Normal => Some(HWND_NOTOPMOST),
+    let insert_after = if overlay {
+        Some(HWND_TOPMOST)
+    } else {
+        match layer {
+            Layer::Desktop if show_desktop() => Some(HWND_TOPMOST),
+            Layer::Desktop => Some(HWND_BOTTOM),
+            Layer::Top => Some(HWND_TOPMOST),
+            Layer::Normal => Some(HWND_NOTOPMOST),
+        }
     };
     // A hidden widget (Bruger valgte "Skjul alle") must stay hidden when the
     // desktop layer is reapplied: only re-show it when widgets are meant visible.

@@ -16,6 +16,10 @@ body,
   --dot-color: rgba(255, 255, 255, 0.16);
 }
 
+.overlay-root.is-grid {
+  background: rgba(0, 0, 0, 0.004);
+}
+
 .overlay-root.theme-laerk {
   --guide-color: rgba(246, 183, 51, 0.9);
   --dot-color: rgba(46, 45, 42, 0.2);

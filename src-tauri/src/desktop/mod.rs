@@ -10,29 +10,30 @@ pub mod wallpaper;
 pub mod zorder;
 
 use std::sync::{
-    atomic::{AtomicU32, Ordering},
+    atomic::{AtomicIsize, AtomicU32, Ordering},
     OnceLock,
 };
 
-use tauri::{AppHandle, Manager};
+use tauri::AppHandle;
 use windows::{
     core::{w, PCWSTR},
     Win32::{
         Foundation::{HWND, LPARAM, LRESULT, WPARAM},
-        UI::{
-            Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass},
-            WindowsAndMessaging::{
-                RegisterWindowMessageW, SPI_SETDESKWALLPAPER, WM_DISPLAYCHANGE, WM_DPICHANGED,
-                WM_NCDESTROY, WM_SETTINGCHANGE,
-            },
+        System::LibraryLoader::GetModuleHandleW,
+        UI::WindowsAndMessaging::{
+            CreateWindowExW, DefWindowProcW, DestroyWindow, IsWindow, PostMessageW,
+            RegisterClassExW, RegisterWindowMessageW, SPI_SETDESKWALLPAPER, WM_CLOSE,
+            WM_DISPLAYCHANGE, WM_DPICHANGED, WM_SETTINGCHANGE, WNDCLASSEXW, WS_EX_NOACTIVATE,
+            WS_EX_TOOLWINDOW, WS_OVERLAPPED,
         },
     },
 };
 
 use crate::error::AppError;
 
-const CONTROL_SUBCLASS_ID: usize = 0xD61A56;
+const WATCHER_CLASS_NAME: PCWSTR = w!("OpenDockDesktopWatcher");
 static TASKBAR_CREATED: AtomicU32 = AtomicU32::new(0);
+static WATCHER_HWND: AtomicIsize = AtomicIsize::new(0);
 static APP_HANDLE: OnceLock<AppHandle> = OnceLock::new();
 static UI_THREAD_ID: OnceLock<std::thread::ThreadId> = OnceLock::new();
 
@@ -57,17 +58,38 @@ pub fn install(app: &AppHandle) -> Result<(), AppError> {
     if APP_HANDLE.set(app.clone()).is_err() {
         log::warn!("Desktop-overvågning blev installeret mere end én gang");
     }
-    let control = app
-        .get_webview_window("control")
-        .ok_or_else(|| AppError::Other("Kontrolvinduet mangler til desktop-overvågning".into()))?;
-    let hwnd = HWND(control.hwnd()?.0 as _);
     unsafe {
         let message = RegisterWindowMessageW(w!("TaskbarCreated"));
         if message == 0 {
             return Err(windows::core::Error::from_thread().into());
         }
         TASKBAR_CREATED.store(message, Ordering::Release);
-        SetWindowSubclass(hwnd, Some(control_proc), CONTROL_SUBCLASS_ID, 0).ok()?;
+
+        let hinstance = GetModuleHandleW(None)?;
+        let wc = WNDCLASSEXW {
+            cbSize: std::mem::size_of::<WNDCLASSEXW>() as u32,
+            lpfnWndProc: Some(watcher_proc),
+            hInstance: hinstance.into(),
+            lpszClassName: WATCHER_CLASS_NAME,
+            ..Default::default()
+        };
+        let _ = RegisterClassExW(&wc);
+
+        let hwnd = CreateWindowExW(
+            WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
+            WATCHER_CLASS_NAME,
+            w!("OpenDockDesktopWatcher"),
+            WS_OVERLAPPED,
+            0,
+            0,
+            0,
+            0,
+            None,
+            None,
+            Some(hinstance.into()),
+            None,
+        )?;
+        WATCHER_HWND.store(hwnd.0 as isize, Ordering::Release);
         showdesktop::install()?;
     }
     wallpaper::install(app.clone());
@@ -81,19 +103,30 @@ pub fn shutdown() {
     crate::wallpaper::shutdown();
     wallpaper::shutdown();
     showdesktop::shutdown();
+    let raw = WATCHER_HWND.swap(0, Ordering::AcqRel);
+    if raw != 0 {
+        let hwnd = HWND(raw as _);
+        unsafe {
+            if IsWindow(Some(hwnd)).as_bool() {
+                if UI_THREAD_ID.get().copied() == Some(std::thread::current().id()) {
+                    let _ = DestroyWindow(hwnd);
+                } else {
+                    let _ = PostMessageW(Some(hwnd), WM_CLOSE, WPARAM(0), LPARAM(0));
+                }
+            }
+        }
+    }
 }
 
 pub(crate) fn app_handle() -> Option<&'static AppHandle> {
     APP_HANDLE.get()
 }
 
-unsafe extern "system" fn control_proc(
+unsafe extern "system" fn watcher_proc(
     hwnd: HWND,
     msg: u32,
     wp: WPARAM,
     lp: LPARAM,
-    id: usize,
-    _data: usize,
 ) -> LRESULT {
     if msg != 0 && msg == TASKBAR_CREATED.load(Ordering::Acquire) {
         log::info!("Explorer genstartet; genanvender widgets på skrivebordet");
@@ -113,6 +146,9 @@ unsafe extern "system" fn control_proc(
         if is_wallpaper {
             log::debug!("Tapetændring modtaget; opdaterer tapetplader");
             wallpaper::trigger_refresh_debounced();
+            if let Some(app) = app_handle() {
+                crate::wallpaper::notify_wallpaper_changed(app);
+            }
         }
     } else if msg == WM_DISPLAYCHANGE || msg == WM_DPICHANGED {
         log::debug!("Skærm- eller DPI-ændring modtaget; opdaterer plader og placering");
@@ -120,8 +156,6 @@ unsafe extern "system" fn control_proc(
         if let Some(app) = app_handle() {
             crate::wallpaper::notify_monitors_changed(app);
         }
-    } else if msg == WM_NCDESTROY {
-        let _ = RemoveWindowSubclass(hwnd, Some(control_proc), id);
     }
-    DefSubclassProc(hwnd, msg, wp, lp)
+    DefWindowProcW(hwnd, msg, wp, lp)
 }

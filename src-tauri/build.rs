@@ -79,6 +79,7 @@ fn build_cpu_sensor() {
                 windows_path(&resources.join("LibreHardwareMonitorLib.dll"))
             ))
             .arg("/reference:System.Web.Extensions.dll")
+            .arg("/reference:System.ServiceProcess.dll")
             .args(sources.iter().map(|path| windows_path(path)));
         #[cfg(windows)]
         {

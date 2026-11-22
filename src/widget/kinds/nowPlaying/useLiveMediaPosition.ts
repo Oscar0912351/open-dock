@@ -26,6 +26,7 @@ export function useLiveMediaPosition(
   useEffect(() => {
     if (!isPlaying) return;
     const id = window.setInterval(() => {
+      if (document.hidden) return;
       setTickNow(Date.now());
     }, 1000);
     return () => window.clearInterval(id);

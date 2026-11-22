@@ -88,6 +88,16 @@ export function formatDuration(milliseconds: number): string {
   return `${totalSeconds} s`;
 }
 
+export function formatCallTimer(milliseconds: number): string {
+  const totalSeconds = Math.max(0, Math.floor(milliseconds / 1000));
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+  const mm = String(minutes).padStart(2, "0");
+  const ss = String(seconds).padStart(2, "0");
+  return hours > 0 ? `${hours}:${mm}:${ss}` : `${mm}:${ss}`;
+}
+
 export function isoWeek(date: Date): number {
   const utc = new Date(Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()));
   const day = utc.getUTCDay() || 7;

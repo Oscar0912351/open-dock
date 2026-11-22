@@ -14,7 +14,7 @@ use tauri::{AppHandle, Emitter, Manager};
 
 use crate::{desktop::monitors::MonitorInfo, error::AppError};
 
-use super::{defaults, migrate, schema::Config};
+use super::{defaults, migrate, schema::{Config, CONFIG_VERSION}};
 
 const CONFIG_FILE: &str = "config.json";
 const BACKUP_FILE: &str = "config.bak.json";
@@ -62,8 +62,13 @@ impl ConfigStore {
         let mut restore_notice: Option<String> = None;
 
         let config = match read_config_file(&config_path) {
-            Ok(Some(cfg)) => {
+            Ok(Some((cfg, migrated))) => {
                 had_valid = true;
+                if migrated {
+                    if let Err(error) = write_atomic(&dir, &cfg) {
+                        log::warn!("Kunne ikke gemme migreret config: {error:?}");
+                    }
+                }
                 cfg
             }
             Ok(None) => {
@@ -79,7 +84,7 @@ impl ConfigStore {
             Err(primary_err) => {
                 log::warn!("config.json kunne ikke indlæses ({primary_err}); prøver sikkerhedskopi");
                 match read_config_file(&backup_path) {
-                    Ok(Some(bak)) => {
+                    Ok(Some((bak, _))) => {
                         restored_from_backup = true;
                         restore_notice = Some(RESTORED_BACKUP_MESSAGE.into());
                         if let Err(error) = write_atomic(&dir, &bak) {
@@ -207,12 +212,16 @@ impl ConfigStore {
     }
 }
 
-fn read_config_file(path: &Path) -> Result<Option<Config>, String> {
+fn read_config_file(path: &Path) -> Result<Option<(Config, bool)>, String> {
     match fs::read_to_string(path) {
         Ok(raw) => {
             let value: serde_json::Value =
                 serde_json::from_str(&raw).map_err(|error| error.to_string())?;
-            migrate::migrate(value).map(Some)
+            let raw_version = value
+                .get("version")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(CONFIG_VERSION as u64) as u32;
+            migrate::migrate(value).map(|cfg| Some((cfg, raw_version < CONFIG_VERSION)))
         }
         Err(error) if error.kind() == ErrorKind::NotFound => Ok(None),
         Err(error) => Err(error.to_string()),
@@ -363,6 +372,106 @@ mod tests {
         );
         assert!(loaded.get().wallpaper.assignments.is_empty());
         assert!(loaded.peek_restore_notice().is_none());
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn migrates_v1_discord_to_hidden_expand_when_in_call_and_preserves_v2_explicit() {
+        use crate::config::schema::{AutoRule, ModuleMode};
+
+        let dir = temp_config_dir("v1_discord_mig");
+        let make_cluster_json = |version: u32| {
+            format!(
+                r#"{{
+                  "version": {version},
+                  "general": {{
+                    "language": "da",
+                    "autostart": true,
+                    "pauseOnFullscreen": true,
+                    "pauseOnBattery": false,
+                    "systemIntervalMs": 1000,
+                    "gridSnap": true,
+                    "hotkeys": {{ "editMode": "Ctrl+Alt+E", "toggleVisible": "Ctrl+Alt+H" }}
+                  }},
+                  "appearance": {{
+                    "themeId": "aurora",
+                    "accent": null,
+                    "glassEngine": "wallpaper",
+                    "glassStrength": 1.0,
+                    "radius": "round",
+                    "motion": "full",
+                    "autoContrast": true
+                  }},
+                  "weather": {{ "locations": [] }},
+                  "widgets": [
+                    {{
+                      "id": "ba70eb6d-bf00-43dd-8cc4-69db8d6f0cba",
+                      "kind": "cluster",
+                      "size": "m",
+                      "scale": 1.0,
+                      "placement": {{
+                        "monitor": {{
+                          "name": "DISPLAY1",
+                          "rect": {{ "x": 0, "y": 0, "width": 1920, "height": 1080 }}
+                        }},
+                        "x": 100.0,
+                        "y": 20.0
+                      }},
+                      "layer": "desktop",
+                      "clickThrough": false,
+                      "settings": {{}},
+                      "cluster": {{
+                        "presetId": "allInOne",
+                        "width": 264,
+                        "maxHeight": 320,
+                        "resizeBehavior": "adaptive",
+                        "anchor": "top",
+                        "modules": [
+                          {{
+                            "id": "15868400-67d2-4568-a045-dac1b57fac7e",
+                            "kind": "clock",
+                            "defaultMode": "compact",
+                            "autoRule": "none",
+                            "settings": {{}}
+                          }},
+                          {{
+                            "id": "1cc5ad6c-a13d-4bc7-b150-c7cd7d1668aa",
+                            "kind": "discord",
+                            "defaultMode": "compact",
+                            "autoRule": "none",
+                            "settings": {{}}
+                          }}
+                        ]
+                      }},
+                      "createdAt": 1700000000
+                    }}
+                  ],
+                  "onboarded": true
+                }}"#
+            )
+        };
+
+        fs::write(dir.join(CONFIG_FILE), make_cluster_json(1)).unwrap();
+        let migrated = ConfigStore::load_from_dir(dir.clone(), None, None);
+        let cfg = migrated.get();
+        assert_eq!(cfg.version, 2);
+        let disc = &cfg.widgets[0].cluster.as_ref().unwrap().modules[1];
+        assert_eq!(disc.default_mode, ModuleMode::Hidden);
+        assert_eq!(disc.auto_rule, AutoRule::ExpandWhenInCall);
+
+        // Bekræft at version 2 blev skrevet til disken.
+        let disk_raw = fs::read_to_string(dir.join(CONFIG_FILE)).unwrap();
+        let disk_val: serde_json::Value = serde_json::from_str(&disk_raw).unwrap();
+        assert_eq!(disk_val.get("version").and_then(|v| v.as_u64()), Some(2));
+
+        // En eksplicit v2-konfiguration må bevare brugerens valg (`compact` + `none`).
+        fs::write(dir.join(CONFIG_FILE), make_cluster_json(2)).unwrap();
+        let explicit_v2 = ConfigStore::load_from_dir(dir.clone(), None, None);
+        let cfg_v2 = explicit_v2.get();
+        let disc_v2 = &cfg_v2.widgets[0].cluster.as_ref().unwrap().modules[1];
+        assert_eq!(disc_v2.default_mode, ModuleMode::Compact);
+        assert_eq!(disc_v2.auto_rule, AutoRule::None);
 
         let _ = fs::remove_dir_all(&dir);
     }

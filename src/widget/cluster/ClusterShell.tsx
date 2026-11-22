@@ -13,6 +13,12 @@ import { t } from "../../shared/i18n";
 import { ipc } from "../../shared/ipc";
 import { resolveClockSettings } from "../kinds/clock/Clock";
 import { useClock } from "../kinds/clock/useClock";
+import {
+  computeAgentsExpandedHeight,
+  filterAgentSessions,
+  resolveAgentsSettings,
+} from "../kinds/agents/Agents";
+import { computeDiscordExpandedHeight } from "../kinds/discord/Discord";
 import { resolveNowPlayingSettings } from "../kinds/nowPlaying/NowPlaying";
 import { useSystemHistory } from "../kinds/system/useSystemHistory";
 import { resolveWeatherSettings } from "../kinds/weather/Weather";
@@ -132,6 +138,8 @@ export function ClusterShell({
   const [manualExpandedId, setManualExpandedId] = useState<string | null>(null);
   const [mediaActive, setMediaActive] = useState(false);
   const [systemHighLoad, setSystemHighLoad] = useState(false);
+  const [agentsActive, setAgentsActive] = useState(false);
+  const [discordInCall, setDiscordInCall] = useState(false);
 
   const motionRef = useRef(motion);
   useEffect(() => {
@@ -146,6 +154,7 @@ export function ClusterShell({
   const prevMediaStatusRef = useRef<string | undefined>(undefined);
   const mediaPauseTimerRef = useRef<number | null>(null);
   const loadTimerRef = useRef<number | null>(null);
+  const agentsIdleTimerRef = useRef<number | null>(null);
 
   // Afspiller-signal: aktiv mens den spiller eller én gang i 10 s ved pause (uden at genåbne efter kollaps)
   useEffect(() => {
@@ -262,13 +271,88 @@ export function ClusterShell({
     }
   }, [hasSystem, system.data?.cpu.usage, system.data?.gpu?.usage, systemHighLoad, preview]);
 
+  // Agent-signal: aktiv når mindst én agent arbejder eller venter (rolig 4 s kollaps-hysterese)
+  useEffect(() => {
+    if (!hasAgents) {
+      if (agentsIdleTimerRef.current !== null) {
+        window.clearTimeout(agentsIdleTimerRef.current);
+        agentsIdleTimerRef.current = null;
+      }
+      if (agentsActive) {
+        const timer = window.setTimeout(() => {
+          runViewTransition(motionRef.current, preview, () => setAgentsActive(false));
+        }, 0);
+        return () => window.clearTimeout(timer);
+      }
+      return;
+    }
+
+    const busy = Boolean(
+      agents.data?.sessions.some(
+        (s) => s.status === "working" || s.status === "waiting",
+      ),
+    );
+
+    if (busy) {
+      if (agentsIdleTimerRef.current !== null) {
+        window.clearTimeout(agentsIdleTimerRef.current);
+        agentsIdleTimerRef.current = null;
+      }
+      if (!agentsActive) {
+        const timer = window.setTimeout(() => {
+          runViewTransition(motionRef.current, preview, () => setAgentsActive(true));
+        }, 0);
+        return () => window.clearTimeout(timer);
+      }
+      return;
+    }
+
+    if (agentsActive && agentsIdleTimerRef.current === null) {
+      agentsIdleTimerRef.current = window.setTimeout(() => {
+        agentsIdleTimerRef.current = null;
+        runViewTransition(motionRef.current, preview, () => setAgentsActive(false));
+      }, 4_000);
+    }
+  }, [hasAgents, agents.data?.sessions, agentsActive, preview]);
+
   useEffect(() => {
     return () => {
       prevMediaStatusRef.current = undefined;
       if (mediaPauseTimerRef.current !== null) window.clearTimeout(mediaPauseTimerRef.current);
       if (loadTimerRef.current !== null) window.clearTimeout(loadTimerRef.current);
+      if (agentsIdleTimerRef.current !== null) window.clearTimeout(agentsIdleTimerRef.current);
     };
   }, []);
+
+  // Discord-signal: aktiv mens du er i et call
+  useEffect(() => {
+    const active = hasDiscord && Boolean(discord.data?.inCall);
+    if (active === discordInCall) return;
+    const timer = window.setTimeout(() => {
+      runViewTransition(motionRef.current, preview, () => {
+        setDiscordInCall(active);
+        setManualExpandedId((prev) => {
+          if (active) return null;
+          if (prev && cluster.modules.some((m) => m.id === prev && m.kind === "discord")) {
+            return null;
+          }
+          return prev;
+        });
+      });
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [hasDiscord, discord.data?.inCall, discordInCall, preview, cluster.modules]);
+
+  const [agentsNowMs, setAgentsNowMs] = useState(() => Date.now());
+  const rawAgentsSessions = agents.data?.sessions;
+  const hasTimedAgents = Boolean(
+    hasAgents && rawAgentsSessions?.some((s) => s.status === "ready" || s.status === "idle"),
+  );
+  useEffect(() => {
+    if (!hasTimedAgents || preview) return;
+    const id = window.setInterval(() => setAgentsNowMs(Date.now()), 10_000);
+    return () => window.clearInterval(id);
+  }, [hasTimedAgents, preview]);
 
   const isPillBar = cluster.presetId === "pillBar";
 
@@ -282,6 +366,8 @@ export function ClusterShell({
         {
           mediaActive: hasMedia && mediaActive,
           systemHighLoad: hasSystem && systemHighLoad,
+          agentsActive: hasAgents && agentsActive,
+          discordInCall: hasDiscord && discordInCall,
         },
         manualExpandedId,
         cluster.resizeBehavior,
@@ -295,6 +381,10 @@ export function ClusterShell({
       mediaActive,
       hasSystem,
       systemHighLoad,
+      hasAgents,
+      agentsActive,
+      hasDiscord,
+      discordInCall,
       manualExpandedId,
       cluster.resizeBehavior,
       isPillBar,
@@ -318,6 +408,34 @@ export function ClusterShell({
     );
   }, [cluster.modules, cluster.presetId, cluster.resizeBehavior, cluster.maxHeight]);
 
+  const discordSnapshot = discord.data;
+  const heightOverrides = useMemo(() => {
+    const map = new Map<string, number>();
+    const sessions = rawAgentsSessions ?? [];
+    for (const mod of cluster.modules) {
+      if ((modes.get(mod.id) ?? mod.defaultMode) !== "expanded") continue;
+      if (mod.kind === "agents") {
+        const { recentWindowMin } = resolveAgentsSettings(mod.settings);
+        const visible = filterAgentSessions(sessions, recentWindowMin, agentsNowMs);
+        map.set(mod.id, computeAgentsExpandedHeight(visible));
+      } else if (mod.kind === "discord") {
+        map.set(mod.id, computeDiscordExpandedHeight(discordSnapshot));
+      }
+    }
+    return map;
+  }, [cluster.modules, modes, rawAgentsSessions, agentsNowMs, discordSnapshot]);
+
+  const visibleModuleCount = useMemo(
+    () =>
+      cluster.modules.filter((m) => (modes.get(m.id) ?? m.defaultMode) !== "hidden").length,
+    [cluster.modules, modes],
+  );
+
+  const effectiveMaxHeight =
+    cluster.resizeBehavior === "adaptive" && (heightOverrides.size > 0 || visibleModuleCount > 5)
+      ? Math.max(cluster.maxHeight, 480)
+      : cluster.maxHeight;
+
   const targetHeightU = useMemo(
     () =>
       computeClusterTargetHeight(
@@ -325,9 +443,17 @@ export function ClusterShell({
         modes,
         cluster.presetId,
         cluster.resizeBehavior,
-        cluster.maxHeight,
+        effectiveMaxHeight,
+        heightOverrides,
       ),
-    [cluster.modules, modes, cluster.presetId, cluster.resizeBehavior, cluster.maxHeight],
+    [
+      cluster.modules,
+      modes,
+      cluster.presetId,
+      cluster.resizeBehavior,
+      effectiveMaxHeight,
+      heightOverrides,
+    ],
   );
 
   // 2-trins udvid/kollaps-håndtryk mod Win32 (plan/04b §2.1)
@@ -550,6 +676,7 @@ export function ClusterShell({
     weatherByLoc,
     discord: { status: discord.status, data: discord.data },
     agents: { status: agents.status, data: agents.data },
+    agentsNowMs,
   };
 
   if (isPillBar) {

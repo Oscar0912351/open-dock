@@ -17,7 +17,7 @@ import {
   type ClusterFrameInfo,
   type GlassPlacementInfo,
 } from "./WidgetShell";
-import { Agents } from "./kinds/agents/Agents";
+import { Agents, resolveAgentsSettings } from "./kinds/agents/Agents";
 import { Clock, resolveClockSettings } from "./kinds/clock/Clock";
 import { useClock } from "./kinds/clock/useClock";
 import { Discord } from "./kinds/discord/Discord";
@@ -42,6 +42,7 @@ export function WidgetApp({ id }: WidgetAppProps) {
   const [clusterFrame, setClusterFrame] = useState<ClusterFrameInfo | null>(null);
   const [selectedWidgetId, setSelectedWidgetId] = useState<string | null>(null);
   const [draggingWidgetId, setDraggingWidgetId] = useState<string | null>(null);
+  const [gameOverlayActive, setGameOverlayActive] = useState(false);
   const [placementState, setPlacementState] = useState<{
     monitor: string;
     wx: number;
@@ -97,6 +98,7 @@ export function WidgetApp({ id }: WidgetAppProps) {
         setBoot(nextBoot);
         setMonitor(nextBoot.monitor);
         setPaused(nextBoot.paused);
+        setGameOverlayActive(nextBoot.gameOverlayActive);
         if (nextBoot.placement) {
           const initial = {
             monitor: nextBoot.placement.monitor,
@@ -131,9 +133,10 @@ export function WidgetApp({ id }: WidgetAppProps) {
 
   useEffect(() => {
     if (!instance || !boot) return;
-    const shouldIgnore = (hiddenIdle || instance.clickThrough) && !boot.editMode;
+    const shouldIgnore =
+      (gameOverlayActive || hiddenIdle || instance.clickThrough) && !boot.editMode;
     void getCurrentWindow().setIgnoreCursorEvents(shouldIgnore).catch(() => {});
-  }, [hiddenIdle, instance, boot]);
+  }, [gameOverlayActive, hiddenIdle, instance, boot]);
 
   useEffect(() => {
     if (!id) return;
@@ -301,6 +304,16 @@ export function WidgetApp({ id }: WidgetAppProps) {
       void reportError(`edit://dragging: ${String(reason)}`);
     });
 
+    on.gameOverlay((state) => {
+      if (!active) return;
+      setGameOverlayActive(state.active);
+    }).then((dispose) => {
+      if (active) unlisteners.push(dispose);
+      else dispose();
+    }).catch((reason: unknown) => {
+      void reportError(`app://game-overlay: ${String(reason)}`);
+    });
+
     return () => {
       active = false;
       for (const dispose of unlisteners) {
@@ -437,6 +450,9 @@ export function WidgetApp({ id }: WidgetAppProps) {
         onBeginDrag={() => {
           if (id) void ipc.editBeginDrag(id);
         }}
+        onLongPressDrag={() => {
+          if (id) void ipc.editLongPressDrag(id);
+        }}
         onRemoveWidget={() => {
           if (id) void ipc.widgetRemove(id);
         }}
@@ -496,6 +512,7 @@ export function WidgetApp({ id }: WidgetAppProps) {
           <Agents
             size={size}
             theme={theme}
+            settings={resolveAgentsSettings(instance.settings)}
             onAriaChange={setAriaLabel}
           />
         ) : kind === "note" ? (

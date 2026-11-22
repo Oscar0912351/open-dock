@@ -153,6 +153,7 @@ impl SystemProvider {
             *caps_cache.lock() = Some(hw.caps.clone());
             let mut last_tick = Instant::now();
             let mut first_tick = true;
+            let mut tick_count: u64 = 0;
 
             loop {
                 let sleep_ms = if first_tick {
@@ -168,11 +169,12 @@ impl SystemProvider {
                 };
                 tokio::time::sleep(Duration::from_millis(sleep_ms)).await;
                 first_tick = false;
+                tick_count = tick_count.wrapping_add(1);
 
                 sys.refresh_cpu_specifics(CpuRefreshKind::nothing().with_frequency());
                 sys.refresh_memory_specifics(MemoryRefreshKind::nothing().with_ram());
                 if let Some(ref mut net_list) = nets {
-                    net_list.refresh(true);
+                    net_list.refresh(tick_count.is_multiple_of(30));
                 }
 
                 let now = Instant::now();
@@ -186,8 +188,8 @@ impl SystemProvider {
                         .ok()
                         .flatten();
 
-                if cpu_temp_c.is_some() {
-                    if let Some(ref mut caps) = *caps_cache.lock() {
+                if let Some(ref mut caps) = *caps_cache.lock() {
+                    if cpu_temp_c.is_some() {
                         caps.cpu_temp = true;
                     }
                 }

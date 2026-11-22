@@ -60,6 +60,20 @@ pub fn effective_engine(
     chosen
 }
 
+pub fn effective_engine_in_context(
+    preferred: GlassEngine,
+    widget_override: Option<GlassEngine>,
+    layer: Layer,
+    size: WidgetSize,
+    windows_11: bool,
+    game_overlay: bool,
+) -> GlassEngine {
+    if game_overlay {
+        return GlassEngine::Tint;
+    }
+    effective_engine(preferred, widget_override, layer, size, windows_11)
+}
+
 pub fn acrylic_tint_for_theme(theme: ThemeId) -> (u8, u8, u8, u8) {
     match theme {
         ThemeId::Aurora => (18, 18, 22, 70),
