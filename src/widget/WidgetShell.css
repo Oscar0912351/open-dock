@@ -150,24 +150,12 @@
   display: none;
 }
 /* Kontrolcenter-previews kan ikke bruge ægte DWM-acrylic;
-   backdrop-blur + temaets acrylic-tint fra src-tauri efterligner den. */
+   backdrop-blur over kontrolcentrets eget baggrundslag efterligner den. */
 .is-preview.engine-acrylic .glass-surface {
   /* Overscan: .widget klipper backdrop-blurs kant-fade væk */
   inset: -56px;
   -webkit-backdrop-filter: blur(calc(max(4px, (var(--gs, 1) - 0.44) * 28px))) saturate(1.15);
   backdrop-filter: blur(calc(max(4px, (var(--gs, 1) - 0.44) * 28px))) saturate(1.15);
-}
-.theme-aurora.is-preview.engine-acrylic .glass-surface {
-  background: rgba(18, 18, 22, 0.46);
-  opacity: clamp(0.36, calc(0.36 + (var(--gs, 1) - 0.6) * 1.6), 1);
-}
-.theme-laerk.is-preview.engine-acrylic .glass-surface {
-  background: rgba(244, 240, 233, 0.74);
-  opacity: clamp(0.42, calc(0.42 + (var(--gs, 1) - 0.6) * 1.45), 1);
-}
-.theme-grafit.is-preview.engine-acrylic .glass-surface {
-  background: rgba(18, 20, 24, 0.58);
-  opacity: clamp(0.36, calc(0.36 + (var(--gs, 1) - 0.6) * 1.6), 1);
 }
 .glass-scrim { background: rgba(var(--scrim-rgb), var(--scrim-a, 0)); }
 .glass-surface {
@@ -181,9 +169,8 @@
   background: inherit;
   opacity: clamp(0, calc((var(--gs, 1) - 1) * 1.85), 0.74);
 }
-.engine-acrylic .glass-surface {
-  opacity: calc(0.6 * clamp(0.32, calc(0.32 + (var(--gs, 1) - 0.6) * 1.7), 1));
-}
+/* Acrylic deler bevidst .glass-surface-opskriften med wallpaper-motoren,
+   så lag-skift til "Altid øverst" ikke ændrer glassets farve/tyngde. */
 .engine-tint .glass-surface { background: var(--surface-solid); opacity: 1; }
 .engine-tint .glass-surface::after { display: none; }
 .is-paused .eq i,

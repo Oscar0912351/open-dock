@@ -404,6 +404,9 @@ export const da = {
     language: "Sprog",
     gridSnap: "Snap til gitter",
     gridSnapHelp: "Retter widgets ind efter 8 px gitter og hinanden",
+    widgetLayer: "Widgets' lag",
+    widgetLayerMixed:
+      "Dine widgets bruger forskellige lag lige nu – vælg ét for at gøre det ens for alle.",
     performance: "Ydelse",
     gameOverlay: "Spil-overlay (fuldskærmsspil)",
     gameOverlayHelp:

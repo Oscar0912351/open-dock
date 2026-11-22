@@ -52,6 +52,7 @@ struct TrackFallbackTimer {
     track_key: String,
     accumulated_ms: u64,
     playing_since_ms: Option<i64>,
+    known_duration_ms: u64,
 }
 
 impl TrackFallbackTimer {
@@ -67,6 +68,7 @@ impl TrackFallbackTimer {
             self.track_key.push_str(track_key);
             self.accumulated_ms = known_pos_ms.unwrap_or(0);
             self.playing_since_ms = (status == PlaybackStatus::Playing).then_some(now_ms);
+            self.known_duration_ms = 0;
             return self.accumulated_ms;
         }
 
@@ -127,8 +129,24 @@ fn update_fallback_timer(
         track_key: track_key.clone(),
         accumulated_ms: known_pos_ms.unwrap_or(0),
         playing_since_ms: (status == PlaybackStatus::Playing).then_some(now_ms),
+        known_duration_ms: 0,
     });
     entry.update_and_get(&track_key, status, now_ms, known_pos_ms)
+}
+
+fn sync_fallback_duration(
+    timers: &mut HashMap<String, TrackFallbackTimer>,
+    source: &str,
+    gsmtc_dur_ms: u64,
+) -> u64 {
+    if let Some(timer) = timers.get_mut(source) {
+        if gsmtc_dur_ms > 0 {
+            timer.known_duration_ms = gsmtc_dur_ms;
+            return gsmtc_dur_ms;
+        }
+        return timer.known_duration_ms;
+    }
+    gsmtc_dur_ms
 }
 
 #[derive(Default)]
@@ -1077,12 +1095,6 @@ fn read_session_snapshot(
     };
 
     let gsmtc_has_timeline = gsmtc_dur_ms > 0 || gsmtc_pos_ms > 0;
-    let duration_ms = if gsmtc_dur_ms > 0 {
-        gsmtc_dur_ms
-    } else {
-        resolve_fallback_duration_ms(duration_lookup, tx, &title, &artist)
-    };
-
     let raw_position_ms = update_fallback_timer(
         fallback_timers,
         &source,
@@ -1092,6 +1104,12 @@ fn read_session_snapshot(
         now_ms,
         gsmtc_has_timeline.then_some(gsmtc_pos_ms),
     );
+    let remembered_dur_ms = sync_fallback_duration(fallback_timers, &source, gsmtc_dur_ms);
+    let duration_ms = if remembered_dur_ms > 0 {
+        remembered_dur_ms
+    } else {
+        resolve_fallback_duration_ms(duration_lookup, tx, &title, &artist)
+    };
     let position_ms = if duration_ms > 0 {
         raw_position_ms.min(duration_ms)
     } else {
@@ -1918,8 +1936,8 @@ mod tests {
     use super::{
         clean_media_title, compute_timeline_ms, extract_ambient_color,
         extract_matching_youtube_duration_ms, format_source_name, parse_duration_text,
-        snapshots_differ, update_fallback_timer, MediaSnapshot, PlaybackStatus,
-        TrackFallbackTimer,
+        snapshots_differ, sync_fallback_duration, update_fallback_timer, MediaSnapshot,
+        PlaybackStatus, TrackFallbackTimer,
     };
     use image::{Rgb, RgbImage};
     use std::collections::HashMap;
@@ -2060,6 +2078,70 @@ mod tests {
             ),
             0
         );
+    }
+
+    #[test]
+    fn remembers_duration_across_pause_resume_and_resets_on_track_change() {
+        let mut timers: HashMap<String, TrackFallbackTimer> = HashMap::new();
+        // Track starts with real GSMTC timeline (pos=5s, dur=3:40)
+        assert_eq!(
+            update_fallback_timer(
+                &mut timers,
+                "Firefox",
+                "The Weeknd - Trust Issues",
+                "_tony1",
+                PlaybackStatus::Playing,
+                1_000,
+                Some(5_000),
+            ),
+            5_000
+        );
+        assert_eq!(sync_fallback_duration(&mut timers, "Firefox", 220_000), 220_000);
+
+        // Pause -> Firefox clears GSMTC timeline (pos=0, dur=0 -> None / 0)
+        assert_eq!(
+            update_fallback_timer(
+                &mut timers,
+                "Firefox",
+                "The Weeknd - Trust Issues",
+                "_tony1",
+                PlaybackStatus::Paused,
+                38_000,
+                None,
+            ),
+            42_000
+        );
+        assert_eq!(sync_fallback_duration(&mut timers, "Firefox", 0), 220_000);
+
+        // Resume -> still empty GSMTC timeline, duration stays remembered and position resumes
+        assert_eq!(
+            update_fallback_timer(
+                &mut timers,
+                "Firefox",
+                "The Weeknd - Trust Issues",
+                "_tony1",
+                PlaybackStatus::Playing,
+                50_000,
+                None,
+            ),
+            42_000
+        );
+        assert_eq!(sync_fallback_duration(&mut timers, "Firefox", 0), 220_000);
+
+        // Next track with empty initial timeline resets remembered duration to 0
+        assert_eq!(
+            update_fallback_timer(
+                &mut timers,
+                "Firefox",
+                "Nyt Track",
+                "_tony1",
+                PlaybackStatus::Playing,
+                55_000,
+                None,
+            ),
+            0
+        );
+        assert_eq!(sync_fallback_duration(&mut timers, "Firefox", 0), 0);
     }
 
     #[test]

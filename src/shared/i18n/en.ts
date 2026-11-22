@@ -406,6 +406,9 @@ export const en: Messages = {
     language: "Language",
     gridSnap: "Snap to grid",
     gridSnapHelp: "Aligns widgets to an 8 px grid and each other",
+    widgetLayer: "Widget layer",
+    widgetLayerMixed:
+      "Your widgets use different layers right now – pick one to make it the same for all.",
     performance: "Performance",
     gameOverlay: "Game overlay (fullscreen games)",
     gameOverlayHelp:

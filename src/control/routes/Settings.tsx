@@ -1,9 +1,10 @@
-import { Moon, Sun } from "@phosphor-icons/react";
+import { AppWindow, Desktop, Moon, PushPin, Sun } from "@phosphor-icons/react";
 import { useEffect, useState } from "react";
 import type { ControlTheme } from "../../shared/bindings/ControlTheme";
 import type { CpuSensorStatus } from "../../shared/bindings/CpuSensorStatus";
 import type { DiscordRpcStatus } from "../../shared/bindings/DiscordRpcStatus";
 import type { Language } from "../../shared/bindings/Language";
+import type { Layer } from "../../shared/bindings/Layer";
 import type { UpdateProgress } from "../../shared/bindings/UpdateProgress";
 import type { UpdateStatus } from "../../shared/bindings/UpdateStatus";
 import { getDateTimeFormatter } from "../../shared/format";
@@ -39,6 +40,15 @@ export function Settings() {
   useControlStore((s) => s.locale);
   const config = useControlStore((s) => s.config);
   const appVersion = useControlStore((s) => s.appVersion);
+
+  const widgets = config?.widgets ?? [];
+  const widgetLayer: Layer | null = widgets.at(0)?.layer ?? null;
+  const layersMixed = widgets.some((w) => w.layer !== widgetLayer);
+  const LAYER_HELP: Record<Layer, string> = {
+    desktop: t("layer.desktopHelp"),
+    top: t("layer.topHelp"),
+    normal: t("layer.normalHelp"),
+  };
 
   const [resetConfirmOpen, setResetConfirmOpen] = useState(false);
   const [sensorStatus, setSensorStatus] = useState<CpuSensorStatus | null>(null);
@@ -407,6 +417,46 @@ export function Settings() {
               onChange={(gridSnap) => void ipc.generalPatch({ gridSnap })}
             />
           </SettingRow>
+
+          {widgetLayer !== null && (
+            <SettingRow
+              title={t("settings.widgetLayer")}
+              help={
+                layersMixed
+                  ? t("settings.widgetLayerMixed")
+                  : LAYER_HELP[widgetLayer]
+              }
+              stacked
+            >
+              <Segmented<Layer>
+                value={widgetLayer}
+                ariaLabel={t("settings.widgetLayer")}
+                fullWidth
+                options={[
+                  {
+                    value: "desktop",
+                    label: t("layer.desktop"),
+                    icon: <Desktop size={13} aria-hidden="true" />,
+                  },
+                  {
+                    value: "top",
+                    label: t("layer.top"),
+                    icon: <PushPin size={13} aria-hidden="true" />,
+                  },
+                  {
+                    value: "normal",
+                    label: t("layer.normal"),
+                    icon: <AppWindow size={13} aria-hidden="true" />,
+                  },
+                ]}
+                onChange={(layer) => {
+                  for (const w of widgets) {
+                    if (w.layer !== layer) void ipc.widgetUpdate(w.id, { layer });
+                  }
+                }}
+              />
+            </SettingRow>
+          )}
         </Card>
       </section>
 
