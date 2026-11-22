@@ -27,20 +27,21 @@ use windows::{
 };
 
 use crate::{
-    config::schema::{RectI, SizeF},
+    config::schema::{RectI, SizeF, ThemeId},
     state::AppState,
 };
 
 use super::{
     monitors::{self, MonitorEntry, MonitorInfo, TauriMonitorSnapshot},
     plate::{
-        compose_plate_image, output_dimensions, plate_hash, prune_old_plates,
-        save_jpeg_82, ComposeSpec, LumaGrid, PlateSource, RectPx, WallpaperPosition,
+        compose_glass_plate, compose_plate_image, output_dimensions, plate_hash, prune_old_plates,
+        save_glass_jpeg, save_jpeg_82, theme_glass_params, ComposeSpec, LumaGrid, PlateSource,
+        RectPx, WallpaperPosition,
     },
 };
 
-const DEBOUNCE_MS: u64 = 300;
-const BACKUP_POLL_SECS: u64 = 30;
+const DEBOUNCE_MS: u64 = 180;
+const BACKUP_POLL_SECS: u64 = 120;
 
 enum WallpaperCmd {
     RefreshSync(Sender<()>),
@@ -101,6 +102,8 @@ struct ComposeFingerprint {
     tauri_monitors: Vec<TauriMonitorSnapshot>,
     mtimes: Vec<(String, u128)>,
     live_overrides: Vec<(String, String, u128)>,
+    glass_theme: ThemeId,
+    glass_strength_pct: i32,
 }
 
 pub fn install(app: AppHandle) {
@@ -145,25 +148,26 @@ pub fn shutdown() {
 fn worker_loop(app: AppHandle, rx: mpsc::Receiver<WallpaperCmd>) {
     let _com = ComAptGuard::init();
     let mut last_fingerprint: Option<ComposeFingerprint> = None;
+    let mut desktop_wp: Option<IDesktopWallpaper> = None;
 
     loop {
         match rx.recv_timeout(Duration::from_secs(BACKUP_POLL_SECS)) {
             Ok(WallpaperCmd::Shutdown) | Err(RecvTimeoutError::Disconnected) => break,
             Ok(WallpaperCmd::RefreshSync(done)) => {
-                compose_if_changed(&app, &mut last_fingerprint, true);
+                compose_if_changed(&app, &mut desktop_wp, &mut last_fingerprint, true);
                 let _ = done.send(());
             }
             Ok(WallpaperCmd::RefreshNow) => {
-                compose_if_changed(&app, &mut last_fingerprint, false);
+                compose_if_changed(&app, &mut desktop_wp, &mut last_fingerprint, false);
             }
             Ok(WallpaperCmd::RefreshDebounced) => {
                 if !drain_debounce(&rx) {
                     break;
                 }
-                compose_if_changed(&app, &mut last_fingerprint, false);
+                compose_if_changed(&app, &mut desktop_wp, &mut last_fingerprint, false);
             }
             Err(RecvTimeoutError::Timeout) => {
-                compose_if_changed(&app, &mut last_fingerprint, false);
+                compose_if_changed(&app, &mut desktop_wp, &mut last_fingerprint, false);
             }
         }
     }
@@ -191,6 +195,7 @@ fn drain_debounce(rx: &mpsc::Receiver<WallpaperCmd>) -> bool {
 
 fn compose_if_changed(
     app: &AppHandle,
+    desktop_wp: &mut Option<IDesktopWallpaper>,
     last_fingerprint: &mut Option<ComposeFingerprint>,
     force: bool,
 ) {
@@ -199,9 +204,20 @@ fn compose_if_changed(
         return;
     }
 
-    let snapshot = query_desktop_wallpaper();
-    let live_overrides = app.state::<AppState>().live_plate_overrides.read().clone();
-    let fingerprint = build_fingerprint(&snapshot, &tauri_monitors, &live_overrides);
+    let snapshot = query_desktop_wallpaper(desktop_wp);
+    let state = app.state::<AppState>();
+    let live_overrides = state.live_plate_overrides.read().clone();
+    let appearance = state.config.get().appearance;
+    let glass_theme = appearance.theme_id;
+    let glass_strength = appearance.glass_strength;
+    let glass_strength_pct = (glass_strength * 100.0).round() as i32;
+    let fingerprint = build_fingerprint(
+        &snapshot,
+        &tauri_monitors,
+        &live_overrides,
+        glass_theme,
+        glass_strength_pct,
+    );
     if !force && last_fingerprint.as_ref() == Some(&fingerprint) {
         return;
     }
@@ -214,11 +230,22 @@ fn compose_if_changed(
         }
     };
 
-    let entries = compose_entries(&plates_dir, &snapshot, &tauri_monitors, &live_overrides);
+    let entries = compose_entries(
+        &plates_dir,
+        &snapshot,
+        &tauri_monitors,
+        &live_overrides,
+        glass_theme,
+        glass_strength,
+    );
     let infos: Vec<MonitorInfo> = entries.iter().map(|e| e.info.clone()).collect();
 
+    let geometry_changed = last_fingerprint
+        .as_ref()
+        .map(|prev| prev.tauri_monitors != fingerprint.tauri_monitors)
+        .unwrap_or(true);
+
     let was_empty = {
-        let state = app.state::<AppState>();
         let mut guard = state.monitors.write();
         let empty = guard.is_empty();
         *guard = entries.clone();
@@ -233,8 +260,10 @@ fn compose_if_changed(
     if let Err(error) = app.emit("desktop://monitors", &infos) {
         log::warn!("Kunne ikke sende desktop://monitors: {error}");
     }
-    crate::windows::widget::reposition_all(app.clone());
-    monitors::emit_all_placements(app, &entries);
+    if geometry_changed {
+        crate::windows::widget::reposition_all(app.clone());
+        monitors::emit_all_placements(app, &entries);
+    }
     log::debug!("Tapetplader opdateret for {} skærm(e)", infos.len());
 }
 
@@ -242,6 +271,8 @@ fn build_fingerprint(
     snapshot: &DesktopWallpaperSnapshot,
     tauri_monitors: &[TauriMonitorSnapshot],
     overrides: &HashMap<String, PathBuf>,
+    glass_theme: ThemeId,
+    glass_strength_pct: i32,
 ) -> ComposeFingerprint {
     let mut mtimes = Vec::new();
     for mon in &snapshot.monitors {
@@ -274,6 +305,8 @@ fn build_fingerprint(
         tauri_monitors: tauri_monitors.to_vec(),
         mtimes,
         live_overrides,
+        glass_theme,
+        glass_strength_pct,
     }
 }
 
@@ -282,11 +315,16 @@ fn compose_entries(
     snapshot: &DesktopWallpaperSnapshot,
     tauri_monitors: &[TauriMonitorSnapshot],
     live_overrides: &HashMap<String, PathBuf>,
+    glass_theme: ThemeId,
+    glass_strength: f32,
 ) -> Vec<MonitorEntry> {
     let virtual_bounds = compute_virtual_bounds(tauri_monitors);
     let mut decoded_cache: HashMap<PathBuf, DynamicImage> = HashMap::new();
     let mut keep_names = HashSet::new();
     let mut entries = Vec::with_capacity(tauri_monitors.len());
+    let (blur_logical, sat) = theme_glass_params(glass_theme, glass_strength);
+    let blur_key = (blur_logical * 10.0).round() as u32;
+    let sat_key = (sat * 100.0).round() as u32;
 
     for mon in tauri_monitors {
         let (source, effective_pos) = if let Some(poster) = live_overrides.get(&mon.name).filter(|p| p.is_file()) {
@@ -320,11 +358,20 @@ fn compose_entries(
             snapshot.bg,
         );
         let file_name = format!("plate-{hash}.jpg");
+        let glass_name = format!("plate-glass-{hash}-b{blur_key}-s{sat_key}.jpg");
         keep_names.insert(file_name.clone());
+        keep_names.insert(glass_name.clone());
         let plate_file = plates_dir.join(&file_name);
+        let glass_file = plates_dir.join(&glass_name);
 
-        let luma = if plate_file.exists() {
-            load_luma_from_cached_plate(&plate_file).unwrap_or_else(|| {
+        let scale = mon.scale.max(0.5);
+        let logical_w = mon.rect.width as f64 / scale;
+
+        let (luma, sharp_img) = if plate_file.exists() {
+            if let Some(img) = load_cached_plate_rgb(&plate_file) {
+                let luma = LumaGrid::from_rgb_image(&img);
+                (luma, Some(img))
+            } else {
                 compose_and_save(
                     &plate_file,
                     &source,
@@ -334,7 +381,7 @@ fn compose_entries(
                     virtual_bounds,
                     &mut decoded_cache,
                 )
-            })
+            }
         } else {
             compose_and_save(
                 &plate_file,
@@ -347,7 +394,18 @@ fn compose_entries(
             )
         };
 
-        let scale = mon.scale.max(0.5);
+        if !glass_file.exists() {
+            if let Some(ref sharp) = sharp_img {
+                let glass_img = compose_glass_plate(sharp, logical_w, blur_logical, sat);
+                if let Err(error) = save_glass_jpeg(&glass_img, &glass_file) {
+                    log::error!(
+                        "Kunne ikke gemme forud-sløret glasplade {}: {error}",
+                        glass_file.display()
+                    );
+                }
+            }
+        }
+
         let avg_luma = luma.average();
         entries.push(MonitorEntry {
             info: MonitorInfo {
@@ -356,11 +414,16 @@ fn compose_entries(
                 work_area: mon.work_area,
                 scale,
                 logical_size: SizeF {
-                    width: mon.rect.width as f64 / scale,
+                    width: logical_w,
                     height: mon.rect.height as f64 / scale,
                 },
                 plate_path: if plate_file.exists() {
                     plate_file.to_string_lossy().into_owned()
+                } else {
+                    String::new()
+                },
+                glass_plate_path: if glass_file.exists() {
+                    glass_file.to_string_lossy().into_owned()
                 } else {
                     String::new()
                 },
@@ -383,7 +446,7 @@ fn compose_and_save(
     monitor: RectPx,
     virtual_bounds: RectPx,
     decoded_cache: &mut HashMap<PathBuf, DynamicImage>,
-) -> LumaGrid {
+) -> (LumaGrid, Option<image::RgbImage>) {
     let (ow, oh) = output_dimensions(monitor.width, monitor.height);
     let spec = ComposeSpec {
         monitor,
@@ -415,13 +478,13 @@ fn compose_and_save(
     if let Err(error) = save_jpeg_82(&img, plate_file) {
         log::error!("Kunne ikke gemme tapetplade {}: {error}", plate_file.display());
     }
-    LumaGrid::from_rgb_image(&img)
+    let luma = LumaGrid::from_rgb_image(&img);
+    (luma, Some(img))
 }
 
-fn load_luma_from_cached_plate(path: &Path) -> Option<LumaGrid> {
+fn load_cached_plate_rgb(path: &Path) -> Option<image::RgbImage> {
     let reader = ImageReader::open(path).ok()?.with_guessed_format().ok()?;
-    let img = reader.decode().ok()?.to_rgb8();
-    Some(LumaGrid::from_rgb_image(&img))
+    Some(reader.decode().ok()?.to_rgb8())
 }
 
 fn decode_wallpaper_file(path: &Path) -> Result<DynamicImage, String> {
@@ -517,12 +580,20 @@ fn match_desktop_monitor(
         })
 }
 
-fn query_desktop_wallpaper() -> DesktopWallpaperSnapshot {
+fn query_desktop_wallpaper(cached: &mut Option<IDesktopWallpaper>) -> DesktopWallpaperSnapshot {
     let fallback = DesktopWallpaperSnapshot {
         position: WallpaperPosition::Fill,
         bg: [11, 26, 31],
         monitors: Vec::new(),
     };
+
+    if let Some(dw) = cached.as_ref() {
+        if let Some(snap) = read_desktop_wallpaper_from(dw) {
+            return snap;
+        }
+        // Explorer kan være genstartet; nulstil COM-proxyen og prøv én gang mere.
+        *cached = None;
+    }
 
     let dw: IDesktopWallpaper =
         match unsafe { CoCreateInstance(&DesktopWallpaper, None, CLSCTX_ALL) } {
@@ -533,9 +604,13 @@ fn query_desktop_wallpaper() -> DesktopWallpaperSnapshot {
             }
         };
 
-    let position = unsafe { dw.GetPosition() }
-        .map(map_position)
-        .unwrap_or(WallpaperPosition::Fill);
+    let snap = read_desktop_wallpaper_from(&dw).unwrap_or(fallback);
+    *cached = Some(dw);
+    snap
+}
+
+fn read_desktop_wallpaper_from(dw: &IDesktopWallpaper) -> Option<DesktopWallpaperSnapshot> {
+    let position = unsafe { dw.GetPosition() }.ok().map(map_position)?;
 
     let bg = unsafe { dw.GetBackgroundColor() }
         .map(|c| {
@@ -544,7 +619,7 @@ fn query_desktop_wallpaper() -> DesktopWallpaperSnapshot {
         })
         .unwrap_or([11, 26, 31]);
 
-    let count = unsafe { dw.GetMonitorDevicePathCount() }.unwrap_or(0);
+    let count = unsafe { dw.GetMonitorDevicePathCount() }.ok()?;
     let mut monitors = Vec::new();
 
     for i in 0..count {
@@ -575,11 +650,11 @@ fn query_desktop_wallpaper() -> DesktopWallpaperSnapshot {
         });
     }
 
-    DesktopWallpaperSnapshot {
+    Some(DesktopWallpaperSnapshot {
         position,
         bg,
         monitors,
-    }
+    })
 }
 
 fn rect_to_rect_i(r: RECT) -> RectI {

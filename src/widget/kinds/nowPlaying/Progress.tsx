@@ -45,7 +45,7 @@ export function Progress({
   anchorUpdatedAt,
   durationMs,
   playing,
-  trackKey,
+  trackKey: _trackKey,
   height = 2.5,
   interactive = false,
   disabledHint,
@@ -92,7 +92,6 @@ export function Progress({
     "--rest": `${remaining}ms`,
   };
 
-  const animKey = `${trackKey}:${basePos}:${anchorUpdatedAt ?? 0}:${durationMs}:${playing ? 1 : 0}`;
   const isAnimating = playing && dragPct === null;
 
   const handlePointerDown = (event: PointerEvent<HTMLDivElement>) => {
@@ -170,7 +169,7 @@ export function Progress({
       style={barStyle}
     >
       {durationMs > 0 && (
-        <i key={animKey} className={isAnimating ? "is-playing" : undefined} />
+        <i className={isAnimating ? "is-playing" : undefined} />
       )}
       {canSeek && durationMs > 0 && (
         <span

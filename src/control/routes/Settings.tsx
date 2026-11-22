@@ -1,5 +1,5 @@
-import { Check, Copy, Moon, Sun } from "@phosphor-icons/react";
-import { useEffect, useRef, useState } from "react";
+import { Moon, Sun } from "@phosphor-icons/react";
+import { useEffect, useState } from "react";
 import type { ControlTheme } from "../../shared/bindings/ControlTheme";
 import type { CpuSensorStatus } from "../../shared/bindings/CpuSensorStatus";
 import type { DiscordRpcStatus } from "../../shared/bindings/DiscordRpcStatus";
@@ -35,13 +35,8 @@ export function Settings() {
   const [sensorError, setSensorError] = useState<string | null>(null);
 
   const [discordStatus, setDiscordStatus] = useState<DiscordRpcStatus | null>(null);
-  const [discordFormOpen, setDiscordFormOpen] = useState(false);
-  const [discordClientId, setDiscordClientId] = useState("");
-  const [discordClientSecret, setDiscordClientSecret] = useState("");
   const [discordBusy, setDiscordBusy] = useState<"connect" | "disconnect" | null>(null);
   const [discordError, setDiscordError] = useState<string | null>(null);
-  const [redirectCopied, setRedirectCopied] = useState(false);
-  const copiedTimerRef = useRef<number | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -59,7 +54,6 @@ export function Settings() {
       .then((st) => {
         if (cancelled) return;
         setDiscordStatus(st);
-        if (st.clientId) setDiscordClientId(st.clientId);
       })
       .catch(() => {});
 
@@ -68,9 +62,6 @@ export function Settings() {
       .discordRpcStatus((st) => {
         if (cancelled) return;
         setDiscordStatus(st);
-        if (st.clientId) {
-          setDiscordClientId((prev) => prev || st.clientId || "");
-        }
       })
       .then((fn) => {
         if (cancelled) {
@@ -83,9 +74,6 @@ export function Settings() {
     return () => {
       cancelled = true;
       unlisten?.();
-      if (copiedTimerRef.current !== null) {
-        window.clearTimeout(copiedTimerRef.current);
-      }
     };
   }, []);
 
@@ -128,28 +116,6 @@ export function Settings() {
     try {
       const next = await ipc.discordRpcConnectCentral();
       setDiscordStatus(next);
-      setDiscordFormOpen(false);
-    } catch (err) {
-      setDiscordError(formatError(err));
-    } finally {
-      setDiscordBusy(null);
-    }
-  };
-
-  const handleDiscordConnect = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!discordClientId.trim() || discordBusy !== null) return;
-    setDiscordBusy("connect");
-    setDiscordError(null);
-    try {
-      const next = await ipc.discordRpcConnect(
-        discordClientId.trim(),
-        discordClientSecret.trim(),
-        discordStatus?.redirectUri || "http://127.0.0.1",
-      );
-      setDiscordStatus(next);
-      setDiscordClientSecret("");
-      setDiscordFormOpen(false);
     } catch (err) {
       setDiscordError(formatError(err));
     } finally {
@@ -164,27 +130,11 @@ export function Settings() {
     try {
       const next = await ipc.discordRpcDisconnect();
       setDiscordStatus(next);
-      setDiscordClientId("");
-      setDiscordClientSecret("");
-      setDiscordFormOpen(false);
     } catch (err) {
       setDiscordError(formatError(err));
     } finally {
       setDiscordBusy(null);
     }
-  };
-
-  const handleCopyRedirect = () => {
-    const uri = discordStatus?.redirectUri || "http://127.0.0.1";
-    void navigator.clipboard?.writeText(uri).catch(() => {});
-    setRedirectCopied(true);
-    if (copiedTimerRef.current !== null) {
-      window.clearTimeout(copiedTimerRef.current);
-    }
-    copiedTimerRef.current = window.setTimeout(() => {
-      copiedTimerRef.current = null;
-      setRedirectCopied(false);
-    }, 1500);
   };
 
   const sensorTone: "live" | "warn" | "muted" = !sensorStatus
@@ -435,28 +385,11 @@ export function Settings() {
                   <Button
                     variant="secondary"
                     disabled={discordBusy !== null}
-                    onClick={() => {
-                      if (discordStatus.viaCentral) {
-                        void handleDiscordConnectCentral();
-                      } else {
-                        setDiscordFormOpen((prev) => !prev);
-                      }
-                    }}
+                    onClick={() => void handleDiscordConnectCentral()}
                   >
                     {discordBusy === "connect"
                       ? t("discord.rpcConnecting")
                       : t("discord.rpcReconnect")}
-                  </Button>
-                  <Button
-                    variant="secondary"
-                    disabled={discordBusy !== null}
-                    onClick={() => setDiscordFormOpen((prev) => !prev)}
-                  >
-                    {discordFormOpen
-                      ? t("discord.rpcHideCustomApp")
-                      : discordStatus.viaCentral
-                        ? t("discord.rpcUseCustomApp")
-                        : t("discord.rpcEdit")}
                   </Button>
                   <Button
                     variant="secondary"
@@ -467,99 +400,18 @@ export function Settings() {
                   </Button>
                 </>
               ) : (
-                <>
-                  <Button
-                    variant="primary"
-                    disabled={discordBusy !== null}
-                    onClick={() => void handleDiscordConnectCentral()}
-                  >
-                    {discordBusy === "connect"
-                      ? t("discord.rpcConnecting")
-                      : t("discord.rpcConnect")}
-                  </Button>
-                  <Button
-                    variant="secondary"
-                    disabled={discordBusy !== null}
-                    onClick={() => setDiscordFormOpen((prev) => !prev)}
-                  >
-                    {discordFormOpen
-                      ? t("discord.rpcHideCustomApp")
-                      : t("discord.rpcUseCustomApp")}
-                  </Button>
-                </>
-              )}
-            </div>
-          </SettingRow>
-
-          {discordFormOpen && (
-            <form className="cc-discord-setup" onSubmit={(e) => void handleDiscordConnect(e)}>
-              <div className="cc-discord-guide">
-                <span>{t("discord.rpcGuideStep1")}</span>
-                <div className="cc-discord-redirect-row">
-                  <span>{t("discord.rpcGuideStep2")}</span>
-                  <code className="cc-discord-uri">
-                    {discordStatus?.redirectUri || "http://127.0.0.1"}
-                  </code>
-                  <button
-                    type="button"
-                    className="cc-discord-copy"
-                    onClick={handleCopyRedirect}
-                  >
-                    {redirectCopied ? <Check size={12} /> : <Copy size={12} />}
-                    <span>{redirectCopied ? t("discord.rpcCopied") : t("discord.rpcCopy")}</span>
-                  </button>
-                </div>
-                <span>{t("discord.rpcGuideStep3")}</span>
-              </div>
-
-              <div className="cc-discord-fields">
-                <label className="cc-discord-field">
-                  <span className="cc-field-label">{t("discord.rpcClientId")}</span>
-                  <input
-                    type="text"
-                    className="cc-input"
-                    value={discordClientId}
-                    onChange={(e) => setDiscordClientId(e.target.value)}
-                    placeholder="1234567890123456789"
-                    autoComplete="off"
-                    disabled={discordBusy !== null}
-                  />
-                </label>
-                <label className="cc-discord-field">
-                  <span className="cc-field-label">{t("discord.rpcClientSecret")}</span>
-                  <input
-                    type="password"
-                    className="cc-input"
-                    value={discordClientSecret}
-                    onChange={(e) => setDiscordClientSecret(e.target.value)}
-                    placeholder={
-                      discordStatus?.hasSecret ? t("discord.rpcClientSecretSaved") : "••••••••"
-                    }
-                    autoComplete="off"
-                    disabled={discordBusy !== null}
-                  />
-                </label>
-              </div>
-
-              <div className="cc-discord-actions">
                 <Button
-                  type="submit"
                   variant="primary"
-                  disabled={
-                    discordBusy !== null ||
-                    !discordClientId.trim() ||
-                    (!discordClientSecret.trim() && !discordStatus?.hasSecret)
-                  }
+                  disabled={discordBusy !== null}
+                  onClick={() => void handleDiscordConnectCentral()}
                 >
                   {discordBusy === "connect"
                     ? t("discord.rpcConnecting")
-                    : discordStatus?.configured
-                      ? t("discord.rpcReconnect")
-                      : t("discord.rpcConnect")}
+                    : t("discord.rpcConnect")}
                 </Button>
-              </div>
-            </form>
-          )}
+              )}
+            </div>
+          </SettingRow>
 
           {(discordError || discordStatus?.lastError) && (
             <div className="cc-sensor-error" role="alert">

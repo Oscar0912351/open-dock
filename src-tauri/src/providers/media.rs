@@ -10,7 +10,7 @@ use std::{
 use image::{imageops::FilterType, RgbImage};
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Emitter, Manager};
+use tauri::{AppHandle, Manager};
 use ts_rs::TS;
 use windows::{
     core::PCWSTR,
@@ -236,7 +236,13 @@ impl MediaProvider {
         };
 
         if let Some(snap) = optimistic {
-            let _ = app.emit("provider://media", &snap);
+            super::scheduler::emit_provider(
+                app,
+                super::scheduler::ProviderKind::Media,
+                None,
+                "provider://media",
+                &snap,
+            );
         }
 
         if let Some(worker) = self.runtime.lock().as_ref() {
@@ -654,9 +660,12 @@ fn run_media_thread(
 fn emit_snapshot(app: &AppHandle, snapshot: &MediaSnapshot) {
     if let Some(scheduler) = app.try_state::<super::scheduler::Scheduler>() {
         scheduler.media().update_latest(snapshot.clone());
-    }
-    if let Err(err) = app.emit("provider://media", snapshot) {
-        log::warn!(target: "provider:media", "Kunne ikke emitte provider://media: {err}");
+        scheduler.emit_to_subscribers(
+            super::scheduler::ProviderKind::Media,
+            None,
+            "provider://media",
+            snapshot,
+        );
     }
 }
 

@@ -22,9 +22,9 @@ use windows::{
         System::LibraryLoader::GetModuleHandleW,
         UI::WindowsAndMessaging::{
             CreateWindowExW, DefWindowProcW, DestroyWindow, IsWindow, PostMessageW,
-            RegisterClassExW, RegisterWindowMessageW, SPI_SETDESKWALLPAPER, WM_CLOSE,
-            WM_DISPLAYCHANGE, WM_DPICHANGED, WM_SETTINGCHANGE, WNDCLASSEXW, WS_EX_NOACTIVATE,
-            WS_EX_TOOLWINDOW, WS_OVERLAPPED,
+            RegisterClassExW, RegisterWindowMessageW, SPI_SETDESKWALLPAPER, SPI_SETWORKAREA,
+            WM_CLOSE, WM_DISPLAYCHANGE, WM_DPICHANGED, WM_SETTINGCHANGE, WNDCLASSEXW,
+            WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_OVERLAPPED,
         },
     },
 };
@@ -149,6 +149,9 @@ unsafe extern "system" fn watcher_proc(
             if let Some(app) = app_handle() {
                 crate::wallpaper::notify_wallpaper_changed(app);
             }
+        } else if wp.0 == SPI_SETWORKAREA.0 as usize {
+            log::debug!("Arbejdsområde ændret; opdaterer skærme og placering");
+            wallpaper::trigger_refresh_debounced();
         }
     } else if msg == WM_DISPLAYCHANGE || msg == WM_DPICHANGED {
         log::debug!("Skærm- eller DPI-ændring modtaget; opdaterer plader og placering");

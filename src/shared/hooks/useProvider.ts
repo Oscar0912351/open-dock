@@ -26,6 +26,122 @@ export interface ProviderResult<T> {
 
 const LOADING_REVEAL_MS = 300;
 
+interface ChannelState {
+  data: unknown | null;
+  failed: boolean;
+}
+
+interface SharedChannel {
+  kind: ProviderKind;
+  key: string | null;
+  state: ChannelState;
+  listeners: Set<(next: ChannelState) => void>;
+  unlisten?: () => void;
+  subscribed: boolean;
+  receivedEvent: boolean;
+  disposed: boolean;
+}
+
+const channels = new Map<string, SharedChannel>();
+
+function openEventListener(
+  kind: ProviderKind,
+  normalizedKey: string | null,
+  onPayload: (payload: unknown, failed?: boolean) => void,
+): Promise<() => void> {
+  if (kind === "media") {
+    return on.media((payload) => onPayload(payload));
+  }
+  if (kind === "system") {
+    return on.system((payload) => onPayload(payload));
+  }
+  if (kind === "weather") {
+    return on.weather((payload) => {
+      if (normalizedKey && payload.locationId !== normalizedKey) return;
+      onPayload(payload, Boolean(payload.error && !payload.current));
+    });
+  }
+  if (kind === "discord") {
+    return on.discord((payload) => onPayload(payload));
+  }
+  return on.agents((payload) => onPayload(payload));
+}
+
+function retainChannel(
+  subId: string,
+  kind: ProviderKind,
+  normalizedKey: string | null,
+  listener: (next: ChannelState) => void,
+): { initial: ChannelState; release: () => void } {
+  let ch = channels.get(subId);
+  if (!ch) {
+    ch = {
+      kind,
+      key: normalizedKey,
+      state: { data: null, failed: false },
+      listeners: new Set(),
+      subscribed: false,
+      receivedEvent: false,
+      disposed: false,
+    };
+    channels.set(subId, ch);
+
+    const channel = ch;
+    const notify = (next: ChannelState) => {
+      if (channel.disposed) return;
+      channel.state = next;
+      for (const cb of channel.listeners) {
+        cb(next);
+      }
+    };
+
+    void (async () => {
+      try {
+        const dispose = await openEventListener(kind, normalizedKey, (payload, failed = false) => {
+          channel.receivedEvent = true;
+          notify({ data: payload, failed });
+        });
+        if (channel.disposed) {
+          dispose();
+          return;
+        }
+        channel.unlisten = dispose;
+
+        const snapshot = await ipc.providerSubscribe(kind, normalizedKey);
+        channel.subscribed = true;
+        if (channel.disposed) {
+          void ipc.providerUnsubscribe(kind, normalizedKey).catch(() => {});
+          return;
+        }
+        if (snapshot && !channel.receivedEvent) {
+          notify({ data: snapshot, failed: false });
+        }
+      } catch (reason: unknown) {
+        if (channel.disposed) return;
+        notify({ data: null, failed: true });
+        void reportError(`useProvider (${kind}): ${String(reason)}`);
+      }
+    })();
+  }
+
+  ch.listeners.add(listener);
+  const retained = ch;
+  return {
+    initial: retained.state,
+    release: () => {
+      retained.listeners.delete(listener);
+      if (retained.listeners.size === 0 && !retained.disposed) {
+        retained.disposed = true;
+        channels.delete(subId);
+        retained.unlisten?.();
+        if (retained.subscribed) {
+          void ipc.providerUnsubscribe(retained.kind, retained.key).catch(() => {});
+        }
+      }
+    },
+  };
+}
+
 function deriveStatus<K extends ProviderKind>(
   kind: K,
   data: ProviderDataMap[K] | null,
@@ -66,7 +182,15 @@ export function useProvider<K extends ProviderKind>(
     data: ProviderDataMap[K] | null;
     failed: boolean;
     showSkeleton: boolean;
-  }>({ subId: null, data: null, failed: false, showSkeleton: false });
+  }>(() => {
+    const existing = subId ? channels.get(subId)?.state : undefined;
+    return {
+      subId,
+      data: (existing?.data as ProviderDataMap[K] | null) ?? null,
+      failed: existing?.failed ?? false,
+      showSkeleton: false,
+    };
+  });
 
   useEffect(() => {
     if (!subId) {
@@ -74,9 +198,6 @@ export function useProvider<K extends ProviderKind>(
     }
 
     let active = true;
-    let unlisten: (() => void) | undefined;
-    let subscribed = false;
-    let receivedEvent = false;
     const skeletonTimer = window.setTimeout(() => {
       if (active) {
         setState((prev) =>
@@ -87,79 +208,29 @@ export function useProvider<K extends ProviderKind>(
       }
     }, LOADING_REVEAL_MS);
 
-    const applyData = (payload: ProviderDataMap[K], failed = false) => {
+    const { initial, release } = retainChannel(subId, kind, normalizedKey, (next) => {
       if (!active) return;
-      receivedEvent = true;
-      setState({ subId, data: payload, failed, showSkeleton: false });
-    };
-
-    const subscribeEvent = () => {
-      if (kind === "media") {
-        return on.media((payload) => {
-          applyData(payload as ProviderDataMap[K]);
-        });
-      }
-      if (kind === "system") {
-        return on.system((payload) => {
-          applyData(payload as ProviderDataMap[K]);
-        });
-      }
-      if (kind === "weather") {
-        return on.weather((payload) => {
-          if (normalizedKey && payload.locationId !== normalizedKey) return;
-          applyData(
-            payload as ProviderDataMap[K],
-            Boolean(payload.error && !payload.current),
-          );
-        });
-      }
-      if (kind === "discord") {
-        return on.discord((payload) => {
-          applyData(payload as ProviderDataMap[K]);
-        });
-      }
-      return on.agents((payload) => {
-        applyData(payload as ProviderDataMap[K]);
+      setState({
+        subId,
+        data: next.data as ProviderDataMap[K] | null,
+        failed: next.failed,
+        showSkeleton: false,
       });
-    };
+    });
 
-    void (async () => {
-      try {
-        const dispose = await subscribeEvent();
-        if (!active) {
-          dispose();
-          return;
-        }
-        unlisten = dispose;
-
-        const snapshot = await ipc.providerSubscribe(kind, normalizedKey);
-        subscribed = true;
-        if (!active) {
-          void ipc.providerUnsubscribe(kind, normalizedKey).catch(() => {});
-          return;
-        }
-        if (snapshot && !receivedEvent) {
-          setState({
-            subId,
-            data: snapshot as ProviderDataMap[K],
-            failed: false,
-            showSkeleton: false,
-          });
-        }
-      } catch (reason: unknown) {
-        if (!active) return;
-        setState({ subId, data: null, failed: true, showSkeleton: false });
-        void reportError(`useProvider (${kind}): ${String(reason)}`);
-      }
-    })();
+    if (initial.data !== null || initial.failed) {
+      setState({
+        subId,
+        data: initial.data as ProviderDataMap[K] | null,
+        failed: initial.failed,
+        showSkeleton: false,
+      });
+    }
 
     return () => {
       active = false;
       window.clearTimeout(skeletonTimer);
-      unlisten?.();
-      if (subscribed) {
-        void ipc.providerUnsubscribe(kind, normalizedKey).catch(() => {});
-      }
+      release();
     };
   }, [kind, normalizedKey, subId]);
 

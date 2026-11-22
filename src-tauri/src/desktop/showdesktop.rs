@@ -176,10 +176,7 @@ pub fn foreground_is_borderless_fullscreen() -> bool {
         return false;
     }
     let work = info.rcWork;
-    if work != mon && rect == work {
-        return false;
-    }
-    true
+    !(work != mon && rect == work)
 }
 
 fn is_shell_or_system_window(hwnd: HWND) -> bool {
@@ -276,6 +273,7 @@ unsafe extern "system" fn on_foreground(
     if !is_desktop_host(hwnd) {
         FOREGROUND_GENERATION.fetch_add(1, Ordering::AcqRel);
         zorder::set_show_desktop(false);
+        crate::wallpaper::engine::mark_occlusion_dirty();
         super::fullscreen::trigger_check();
         if zorder::game_overlay() {
             let _ = thread::Builder::new()
@@ -290,6 +288,7 @@ unsafe extern "system" fn on_foreground(
         return;
     }
 
+    crate::wallpaper::engine::mark_occlusion_dirty();
     super::fullscreen::trigger_check();
 
     let generation = FOREGROUND_GENERATION.fetch_add(1, Ordering::AcqRel) + 1;

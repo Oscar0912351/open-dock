@@ -73,7 +73,9 @@ pub fn open(app: &AppHandle, route: Option<String>) -> Result<(), AppError> {
         .map(|state| state.config.get().general.control_theme)
         .unwrap_or(ControlTheme::Dark);
 
-    let control = WebviewWindowBuilder::new(app, "control", WebviewUrl::App(path.into()))
+    let control = crate::windows::apply_webview_defaults(
+        WebviewWindowBuilder::new(app, "control", WebviewUrl::App(path.into())),
+    )
         .title("Open Dock")
         .inner_size(1120.0, 720.0)
         .min_inner_size(960.0, 620.0)

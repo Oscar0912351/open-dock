@@ -21,7 +21,7 @@
   stroke: var(--accent);
   animation: od-ring 1100ms var(--e-out) both;
   animation-delay: calc(var(--t0, 0ms) + 300ms);
-  transition: stroke-dasharray 600ms var(--e-out), stroke 220ms var(--e-soft);
+  transition: stroke 180ms var(--e-soft);
 }
 .ring .r-fill.r-countdown {
   animation: none;
@@ -33,7 +33,6 @@
 .ring .r-knob {
   fill: #fff;
   display: none;
-  transition: cx 600ms var(--e-out), cy 600ms var(--e-out);
 }
 .theme-laerk .ring .r-knob {
   display: block;

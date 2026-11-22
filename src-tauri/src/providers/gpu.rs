@@ -55,7 +55,7 @@ pub struct GpuTickData {
 
 pub struct HardwareSampler {
     query: Option<PDH_HQUERY>,
-    c_cpu_info: Option<PDH_HCOUNTER>,
+    c_cpu_total: Option<PDH_HCOUNTER>,
     c_cpu_fallback: Option<PDH_HCOUNTER>,
     c_gpu_engine: Option<PDH_HCOUNTER>,
     c_vram: Option<PDH_HCOUNTER>,
@@ -95,74 +95,6 @@ impl HardwareSampler {
     pub fn new() -> Self {
         let (mut gpu_name, mut vram_total_bytes, gpu_luid, gpu_vendor_id) = detect_dxgi_adapter();
         let battery = detect_battery();
-
-        let mut query = PDH_HQUERY::default();
-        let open_status = unsafe { PdhOpenQueryW(PCWSTR::null(), 0, &mut query) };
-
-        let (
-            query_opt,
-            c_cpu_info,
-            c_cpu_fallback,
-            c_gpu_engine,
-            c_vram,
-            c_disk_read,
-            c_disk_write,
-            c_cpu_perf,
-            baseline_collected,
-        ) = if open_status == ERROR_SUCCESS.0 {
-            let c_cpu_info = add_counter(
-                query,
-                w!("\\Processor Information(*)\\% Processor Time"),
-                "CPU Information",
-            );
-            let c_cpu_fallback = add_counter(
-                query,
-                w!("\\Processor(_Total)\\% Processor Time"),
-                "CPU Fallback",
-            );
-            let c_gpu_engine = add_counter(
-                query,
-                w!("\\GPU Engine(*)\\Utilization Percentage"),
-                "GPU Engine",
-            );
-            let c_vram = add_counter(
-                query,
-                w!("\\GPU Adapter Memory(*)\\Dedicated Usage"),
-                "GPU VRAM",
-            );
-            let c_disk_read = add_counter(
-                query,
-                w!("\\PhysicalDisk(_Total)\\Disk Read Bytes/sec"),
-                "Disk read",
-            );
-            let c_disk_write = add_counter(
-                query,
-                w!("\\PhysicalDisk(_Total)\\Disk Write Bytes/sec"),
-                "Disk write",
-            );
-            let c_cpu_perf = add_counter(
-                query,
-                w!("\\Processor Information(_Total)\\% Processor Performance"),
-                "CPU Perf",
-            );
-
-            let baseline_collected = unsafe { PdhCollectQueryData(query) } == ERROR_SUCCESS.0;
-
-            (
-                Some(query),
-                c_cpu_info,
-                c_cpu_fallback,
-                c_gpu_engine,
-                c_vram,
-                c_disk_read,
-                c_disk_write,
-                c_cpu_perf,
-                baseline_collected,
-            )
-        } else {
-            log::warn!(target: "provider:system", "PdhOpenQueryW fejlede med kode 0x{open_status:08x}");
-            (None, None, None, None, None, None, None, None, false)
-        };
 
         let use_nvidia = gpu_vendor_id.is_none() || gpu_vendor_id == Some(NVIDIA_VENDOR_ID);
 
@@ -206,6 +138,87 @@ impl HardwareSampler {
         #[cfg(not(feature = "nvidia"))]
         let has_nvml = false;
 
+        let mut query = PDH_HQUERY::default();
+        let open_status = unsafe { PdhOpenQueryW(PCWSTR::null(), 0, &mut query) };
+
+        let (
+            query_opt,
+            c_cpu_total,
+            c_cpu_fallback,
+            c_gpu_engine,
+            c_vram,
+            c_disk_read,
+            c_disk_write,
+            c_cpu_perf,
+            baseline_collected,
+        ) = if open_status == ERROR_SUCCESS.0 {
+            let c_cpu_total = add_counter(
+                query,
+                w!("\\Processor Information(_Total)\\% Processor Time"),
+                "CPU Total",
+            );
+            let c_cpu_fallback = if c_cpu_total.is_none() {
+                add_counter(
+                    query,
+                    w!("\\Processor(_Total)\\% Processor Time"),
+                    "CPU Fallback",
+                )
+            } else {
+                None
+            };
+            // Når NVML er tilgængelig bruger vi direkte NVML i stedet for PDH's tunge 1000-instans GPU wildcard.
+            let c_gpu_engine = if !has_nvml {
+                add_counter(
+                    query,
+                    w!("\\GPU Engine(*)\\Utilization Percentage"),
+                    "GPU Engine",
+                )
+            } else {
+                None
+            };
+            let c_vram = if !has_nvml {
+                add_counter(
+                    query,
+                    w!("\\GPU Adapter Memory(*)\\Dedicated Usage"),
+                    "GPU VRAM",
+                )
+            } else {
+                None
+            };
+            let c_disk_read = add_counter(
+                query,
+                w!("\\PhysicalDisk(_Total)\\Disk Read Bytes/sec"),
+                "Disk read",
+            );
+            let c_disk_write = add_counter(
+                query,
+                w!("\\PhysicalDisk(_Total)\\Disk Write Bytes/sec"),
+                "Disk write",
+            );
+            let c_cpu_perf = add_counter(
+                query,
+                w!("\\Processor Information(_Total)\\% Processor Performance"),
+                "CPU Perf",
+            );
+
+            let baseline_collected = unsafe { PdhCollectQueryData(query) } == ERROR_SUCCESS.0;
+
+            (
+                Some(query),
+                c_cpu_total,
+                c_cpu_fallback,
+                c_gpu_engine,
+                c_vram,
+                c_disk_read,
+                c_disk_write,
+                c_cpu_perf,
+                baseline_collected,
+            )
+        } else {
+            log::warn!(target: "provider:system", "PdhOpenQueryW fejlede med kode 0x{open_status:08x}");
+            (None, None, None, None, None, None, None, None, false)
+        };
+
         let caps = SystemCaps {
             gpu: c_gpu_engine.is_some() || has_nvml,
             vram: (c_vram.is_some() && vram_total_bytes.is_some())
@@ -218,7 +231,7 @@ impl HardwareSampler {
 
         Self {
             query: query_opt,
-            c_cpu_info,
+            c_cpu_total,
             c_cpu_fallback,
             c_gpu_engine,
             c_vram,
@@ -232,7 +245,11 @@ impl HardwareSampler {
             #[cfg(feature = "nvidia")]
             nvml,
             caps,
-            array_buf: Vec::with_capacity(4 * 1024),
+            array_buf: if has_nvml {
+                Vec::new()
+            } else {
+                Vec::with_capacity(4 * 1024)
+            },
         }
     }
 
@@ -249,13 +266,10 @@ impl HardwareSampler {
                 if !self.baseline_collected {
                     self.baseline_collected = true;
                 } else {
-                    if let Some(counter) = self.c_cpu_info {
-                        if let Some(raw_items) = read_counter_array_items(counter, &mut self.array_buf)
-                        {
-                            let (global, per_core) = parse_processor_info_samples(&raw_items);
-                            out.cpu_usage = global;
-                            out.cpu_per_core = per_core;
-                        }
+                    if let Some(counter) = self.c_cpu_total {
+                        out.cpu_usage = sample_scalar_counter(counter)
+                            .filter(|v| v.is_finite() && *v >= 0.0)
+                            .map(|v| (v as f32).clamp(0.0, 100.0));
                     }
                     if out.cpu_usage.is_none() {
                         if let Some(counter) = self.c_cpu_fallback {
@@ -265,14 +279,17 @@ impl HardwareSampler {
                         }
                     }
                     if let Some(counter) = self.c_gpu_engine {
-                        if let Some(raw_items) = read_counter_array_items(counter, &mut self.array_buf)
+                        if let Some(raw_items) =
+                            read_counter_array_items(counter, &mut self.array_buf, true)
                         {
                             out.usage =
-                                aggregate_gpu_engine_usage(&raw_items, self.gpu_luid.as_deref());
+                                aggregate_gpu_engine_usage(&raw_items, self.gpu_luid.as_deref())
+                                    .or(Some(0.0));
                         }
                     }
                     if let Some(counter) = self.c_vram {
-                        if let Some(raw_items) = read_counter_array_items(counter, &mut self.array_buf)
+                        if let Some(raw_items) =
+                            read_counter_array_items(counter, &mut self.array_buf, true)
                         {
                             out.vram_used_bytes =
                                 aggregate_vram_used(&raw_items, self.gpu_luid.as_deref());
@@ -350,6 +367,7 @@ fn sample_scalar_counter(counter: PDH_HCOUNTER) -> Option<f64> {
 fn read_counter_array_items(
     counter: PDH_HCOUNTER,
     buf: &mut Vec<u64>,
+    skip_zero: bool,
 ) -> Option<Vec<(String, f64)>> {
     let mut buffer_size: u32 = 0;
     let mut item_count: u32 = 0;
@@ -386,13 +404,13 @@ fn read_counter_array_items(
     }
 
     let items = unsafe { std::slice::from_raw_parts(ptr, item_count as usize) };
-    let mut out = Vec::with_capacity(items.len());
+    let mut out = Vec::with_capacity(if skip_zero { 16 } else { items.len() });
     for item in items {
         if (item.FmtValue.CStatus & PDH_CSTATUS_ERROR_MASK) != 0 {
             continue;
         }
         let value = unsafe { item.FmtValue.Anonymous.doubleValue };
-        if !value.is_finite() {
+        if !value.is_finite() || (skip_zero && value <= 0.0) {
             continue;
         }
         let name = unsafe { item.szName.to_string().unwrap_or_default() };

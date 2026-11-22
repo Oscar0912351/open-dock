@@ -9,7 +9,7 @@ use std::{
 use parking_lot::Mutex;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Emitter, Manager, async_runtime::JoinHandle};
+use tauri::{async_runtime::JoinHandle, AppHandle, Manager};
 use tokio::sync::Notify;
 use ts_rs::TS;
 use uuid::Uuid;
@@ -144,7 +144,13 @@ impl WeatherProvider {
             self.snapshots
                 .lock()
                 .insert(location_id.to_string(), cached.clone());
-            let _ = app.emit("provider://weather", &cached);
+            super::scheduler::emit_provider(
+                app,
+                super::scheduler::ProviderKind::Weather,
+                Some(location_id),
+                "provider://weather",
+                &cached,
+            );
         }
 
         let app_handle = app.clone();
@@ -317,9 +323,13 @@ async fn fetch_and_emit(
     snapshots
         .lock()
         .insert(location_id.to_string(), snapshot.clone());
-    if let Err(err) = app.emit("provider://weather", &snapshot) {
-        log::warn!(target: "provider:weather", "Kunne ikke emitte provider://weather: {err}");
-    }
+    super::scheduler::emit_provider(
+        app,
+        super::scheduler::ProviderKind::Weather,
+        Some(location_id),
+        "provider://weather",
+        &snapshot,
+    );
     Ok(())
 }
 
@@ -347,7 +357,13 @@ fn emit_error_or_stale(
             err_snap
         }
     };
-    let _ = app.emit("provider://weather", &payload);
+    super::scheduler::emit_provider(
+        app,
+        super::scheduler::ProviderKind::Weather,
+        Some(location_id),
+        "provider://weather",
+        &payload,
+    );
 }
 
 fn error_snapshot(location_id: &str, code: String) -> WeatherSnapshot {

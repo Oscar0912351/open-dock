@@ -1,11 +1,11 @@
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     sync::atomic::{AtomicBool, Ordering},
 };
 
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
-use tauri::AppHandle;
+use tauri::{AppHandle, Emitter, Manager};
 use ts_rs::TS;
 
 use super::{
@@ -101,6 +101,41 @@ impl Scheduler {
 
     pub fn agents(&self) -> &AgentsProvider {
         &self.agents
+    }
+
+    pub fn emit_to_subscribers<S: Serialize + Clone>(
+        &self,
+        kind: ProviderKind,
+        key: Option<&str>,
+        event: &str,
+        payload: &S,
+    ) {
+        let labels: Vec<String> = {
+            let subs = self.subs.lock();
+            let mut set = HashSet::new();
+            for (sub_key, win_counts) in subs.iter() {
+                if sub_key.kind != kind {
+                    continue;
+                }
+                if kind == ProviderKind::Weather {
+                    if let Some(target_key) = key {
+                        if sub_key.key.as_deref() != Some(target_key) {
+                            continue;
+                        }
+                    }
+                }
+                for label in win_counts.keys() {
+                    set.insert(label.clone());
+                }
+            }
+            set.into_iter().collect()
+        };
+
+        for label in labels {
+            if let Err(err) = self.app.emit_to(&label, event, payload) {
+                log::debug!(target: "scheduler", "Kunne ikke sende {event} til {label}: {err}");
+            }
+        }
     }
 
     pub fn subscribe(
@@ -276,5 +311,17 @@ impl Scheduler {
             ProviderKind::Discord => self.discord.stop(),
             ProviderKind::Agents => self.agents.stop(),
         }
+    }
+}
+
+pub fn emit_provider<S: Serialize + Clone>(
+    app: &AppHandle,
+    kind: ProviderKind,
+    key: Option<&str>,
+    event: &str,
+    payload: &S,
+) {
+    if let Some(scheduler) = app.try_state::<Scheduler>() {
+        scheduler.emit_to_subscribers(kind, key, event, payload);
     }
 }

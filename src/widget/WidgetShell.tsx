@@ -56,6 +56,8 @@ export function computeScrimAlpha(
 
 export interface GlassPlacementInfo {
   platePath: string;
+  glassPlatePath?: string;
+  preblurred?: boolean;
   monitorLogicalW: number;
   monitorLogicalH: number;
   wx: number;
@@ -148,7 +150,7 @@ export function WidgetShell({
     enterNodes.forEach((node, index) => {
       node.style.setProperty("--i", String(index));
     });
-  }, [children, kind, size]);
+  }, [kind, size]);
 
   const baseW = clusterFrame ? clusterFrame.width : dimensions.width;
   const baseH = clusterFrame ? clusterFrame.boxHeight : dimensions.height;
@@ -323,6 +325,8 @@ export function WidgetShell({
             <GlassPlate
               plateRef={plateRef}
               platePath={glass?.platePath ?? ""}
+              glassPlatePath={glass?.glassPlatePath}
+              preblurred={Boolean(!preview && glass?.preblurred)}
               monitorLogicalW={glass?.monitorLogicalW ?? 1920}
               monitorLogicalH={glass?.monitorLogicalH ?? 1080}
               wx={glass?.wx ?? 0}

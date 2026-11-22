@@ -91,7 +91,9 @@ pub fn spawn_one(app: &AppHandle, instance: &WidgetInstance) -> Result<(), AppEr
     let logical_w = (base_w * instance.scale as f64).round().max(32.0);
     let logical_h = (base_h * instance.scale as f64).round().max(32.0);
 
-    let window = WebviewWindowBuilder::new(app, &label, url)
+    let window = crate::windows::apply_webview_defaults(
+        WebviewWindowBuilder::new(app, &label, url),
+    )
         .title("Open Dock")
         .inner_size(logical_w, logical_h)
         .position(48.0, 48.0)
@@ -108,6 +110,8 @@ pub fn spawn_one(app: &AppHandle, instance: &WidgetInstance) -> Result<(), AppEr
         .drag_and_drop(false)
         .background_color(tauri::window::Color(0, 0, 0, 0))
         .build()?;
+
+    crate::windows::webview_opt::configure_widget_webview(&window);
 
     let raw_hwnd = window.hwnd()?.0 as isize;
     let layer = instance.layer;
@@ -200,8 +204,10 @@ pub fn set_all_visible(app: &AppHandle, visible: bool) {
                     let _ = ShowWindow(hwnd, SW_HIDE);
                 }
             }
+            crate::windows::webview_opt::set_webview_suspended(&window, true);
             continue;
         }
+        crate::windows::webview_opt::set_webview_suspended(&window, false);
         if let Ok(raw_hwnd) = window.hwnd() {
             let hwnd = HWND(raw_hwnd.0 as _);
             if let Err(error) = zorder::set_layer(hwnd, widget.layer) {

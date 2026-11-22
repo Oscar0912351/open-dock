@@ -166,7 +166,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
   transform: scaleX(var(--v, 0));
   animation: od-bar 900ms var(--e-out) both;
   animation-delay: calc(var(--t0, 0ms) + 380ms);
-  transition: transform 600ms var(--e-out), background 220ms var(--e-soft);
+  transition: transform 140ms var(--e-out), background 180ms var(--e-soft);
 }
 .bar.warn > i { background: var(--warn); }
 .bar.crit > i { background: var(--crit); }

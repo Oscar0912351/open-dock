@@ -76,7 +76,7 @@ export function WidgetApp({ id }: WidgetAppProps) {
   const instance = boot?.instance;
   const kind = instance?.kind ?? "clock";
   const clockSettings = resolveClockSettings(kind === "clock" ? instance?.settings : undefined);
-  const now = useClock(kind === "clock" && clockSettings.showSeconds);
+  const now = useClock(kind === "clock" && clockSettings.showSeconds, kind === "clock");
 
   const rootRef = useRef<HTMLDivElement>(null);
   const plateRef = useRef<HTMLDivElement>(null);
@@ -201,7 +201,11 @@ export function WidgetApp({ id }: WidgetAppProps) {
       setMonitor(matched);
       const plate = plateRef.current;
       if (plate) {
-        plate.style.setProperty("--plate", matched.platePath ? `url("${toAssetUrl(matched.platePath)}")` : "none");
+        const pathToUse =
+          plate.classList.contains("is-preblurred") && matched.glassPlatePath
+            ? matched.glassPlatePath
+            : matched.platePath;
+        plate.style.setProperty("--plate", pathToUse ? `url("${toAssetUrl(pathToUse)}")` : "none");
         plate.style.setProperty("--mon-w", `${matched.logicalSize.width}px`);
         plate.style.setProperty("--mon-h", `${matched.logicalSize.height}px`);
       }
@@ -407,10 +411,14 @@ export function WidgetApp({ id }: WidgetAppProps) {
         }
       : null);
 
+  const hasPerWidgetGlassOverride =
+    Boolean(instance?.themeOverride) || instance?.glassOverride != null;
   const glassInfo: GlassPlacementInfo | null =
     monitor && resolvedPlacement
       ? {
           platePath: monitor.platePath,
+          glassPlatePath: monitor.glassPlatePath,
+          preblurred: !hasPerWidgetGlassOverride && Boolean(monitor.glassPlatePath),
           monitorLogicalW: monitor.logicalSize.width,
           monitorLogicalH: monitor.logicalSize.height,
           wx: resolvedPlacement.wx,
@@ -422,10 +430,11 @@ export function WidgetApp({ id }: WidgetAppProps) {
   const effectiveAmbient = kind === "nowPlaying" || kind === "cluster" ? ambientColor : null;
   const effectiveHiddenIdle = (kind === "nowPlaying" || kind === "cluster") && hiddenIdle;
   const activeClusterFrame = kind === "cluster" ? shellClusterFrame : null;
+  const needsWeatherSprite = kind === "weather" || kind === "cluster";
 
   return (
     <>
-      <WeatherSprite />
+      {needsWeatherSprite && <WeatherSprite />}
       <WidgetShell
         rootRef={rootRef}
         plateRef={plateRef}

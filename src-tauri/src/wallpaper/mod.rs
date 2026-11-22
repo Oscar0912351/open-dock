@@ -116,6 +116,7 @@ fn collect_monitors(app: &AppHandle) -> Vec<MonitorInfo> {
                     height: m.rect.height as f64 / scale,
                 },
                 plate_path: String::new(),
+                glass_plate_path: String::new(),
                 avg_luma: 0.15,
                 is_primary: m.is_primary,
             }

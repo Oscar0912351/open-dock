@@ -25,11 +25,13 @@ use ts_rs::TS;
 use crate::error::AppError;
 use credentials::{DiscordRpcCredentials, DEFAULT_REDIRECT_URI};
 use ipc::{DiscordIpcPipe, PipeError, RawParticipant, OP_PONG};
-use wasapi::CallDetector;
+use wasapi::{AudioSessionMonitor, CallDetector};
 
-const IPC_IDLE_WAIT: Duration = Duration::from_millis(40);
-const AUDIO_POLL_INTERVAL: Duration = Duration::from_secs(1);
-const IPC_RECONNECT_BACKOFF: Duration = Duration::from_secs(5);
+const IPC_IN_CALL_WAIT: Duration = Duration::from_millis(150);
+const IPC_IDLE_WAIT: Duration = Duration::from_millis(500);
+const AUDIO_POLL_RUNNING: Duration = Duration::from_secs(2);
+const AUDIO_POLL_CLOSED: Duration = Duration::from_secs(5);
+const IPC_RECONNECT_BACKOFF: Duration = Duration::from_secs(6);
 const RPC_CHANNEL_EVENTS: [&str; 5] = [
     "VOICE_STATE_CREATE",
     "VOICE_STATE_UPDATE",
@@ -119,6 +121,7 @@ enum WorkerMsg {
     ReloadCredentials,
     VoiceAction(DiscordVoiceAction),
     AvatarReady,
+    Stop,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -287,7 +290,9 @@ impl DiscordProvider {
             return;
         }
         log::info!(target: "provider:discord", "Stopper discord-provider");
-        *self.cmd_tx.lock() = None;
+        if let Some(tx) = self.cmd_tx.lock().take() {
+            let _ = tx.send(WorkerMsg::Stop);
+        }
         if let Some(mut worker) = self.worker.lock().take() {
             worker.stop.store(true, Ordering::Release);
             if let Some(join) = worker.join.take() {
@@ -428,7 +433,7 @@ impl DiscordProvider {
         if let Some(tx) = self.cmd_tx.lock().as_ref() {
             let _ = tx.send(WorkerMsg::ReloadCredentials);
         }
-        let _ = app.emit("discord://rpc-status", &status);
+        emit_rpc_status(app, &status);
         Ok(status)
     }
 
@@ -530,7 +535,7 @@ impl DiscordProvider {
         if let Some(tx) = self.cmd_tx.lock().as_ref() {
             let _ = tx.send(WorkerMsg::ReloadCredentials);
         }
-        let _ = app.emit("discord://rpc-status", &status);
+        emit_rpc_status(app, &status);
         Ok(status)
     }
 
@@ -554,7 +559,7 @@ impl DiscordProvider {
         if let Some(tx) = self.cmd_tx.lock().as_ref() {
             let _ = tx.send(WorkerMsg::ReloadCredentials);
         }
-        let _ = app.emit("discord://rpc-status", &status);
+        emit_rpc_status(app, &status);
         Ok(status)
     }
 
@@ -589,7 +594,13 @@ impl DiscordProvider {
             st.last_error = Some(message);
             st.clone()
         };
-        let _ = app.emit("discord://rpc-status", &status);
+        emit_rpc_status(app, &status);
+    }
+}
+
+fn emit_rpc_status(app: &AppHandle, status: &DiscordRpcStatus) {
+    if app.get_webview_window("control").is_some() {
+        let _ = app.emit_to("control", "discord://rpc-status", status);
     }
 }
 
@@ -704,7 +715,7 @@ impl RpcSessionState {
         self.speaking_ids.remove(user_id);
     }
 
-    fn to_snapshot(
+    fn build_snapshot(
         &mut self,
         cache_dir: &Path,
         tx: &Sender<WorkerMsg>,
@@ -941,6 +952,7 @@ fn run_discord_thread(
 ) {
     let _com = ComGuard::init();
     let mut detector = CallDetector::default();
+    let mut audio_monitor = AudioSessionMonitor::default();
     let mut last_key: Option<SnapshotKey> = None;
     let mut active_pipe: Option<(DiscordIpcPipe, RpcSessionState)> = None;
     let mut cached_creds: Option<DiscordRpcCredentials> = credentials::load_credentials(&config_dir);
@@ -952,9 +964,13 @@ fn run_discord_thread(
         let key = SnapshotKey::from_snapshot(&snapshot);
         if last_key.as_ref() != Some(&key) {
             *last_key = Some(key);
-            if let Err(err) = app.emit("provider://discord", &snapshot) {
-                log::warn!(target: "provider:discord", "Kunne ikke emitte provider://discord: {err}");
-            }
+            super::scheduler::emit_provider(
+                &app,
+                super::scheduler::ProviderKind::Discord,
+                None,
+                "provider://discord",
+                &snapshot,
+            );
         }
     };
 
@@ -969,7 +985,7 @@ fn run_discord_thread(
         if changed {
             let clone = st.clone();
             drop(st);
-            let _ = app.emit("discord://rpc-status", &clone);
+            emit_rpc_status(&app, &clone);
         }
     };
 
@@ -983,6 +999,7 @@ fn run_discord_thread(
                 WorkerMsg::ReloadCredentials => reload_requested = true,
                 WorkerMsg::AvatarReady => avatar_updated = true,
                 WorkerMsg::VoiceAction(action) => pending_actions.push(action),
+                WorkerMsg::Stop => return,
             }
         }
 
@@ -1003,28 +1020,34 @@ fn run_discord_thread(
         }
 
         // 2. Hvis RPC er konfigureret og ingen aktiv pipe, prøv at forbinde når Discord kører.
+        let mut cached_pids: Option<Vec<u32>> = None;
         if active_pipe.is_none() && Instant::now() >= next_rpc_attempt {
             if let Some(ref mut creds) = cached_creds {
-                let pids = wasapi::discord_process_ids();
-                if !pids.is_empty() && creds.access_token.is_some() {
-                    match try_open_and_auth_rpc(&config_dir, creds) {
-                        Ok((mut pipe, can_write, uname)) => {
-                            let _ = pipe.send_command("SUBSCRIBE", json!({}), Some("VOICE_CHANNEL_SELECT"));
-                            let _ = pipe.send_command("SUBSCRIBE", json!({}), Some("VOICE_SETTINGS_UPDATE"));
-                            let _ = pipe.send_command("GET_VOICE_SETTINGS", json!({}), None);
-                            let _ = pipe.send_command("GET_SELECTED_VOICE_CHANNEL", json!({}), None);
-                            let self_uid = pipe.self_user_id.clone();
-                            let state = RpcSessionState::new(can_write, self_uid);
-                            active_pipe = Some((pipe, state));
-                            detector.reset();
-                            set_rpc_connected(true, uname, None);
+                if creds.access_token.is_some() {
+                    let pids = wasapi::discord_process_ids();
+                    if !pids.is_empty() {
+                        match try_open_and_auth_rpc(&config_dir, creds) {
+                            Ok((mut pipe, can_write, uname)) => {
+                                let _ = pipe.send_command("SUBSCRIBE", json!({}), Some("VOICE_CHANNEL_SELECT"));
+                                let _ = pipe.send_command("SUBSCRIBE", json!({}), Some("VOICE_SETTINGS_UPDATE"));
+                                let _ = pipe.send_command("GET_VOICE_SETTINGS", json!({}), None);
+                                let _ = pipe.send_command("GET_SELECTED_VOICE_CHANNEL", json!({}), None);
+                                let self_uid = pipe.self_user_id.clone();
+                                let state = RpcSessionState::new(can_write, self_uid);
+                                active_pipe = Some((pipe, state));
+                                detector.reset();
+                                set_rpc_connected(true, uname, None);
+                            }
+                            Err(err) => {
+                                log::debug!(target: "provider:discord", "Discord RPC ikke klar endnu: {err}");
+                                set_rpc_connected(false, None, Some(err));
+                                next_rpc_attempt = Instant::now() + IPC_RECONNECT_BACKOFF;
+                            }
                         }
-                        Err(err) => {
-                            log::debug!(target: "provider:discord", "Discord RPC ikke klar endnu: {err}");
-                            set_rpc_connected(false, None, Some(err));
-                            next_rpc_attempt = Instant::now() + IPC_RECONNECT_BACKOFF;
-                        }
+                    } else {
+                        next_rpc_attempt = Instant::now() + IPC_RECONNECT_BACKOFF;
                     }
+                    cached_pids = Some(pids);
                 }
             }
         }
@@ -1110,19 +1133,24 @@ fn run_discord_thread(
                 next_audio_poll = Instant::now();
             } else {
                 if changed || last_key.is_none() {
-                    let snap = state.to_snapshot(&cache_dir, &tx, unix_now_ms());
+                    let snap = state.build_snapshot(&cache_dir, &tx, unix_now_ms());
                     emit_snapshot(snap, &mut last_key);
                 }
                 active_pipe = Some((pipe, state));
             }
         } else if Instant::now() >= next_audio_poll {
             // 4. WASAPI mikrofon-fallback når RPC ikke er aktiv.
-            next_audio_poll = Instant::now() + AUDIO_POLL_INTERVAL;
-            let pids = wasapi::discord_process_ids();
+            let pids = cached_pids.take().unwrap_or_else(wasapi::discord_process_ids);
             let running = !pids.is_empty();
+            next_audio_poll = Instant::now()
+                + if running {
+                    AUDIO_POLL_RUNNING
+                } else {
+                    AUDIO_POLL_CLOSED
+                };
             let now = unix_now_ms();
             let in_call = if running {
-                let raw = wasapi::discord_mic_active(&pids);
+                let raw = audio_monitor.discord_mic_active(&pids);
                 detector.tick(raw, now)
             } else {
                 detector.reset();
@@ -1147,11 +1175,25 @@ fn run_discord_thread(
             emit_snapshot(snap, &mut last_key);
         }
 
-        // Sov kort og vågn straks på worker-besked (fx klik på mute eller ny avatar).
-        let wait_dur = if active_pipe.is_some() {
-            IPC_IDLE_WAIT
+        // Sov helt til næste planlagte hændelse og vågn øjeblikkeligt på worker-besked (mute/deafen/reload/stop).
+        let wait_dur = if let Some((_, ref state)) = active_pipe {
+            if state.channel_id.is_some() {
+                IPC_IN_CALL_WAIT
+            } else {
+                IPC_IDLE_WAIT
+            }
         } else {
-            Duration::from_millis(120)
+            let now_inst = Instant::now();
+            let mut next_wake = next_audio_poll;
+            if cached_creds
+                .as_ref()
+                .is_some_and(|c| c.access_token.is_some())
+            {
+                next_wake = next_wake.min(next_rpc_attempt);
+            }
+            next_wake
+                .saturating_duration_since(now_inst)
+                .clamp(Duration::from_millis(50), AUDIO_POLL_CLOSED)
         };
         if let Ok(msg) = rx.recv_timeout(wait_dur) {
             // Re-indsend i køen så top-dræn samler alt ensartet.

@@ -18,6 +18,27 @@ use windows::Win32::{
 };
 use windows_core::BOOL;
 
+/// Kendte eksekverbare som agents-provideren bruger til status-verifikation og PID-kobling.
+const TRACKED_AGENT_EXES: &[&str] = &[
+    "antigravity",
+    "language_server",
+    "devin",
+    "codex",
+    "codex-cli",
+    "claude",
+    "claude-code",
+    "cursor",
+    "windsurf",
+    "code",
+    "code - insiders",
+    "vscodium",
+    "gemini",
+    "opencode",
+    "aider",
+    "qoder",
+    "freebuff",
+];
+
 /// Indekserer kørende eksekverbare og (kun for CLI-agenten `aider`) aktive proces-sessions.
 pub struct ProcessIndex {
     exe_names: HashSet<String>,
@@ -42,6 +63,100 @@ impl ProcessIndex {
             pid_to_parent: HashMap::new(),
             aider_sessions: Vec::new(),
         }
+    }
+
+    /// Hurtig letvægts-scanning via Win32 Toolhelp32: gemmer kun kendte agent-eksekverbare
+    /// og henter kun `sysinfo`-detaljer hvis `aider.exe` faktisk kører.
+    #[cfg(windows)]
+    pub fn scan_tracked() -> Self {
+        use windows::Win32::Foundation::CloseHandle;
+        use windows::Win32::System::Diagnostics::ToolHelp::{
+            CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W,
+            TH32CS_SNAPPROCESS,
+        };
+
+        let mut exe_names = HashSet::with_capacity(8);
+        let mut pids_by_exe: HashMap<String, Vec<u32>> = HashMap::with_capacity(8);
+        let mut aider_pids: Vec<sysinfo::Pid> = Vec::new();
+
+        if let Ok(snapshot) = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) } {
+            let mut entry = PROCESSENTRY32W {
+                dwSize: std::mem::size_of::<PROCESSENTRY32W>() as u32,
+                ..Default::default()
+            };
+            if unsafe { Process32FirstW(snapshot, &mut entry) }.is_ok() {
+                loop {
+                    let end = entry
+                        .szExeFile
+                        .iter()
+                        .position(|&c| c == 0)
+                        .unwrap_or(entry.szExeFile.len());
+                    if let Ok(raw) = String::from_utf16(&entry.szExeFile[..end]) {
+                        let norm = normalize_exe_name(&raw);
+                        if TRACKED_AGENT_EXES.contains(&norm.as_str()) {
+                            let pid_u32 = entry.th32ProcessID;
+                            if norm == "aider" {
+                                aider_pids.push(sysinfo::Pid::from_u32(pid_u32));
+                            }
+                            exe_names.insert(norm.clone());
+                            pids_by_exe.entry(norm).or_default().push(pid_u32);
+                        }
+                    }
+                    if unsafe { Process32NextW(snapshot, &mut entry) }.is_err() {
+                        break;
+                    }
+                }
+            }
+            unsafe {
+                let _ = CloseHandle(snapshot);
+            }
+        }
+
+        let mut aider_sessions = Vec::new();
+        if !aider_pids.is_empty() {
+            if let Ok(mut sys) = System::new_with_specifics(
+                sysinfo::RefreshKind::nothing().with_processes(ProcessRefreshKind::nothing()),
+            ) {
+                sys.refresh_processes_specifics(
+                    ProcessesToUpdate::Some(&aider_pids),
+                    false,
+                    ProcessRefreshKind::nothing()
+                        .with_cwd(UpdateKind::OnlyIfNotSet)
+                        .with_cmd(UpdateKind::OnlyIfNotSet),
+                );
+                for pid in aider_pids {
+                    if let Some(proc_) = sys.process(pid) {
+                        let project = proc_
+                            .cwd()
+                            .and_then(|p| p.file_name())
+                            .and_then(|n| n.to_str())
+                            .filter(|s| !s.is_empty())
+                            .map(str::to_owned)
+                            .or_else(|| project_from_cmd(proc_.cmd()));
+                        let started_ms = (proc_.start_time() as i64) * 1000;
+                        aider_sessions.push((pid.as_u32(), project, started_ms));
+                    }
+                }
+            }
+        }
+
+        Self {
+            exe_names,
+            pids_by_exe,
+            pid_to_exe: HashMap::new(),
+            pid_to_parent: HashMap::new(),
+            aider_sessions,
+        }
+    }
+
+    #[cfg(not(windows))]
+    pub fn scan_tracked() -> Self {
+        let Ok(mut sys) = System::new_with_specifics(
+            sysinfo::RefreshKind::nothing().with_processes(ProcessRefreshKind::nothing()),
+        ) else {
+            return Self::empty();
+        };
+        Self::scan(&mut sys)
     }
 
     pub fn scan(sys: &mut System) -> Self {

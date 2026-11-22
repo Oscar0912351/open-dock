@@ -4,6 +4,8 @@ import { toAssetUrl } from "../shared/ipc";
 interface GlassPlateProps {
   plateRef?: Ref<HTMLDivElement>;
   platePath: string;
+  glassPlatePath?: string;
+  preblurred?: boolean;
   monitorLogicalW: number;
   monitorLogicalH: number;
   wx: number;
@@ -13,14 +15,18 @@ interface GlassPlateProps {
 export function GlassPlate({
   plateRef,
   platePath,
+  glassPlatePath,
+  preblurred = false,
   monitorLogicalW,
   monitorLogicalH,
   wx,
   wy,
 }: GlassPlateProps) {
-  const plateUrl = toAssetUrl(platePath);
+  const usePreblurred = Boolean(preblurred && glassPlatePath);
+  const plateUrl = toAssetUrl(usePreblurred ? (glassPlatePath ?? "") : platePath);
+  const className = usePreblurred ? "glass-plate is-preblurred" : "glass-plate";
   if (!plateUrl) {
-    return <div ref={plateRef} className="glass-plate" aria-hidden="true" />;
+    return <div ref={plateRef} className={className} aria-hidden="true" />;
   }
 
   const style = {
@@ -31,5 +37,5 @@ export function GlassPlate({
     "--wy": `${wy}px`,
   } as CSSProperties;
 
-  return <div ref={plateRef} className="glass-plate" style={style} aria-hidden="true" />;
+  return <div ref={plateRef} className={className} style={style} aria-hidden="true" />;
 }

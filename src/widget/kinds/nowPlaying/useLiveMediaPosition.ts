@@ -19,6 +19,7 @@ export function computeLivePositionMs(
 export function useLiveMediaPosition(
   snapshot: MediaSnapshot | null,
   paused = false,
+  intervalMs = 1000,
 ): number {
   const [tickNow, setTickNow] = useState(() => Date.now());
   const isPlaying = snapshot?.status === "playing" && !paused;
@@ -28,9 +29,9 @@ export function useLiveMediaPosition(
     const id = window.setInterval(() => {
       if (document.hidden) return;
       setTickNow(Date.now());
-    }, 1000);
+    }, intervalMs);
     return () => window.clearInterval(id);
-  }, [isPlaying, snapshot?.updatedAt]);
+  }, [isPlaying, snapshot?.updatedAt, intervalMs]);
 
   const updatedAtMs = Number(snapshot?.updatedAt ?? 0);
   return computeLivePositionMs(snapshot, Math.max(tickNow, updatedAtMs));

@@ -94,71 +94,96 @@ pub fn discord_process_ids() -> Vec<u32> {
     Vec::new()
 }
 
-/// Sand når Discord har en aktiv mikrofon-session (`eCapture`), hvilket kendetegner et voice call.
+/// Genbrugelig COM-wrapper omkring `IMMDeviceEnumerator` på worker-tråden så vi undgår
+/// `CoCreateInstance` ved hvert poll.
 #[cfg(windows)]
-pub fn discord_mic_active(pids: &[u32]) -> bool {
-    use windows::core::Interface;
-    use windows::Win32::Media::Audio::{
-        eCapture, eCommunications, eConsole, AudioSessionStateActive, IAudioSessionControl2,
-        IAudioSessionManager2, IMMDeviceEnumerator, MMDeviceEnumerator,
-    };
-    use windows::Win32::System::Com::{CoCreateInstance, CLSCTX_ALL};
+pub struct AudioSessionMonitor {
+    enumerator: Option<windows::Win32::Media::Audio::IMMDeviceEnumerator>,
+}
 
-    if pids.is_empty() {
-        return false;
+#[cfg(windows)]
+impl Default for AudioSessionMonitor {
+    fn default() -> Self {
+        Self { enumerator: None }
     }
+}
 
-    let enumerator: IMMDeviceEnumerator =
-        match unsafe { CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL) } {
-            Ok(e) => e,
-            Err(err) => {
-                log::warn!(target: "provider:discord", "MMDeviceEnumerator fejlede: {err}");
-                return false;
-            }
+#[cfg(windows)]
+impl AudioSessionMonitor {
+    pub fn discord_mic_active(&mut self, pids: &[u32]) -> bool {
+        use windows::core::Interface;
+        use windows::Win32::Media::Audio::{
+            eCapture, eCommunications, eConsole, AudioSessionStateActive, IAudioSessionControl2,
+            IAudioSessionManager2, IMMDeviceEnumerator, MMDeviceEnumerator,
         };
+        use windows::Win32::System::Com::{CoCreateInstance, CLSCTX_ALL};
 
-    let endpoints = [(eCapture, eCommunications), (eCapture, eConsole)];
-    for (flow, role) in endpoints {
-        let Ok(device) = (unsafe { enumerator.GetDefaultAudioEndpoint(flow, role) }) else {
-            continue;
-        };
-        let Ok(manager) = (unsafe { device.Activate::<IAudioSessionManager2>(CLSCTX_ALL, None) })
-        else {
-            continue;
-        };
-        let Ok(sessions) = (unsafe { manager.GetSessionEnumerator() }) else {
-            continue;
-        };
-        let Ok(count) = (unsafe { sessions.GetCount() }) else {
-            continue;
-        };
-        for i in 0..count {
-            let Ok(control) = (unsafe { sessions.GetSession(i) }) else {
-                continue;
-            };
-            let Ok(control2) = control.cast::<IAudioSessionControl2>() else {
-                continue;
-            };
-            let Ok(pid) = (unsafe { control2.GetProcessId() }) else {
-                continue;
-            };
-            if !pids.contains(&pid) {
-                continue;
-            }
-            let Ok(state) = (unsafe { control2.GetState() }) else {
-                continue;
-            };
-            if state == AudioSessionStateActive {
-                return true;
+        if pids.is_empty() {
+            return false;
+        }
+
+        if self.enumerator.is_none() {
+            match unsafe { CoCreateInstance::<_, IMMDeviceEnumerator>(&MMDeviceEnumerator, None, CLSCTX_ALL) } {
+                Ok(e) => self.enumerator = Some(e),
+                Err(err) => {
+                    log::warn!(target: "provider:discord", "MMDeviceEnumerator fejlede: {err}");
+                    return false;
+                }
             }
         }
+        let Some(enumerator) = self.enumerator.as_ref() else {
+            return false;
+        };
+
+        let endpoints = [(eCapture, eCommunications), (eCapture, eConsole)];
+        for (flow, role) in endpoints {
+            let Ok(device) = (unsafe { enumerator.GetDefaultAudioEndpoint(flow, role) }) else {
+                continue;
+            };
+            let Ok(manager) = (unsafe { device.Activate::<IAudioSessionManager2>(CLSCTX_ALL, None) })
+            else {
+                continue;
+            };
+            let Ok(sessions) = (unsafe { manager.GetSessionEnumerator() }) else {
+                continue;
+            };
+            let Ok(count) = (unsafe { sessions.GetCount() }) else {
+                continue;
+            };
+            for i in 0..count {
+                let Ok(control) = (unsafe { sessions.GetSession(i) }) else {
+                    continue;
+                };
+                let Ok(control2) = control.cast::<IAudioSessionControl2>() else {
+                    continue;
+                };
+                let Ok(pid) = (unsafe { control2.GetProcessId() }) else {
+                    continue;
+                };
+                if !pids.contains(&pid) {
+                    continue;
+                }
+                let Ok(state) = (unsafe { control2.GetState() }) else {
+                    continue;
+                };
+                if state == AudioSessionStateActive {
+                    return true;
+                }
+            }
+        }
+        false
     }
-    false
 }
 
 #[cfg(not(windows))]
-pub fn discord_mic_active(_pids: &[u32]) -> bool {
-    false
+#[derive(Default)]
+pub struct AudioSessionMonitor;
+
+#[cfg(not(windows))]
+impl AudioSessionMonitor {
+    pub fn discord_mic_active(&mut self, _pids: &[u32]) -> bool {
+        false
+    }
 }
 
 #[cfg(test)]

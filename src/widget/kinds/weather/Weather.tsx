@@ -3,7 +3,7 @@ import { useEffect } from "react";
 import type { Location } from "../../../shared/bindings/Location";
 import type { ThemeId } from "../../../shared/bindings/ThemeId";
 import type { WidgetSize } from "../../../shared/bindings/WidgetSize";
-import { formatTemperature, formatTime } from "../../../shared/format";
+import { formatTemperature, formatTime, getDateTimeFormatter } from "../../../shared/format";
 import { useProvider } from "../../../shared/hooks/useProvider";
 import { t } from "../../../shared/i18n";
 import { WeatherIcon } from "../../../shared/icons/WeatherSprite";
@@ -43,18 +43,18 @@ function fmtTemp(celsius: number, unit: "c" | "f"): string {
 }
 
 function formatHourLabel(epochMs: number, timeZone?: string): string {
-  const d = new Date(epochMs);
-  return new Intl.DateTimeFormat("da-DK", {
+  const tz = timeZone && timeZone !== "auto" ? timeZone : undefined;
+  return getDateTimeFormatter("da-DK", `wx-h:${tz ?? ""}`, {
     hour: "2-digit",
     hourCycle: "h23",
-    timeZone: timeZone && timeZone !== "auto" ? timeZone : undefined,
-  }).format(d);
+    timeZone: tz,
+  }).format(new Date(epochMs));
 }
 
 function formatDayShort(dateStr: string): string {
   const date = new Date(`${dateStr}T12:00:00`);
   if (Number.isNaN(date.getTime())) return dateStr;
-  return new Intl.DateTimeFormat("da-DK", { weekday: "short" })
+  return getDateTimeFormatter("da-DK", "wx-d", { weekday: "short" })
     .format(date)
     .replace(".", "")
     .slice(0, 3);

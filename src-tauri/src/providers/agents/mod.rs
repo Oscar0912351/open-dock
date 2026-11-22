@@ -19,15 +19,15 @@ use std::{
 
 use parking_lot::{Condvar, Mutex};
 use serde::{Deserialize, Serialize};
-use sysinfo::{ProcessRefreshKind, RefreshKind, System};
-use tauri::{AppHandle, Emitter, Manager};
+use tauri::{AppHandle, Manager};
 use ts_rs::TS;
 
 pub use process::focus_agent_window;
 use process::ProcessIndex;
 use sources::{scan_all_sessions, AgentPaths, SourceCache};
 
-const POLL_INTERVAL: Duration = Duration::from_secs(2);
+const ACTIVE_POLL_INTERVAL: Duration = Duration::from_secs(2);
+const IDLE_POLL_INTERVAL: Duration = Duration::from_secs(5);
 const OVERLAY_POLL_INTERVAL: Duration = Duration::from_secs(5);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -187,15 +187,6 @@ fn run_agents_thread(
     latest: Arc<Mutex<Option<AgentsSnapshot>>>,
 ) {
     let paths = AgentPaths::from_env();
-    let mut sys = match System::new_with_specifics(
-        RefreshKind::nothing().with_processes(ProcessRefreshKind::nothing()),
-    ) {
-        Ok(sys) => sys,
-        Err(err) => {
-            log::warn!(target: "provider:agents", "Kunne ikke oprette proces-skanner: {err}");
-            return;
-        }
-    };
     let mut cache = SourceCache::default();
     let mut last_emitted_sessions: Option<Vec<AgentSession>> = None;
 
@@ -205,8 +196,11 @@ fn run_agents_thread(
             break;
         }
         let now = unix_now_ms();
-        let procs = ProcessIndex::scan(&mut sys);
+        let procs = ProcessIndex::scan_tracked();
         let sessions = scan_all_sessions(&paths, &procs, now, Some(&mut cache));
+        let any_active = sessions
+            .iter()
+            .any(|s| matches!(s.status, AgentStatus::Working | AgentStatus::Waiting));
         let snapshot = AgentsSnapshot {
             sessions: sessions.clone(),
             updated_at: now,
@@ -215,19 +209,25 @@ fn run_agents_thread(
 
         if last_emitted_sessions.as_deref() != Some(sessions.as_slice()) {
             last_emitted_sessions = Some(sessions);
-            if let Err(err) = app.emit("provider://agents", &snapshot) {
-                log::warn!(target: "provider:agents", "Kunne ikke emitte provider://agents: {err}");
-            }
+            super::scheduler::emit_provider(
+                &app,
+                super::scheduler::ProviderKind::Agents,
+                None,
+                "provider://agents",
+                &snapshot,
+            );
         }
 
-        let wait = if app
+        let in_overlay = app
             .try_state::<crate::state::AppState>()
             .map(|s| s.game_overlay_active.load(Ordering::Acquire))
-            .unwrap_or(false)
-        {
+            .unwrap_or(false);
+        let wait = if in_overlay {
             OVERLAY_POLL_INTERVAL
+        } else if any_active {
+            ACTIVE_POLL_INTERVAL
         } else {
-            POLL_INTERVAL
+            IDLE_POLL_INTERVAL
         };
         let mut stopped = stop_lock.lock();
         if *stopped {
@@ -241,6 +241,7 @@ fn run_agents_thread(
 mod tests {
     use super::*;
     use rusqlite::Connection;
+    use sysinfo::{ProcessRefreshKind, RefreshKind, System};
     use std::{
         fs,
         path::{Path, PathBuf},

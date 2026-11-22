@@ -1,16 +1,18 @@
 import { useEffect, useState } from "react";
 import type { SystemSample } from "../../../shared/bindings/SystemSample";
-import { ipc, on } from "../../../shared/ipc";
+import { ipc } from "../../../shared/ipc";
 
 const MAX_HISTORY = 60;
 
-export function useSystemHistory(enabled = true): SystemSample[] {
+export function useSystemHistory(
+  enabled = true,
+  latestSample: SystemSample | null = null,
+): SystemSample[] {
   const [history, setHistory] = useState<SystemSample[]>([]);
 
   useEffect(() => {
     if (!enabled) return;
     let active = true;
-    let dispose: (() => void) | undefined;
 
     ipc
       .systemHistory()
@@ -21,25 +23,19 @@ export function useSystemHistory(enabled = true): SystemSample[] {
       })
       .catch(() => {});
 
-    on.system((sample) => {
-      if (!active) return;
-      setHistory((prev) => {
-        const last = prev[prev.length - 1];
-        if (last && last.t === sample.t) return prev;
-        return [...prev, sample].slice(-MAX_HISTORY);
-      });
-    })
-      .then((unlisten) => {
-        if (active) dispose = unlisten;
-        else unlisten();
-      })
-      .catch(() => {});
-
     return () => {
       active = false;
-      dispose?.();
     };
   }, [enabled]);
+
+  useEffect(() => {
+    if (!enabled || !latestSample) return;
+    setHistory((prev) => {
+      const last = prev[prev.length - 1];
+      if (last && last.t === latestSample.t) return prev;
+      return [...prev, latestSample].slice(-MAX_HISTORY);
+    });
+  }, [enabled, latestSample]);
 
   return enabled ? history : [];
 }

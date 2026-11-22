@@ -217,7 +217,9 @@ export function Discord({ size, preview = false, onAriaChange }: DiscordProps) {
 
   useEffect(() => {
     if (!inCall || preview) return;
-    const id = window.setInterval(() => setNowMs(Date.now()), 1_000);
+    const id = window.setInterval(() => {
+      if (!document.hidden) setNowMs(Date.now());
+    }, 1_000);
     return () => window.clearInterval(id);
   }, [inCall, preview]);
 

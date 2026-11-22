@@ -11,11 +11,15 @@ use image::{
     DynamicImage, Rgb, RgbImage,
 };
 
-use crate::{config::schema::RectF, error::AppError};
+use crate::{
+    config::schema::{RectF, ThemeId},
+    error::AppError,
+};
 
 pub const LUMA_COLS: usize = 64;
 pub const LUMA_ROWS: usize = 36;
 const PLATE_JPEG_QUALITY: u8 = 82;
+const GLASS_PLATE_JPEG_QUALITY: u8 = 84;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WallpaperPosition {
@@ -470,6 +474,14 @@ pub fn plate_hash(
 }
 
 pub fn save_jpeg_82(img: &RgbImage, path: &Path) -> Result<(), AppError> {
+    save_jpeg_with_quality(img, path, PLATE_JPEG_QUALITY)
+}
+
+pub fn save_glass_jpeg(img: &RgbImage, path: &Path) -> Result<(), AppError> {
+    save_jpeg_with_quality(img, path, GLASS_PLATE_JPEG_QUALITY)
+}
+
+fn save_jpeg_with_quality(img: &RgbImage, path: &Path, quality: u8) -> Result<(), AppError> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(AppError::ConfigWrite)?;
     }
@@ -477,13 +489,238 @@ pub fn save_jpeg_82(img: &RgbImage, path: &Path) -> Result<(), AppError> {
     {
         let file = File::create(&tmp).map_err(AppError::ConfigWrite)?;
         let mut writer = BufWriter::new(file);
-        let mut encoder = JpegEncoder::new_with_quality(&mut writer, PLATE_JPEG_QUALITY);
+        let mut encoder = JpegEncoder::new_with_quality(&mut writer, quality);
         encoder
             .encode_image(img)
             .map_err(|e| AppError::Other(format!("Kunne ikke kode plade-JPEG: {e}")))?;
     }
     fs::rename(&tmp, path).map_err(AppError::ConfigWrite)?;
     Ok(())
+}
+
+/// Beregn effektiv logisk blur-radius (px) og mætningsfaktor for et tema + glasstyrke.
+/// Matcher formlen i `WidgetShell.css` og `aurora.css`/`laerk.css`/`grafit.css`.
+pub fn theme_glass_params(theme: ThemeId, glass_strength: f32) -> (f32, f32) {
+    let (base_blur, sat) = match theme {
+        ThemeId::Aurora => (26.0_f32, 1.18_f32),
+        ThemeId::Laerk => (14.0_f32, 1.00_f32),
+        ThemeId::Grafit => (24.0_f32, 1.50_f32),
+    };
+    let gs = if glass_strength.is_finite() {
+        glass_strength.clamp(0.6, 1.4)
+    } else {
+        1.0
+    };
+    let mult = ((gs - 0.44) * 1.785).max(0.25);
+    (base_blur * mult, sat)
+}
+
+pub fn glass_plate_dimensions(source_w: u32, source_h: u32, blur_logical: f32) -> (u32, u32) {
+    let sw = source_w.max(1);
+    let sh = source_h.max(1);
+    let max_w = if blur_logical >= 12.0 { 640 } else { 960 };
+    let target_w = sw.min(max_w).max(1);
+    let target_h = ((target_w as f64 * sh as f64 / sw as f64).round() as u32).max(1);
+    (target_w, target_h)
+}
+
+/// Producerer en forud-sløret og mætningsjusteret glasplade i CPU (O(W*H) 3-pass box blur),
+/// så skrivebordswidgets slipper for live GPU `filter: blur()` + overscan-render-targets.
+pub fn compose_glass_plate(
+    sharp_plate: &RgbImage,
+    monitor_logical_w: f64,
+    blur_logical: f32,
+    sat: f32,
+) -> RgbImage {
+    let (sw, sh) = sharp_plate.dimensions();
+    if sw == 0 || sh == 0 {
+        return sharp_plate.clone();
+    }
+    let (gw, gh) = glass_plate_dimensions(sw, sh, blur_logical);
+    let mut img = if gw < sw || gh < sh {
+        resize(sharp_plate, gw, gh, FilterType::Triangle)
+    } else {
+        sharp_plate.clone()
+    };
+
+    let scale_ratio = gw as f32 / monitor_logical_w.max(1.0) as f32;
+    let sigma = (blur_logical * scale_ratio).clamp(0.0, 128.0);
+    if sigma >= 0.4 {
+        box_blur_3pass(&mut img, sigma);
+    }
+    if (sat - 1.0).abs() > 0.005 {
+        apply_saturation(&mut img, sat);
+    }
+    img
+}
+
+fn boxes_for_gauss(sigma: f32) -> [usize; 3] {
+    let n = 3.0_f32;
+    let w_ideal = ((12.0 * sigma * sigma / n) + 1.0).sqrt();
+    let mut wl = w_ideal.floor() as i32;
+    if wl % 2 == 0 {
+        wl -= 1;
+    }
+    let wl = wl.max(1);
+    let wu = wl + 2;
+    let m_ideal = (12.0 * sigma * sigma - n * (wl * wl) as f32 - 4.0 * n * wl as f32 - 3.0 * n)
+        / (-4.0 * wl as f32 - 4.0);
+    let m = m_ideal.round().clamp(0.0, n) as usize;
+    let mut out = [1usize; 3];
+    for (i, slot) in out.iter_mut().enumerate() {
+        let size = if i < m { wl } else { wu } as usize;
+        *slot = size / 2;
+    }
+    out
+}
+
+fn box_blur_3pass(img: &mut RgbImage, sigma: f32) {
+    let w = img.width() as usize;
+    let h = img.height() as usize;
+    if w <= 1 || h <= 1 {
+        return;
+    }
+    let radii = boxes_for_gauss(sigma);
+    let mut scratch = vec![0u8; w * h * 3];
+    let buf = img.as_mut();
+
+    for r in radii {
+        if r == 0 {
+            continue;
+        }
+        box_blur_h(buf, &mut scratch, w, h, r);
+        box_blur_v(&scratch, buf, w, h, r);
+    }
+}
+
+fn box_blur_h(src: &[u8], dst: &mut [u8], w: usize, h: usize, r: usize) {
+    let inv = 1.0_f32 / (2 * r + 1) as f32;
+    let wm = w - 1;
+    for y in 0..h {
+        let row = y * w * 3;
+        let first = [src[row] as u32, src[row + 1] as u32, src[row + 2] as u32];
+        let last_off = row + wm * 3;
+        let last = [
+            src[last_off] as u32,
+            src[last_off + 1] as u32,
+            src[last_off + 2] as u32,
+        ];
+        let mut acc = [
+            first[0] * (r as u32 + 1),
+            first[1] * (r as u32 + 1),
+            first[2] * (r as u32 + 1),
+        ];
+        for x in 0..r {
+            let idx = row + x.min(wm) * 3;
+            acc[0] += src[idx] as u32;
+            acc[1] += src[idx + 1] as u32;
+            acc[2] += src[idx + 2] as u32;
+        }
+        for x in 0..w {
+            let add_x = x + r;
+            let add_px = if add_x <= wm {
+                let idx = row + add_x * 3;
+                [src[idx] as u32, src[idx + 1] as u32, src[idx + 2] as u32]
+            } else {
+                last
+            };
+            let sub_px = if x > r {
+                let idx = row + (x - r - 1) * 3;
+                [src[idx] as u32, src[idx + 1] as u32, src[idx + 2] as u32]
+            } else {
+                first
+            };
+            if x > 0 {
+                acc[0] = acc[0] + add_px[0] - sub_px[0];
+                acc[1] = acc[1] + add_px[1] - sub_px[1];
+                acc[2] = acc[2] + add_px[2] - sub_px[2];
+            } else {
+                let idx = row + r.min(wm) * 3;
+                acc[0] = acc[0] + src[idx] as u32 - first[0];
+                acc[1] = acc[1] + src[idx + 1] as u32 - first[1];
+                acc[2] = acc[2] + src[idx + 2] as u32 - first[2];
+            }
+            let out = row + x * 3;
+            dst[out] = (acc[0] as f32 * inv + 0.5).clamp(0.0, 255.0) as u8;
+            dst[out + 1] = (acc[1] as f32 * inv + 0.5).clamp(0.0, 255.0) as u8;
+            dst[out + 2] = (acc[2] as f32 * inv + 0.5).clamp(0.0, 255.0) as u8;
+        }
+    }
+}
+
+fn box_blur_v(src: &[u8], dst: &mut [u8], w: usize, h: usize, r: usize) {
+    let inv = 1.0_f32 / (2 * r + 1) as f32;
+    let hm = h - 1;
+    let stride = w * 3;
+    for x in 0..w {
+        let col = x * 3;
+        let first = [src[col] as u32, src[col + 1] as u32, src[col + 2] as u32];
+        let last_off = hm * stride + col;
+        let last = [
+            src[last_off] as u32,
+            src[last_off + 1] as u32,
+            src[last_off + 2] as u32,
+        ];
+        let mut acc = [
+            first[0] * (r as u32 + 1),
+            first[1] * (r as u32 + 1),
+            first[2] * (r as u32 + 1),
+        ];
+        for y in 0..r {
+            let idx = y.min(hm) * stride + col;
+            acc[0] += src[idx] as u32;
+            acc[1] += src[idx + 1] as u32;
+            acc[2] += src[idx + 2] as u32;
+        }
+        for y in 0..h {
+            let add_y = y + r;
+            let add_px = if add_y <= hm {
+                let idx = add_y * stride + col;
+                [src[idx] as u32, src[idx + 1] as u32, src[idx + 2] as u32]
+            } else {
+                last
+            };
+            let sub_px = if y > r {
+                let idx = (y - r - 1) * stride + col;
+                [src[idx] as u32, src[idx + 1] as u32, src[idx + 2] as u32]
+            } else {
+                first
+            };
+            if y > 0 {
+                acc[0] = acc[0] + add_px[0] - sub_px[0];
+                acc[1] = acc[1] + add_px[1] - sub_px[1];
+                acc[2] = acc[2] + add_px[2] - sub_px[2];
+            } else {
+                let idx = r.min(hm) * stride + col;
+                acc[0] = acc[0] + src[idx] as u32 - first[0];
+                acc[1] = acc[1] + src[idx + 1] as u32 - first[1];
+                acc[2] = acc[2] + src[idx + 2] as u32 - first[2];
+            }
+            let out = y * stride + col;
+            dst[out] = (acc[0] as f32 * inv + 0.5).clamp(0.0, 255.0) as u8;
+            dst[out + 1] = (acc[1] as f32 * inv + 0.5).clamp(0.0, 255.0) as u8;
+            dst[out + 2] = (acc[2] as f32 * inv + 0.5).clamp(0.0, 255.0) as u8;
+        }
+    }
+}
+
+fn apply_saturation(img: &mut RgbImage, s: f32) {
+    let inv = 1.0 - s;
+    let r_w = 0.2126 * inv;
+    let g_w = 0.7152 * inv;
+    let b_w = 0.0722 * inv;
+    let m00 = r_w + s;
+    let m11 = g_w + s;
+    let m22 = b_w + s;
+
+    for px in img.as_mut().chunks_exact_mut(3) {
+        let r = px[0] as f32;
+        let g = px[1] as f32;
+        let b = px[2] as f32;
+        px[0] = (m00 * r + g_w * g + b_w * b + 0.5).clamp(0.0, 255.0) as u8;
+        px[1] = (r_w * r + m11 * g + b_w * b + 0.5).clamp(0.0, 255.0) as u8;
+        px[2] = (r_w * r + g_w * g + m22 * b + 0.5).clamp(0.0, 255.0) as u8;
+    }
 }
 
 pub fn prune_old_plates(dir: &Path, keep_names: &HashSet<String>) {
@@ -657,5 +894,35 @@ mod tests {
         let bright_luma = grid.average_for_rect(1920.0, 1080.0, RectF { x: 1400.0, y: 40.0, width: 200.0, height: 200.0 });
         assert!(dark_luma < 0.05);
         assert!(bright_luma > 0.95);
+    }
+
+    #[test]
+    fn compose_glass_plate_blurs_and_scales_cleanly() {
+        let mut split = RgbImage::new(960, 540);
+        for y in 0..540 {
+            for x in 0..960 {
+                split.put_pixel(
+                    x,
+                    y,
+                    if x < 480 {
+                        Rgb([20, 40, 80])
+                    } else {
+                        Rgb([240, 200, 160])
+                    },
+                );
+            }
+        }
+        let (blur_px, sat) = theme_glass_params(ThemeId::Aurora, 1.0);
+        assert!((blur_px - 26.0).abs() < 0.1);
+        assert!((sat - 1.18).abs() < 0.01);
+
+        let glass = compose_glass_plate(&split, 1920.0, blur_px, sat);
+        assert_eq!(glass.dimensions(), (640, 360));
+        // Midtgrænsen skal være blødt overblændet mellem venstre og højre side
+        let mid = glass.get_pixel(320, 180)[0];
+        assert!(mid > 70 && mid < 190, "Forventede blød midt-overgang, fik {mid}");
+        // Langt til venstre skal stadig være mørk, langt til højre lys
+        assert!(glass.get_pixel(20, 180)[0] < 40);
+        assert!(glass.get_pixel(620, 180)[0] > 210);
     }
 }

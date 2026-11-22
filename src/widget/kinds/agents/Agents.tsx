@@ -210,7 +210,9 @@ export function Agents({
 
   useEffect(() => {
     if (!hasTimedSessions || preview) return;
-    const id = window.setInterval(() => setNowMs(Date.now()), TICK_MS);
+    const id = window.setInterval(() => {
+      if (!document.hidden) setNowMs(Date.now());
+    }, TICK_MS);
     return () => window.clearInterval(id);
   }, [hasTimedSessions, preview]);
 

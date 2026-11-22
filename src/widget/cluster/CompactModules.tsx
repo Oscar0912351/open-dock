@@ -17,6 +17,7 @@ import {
   Square,
 } from "@phosphor-icons/react";
 import {
+  memo,
   useCallback,
   useEffect,
   useMemo,
@@ -136,11 +137,6 @@ function HintBadge({ label }: { label: string }) {
 export function ClusterModuleView({ mod, mode, shared, onToggleExpand }: ModuleCardProps) {
   if (mode === "hidden") return null;
 
-  const handleSurfaceClick = (event: MouseEvent<HTMLDivElement>) => {
-    if (shouldIgnoreExpand(event)) return;
-    onToggleExpand(mod.id);
-  };
-
   switch (mod.kind) {
     case "clock":
       return (
@@ -149,7 +145,7 @@ export function ClusterModuleView({ mod, mode, shared, onToggleExpand }: ModuleC
           mode={mode}
           now={shared.now}
           preview={shared.preview}
-          onClick={handleSurfaceClick}
+          onToggleExpand={onToggleExpand}
         />
       );
     case "nowPlaying":
@@ -160,7 +156,7 @@ export function ClusterModuleView({ mod, mode, shared, onToggleExpand }: ModuleC
           media={shared.media.data}
           pausedApp={shared.pausedApp}
           preview={shared.preview}
-          onClick={handleSurfaceClick}
+          onToggleExpand={onToggleExpand}
         />
       );
     case "system":
@@ -173,7 +169,7 @@ export function ClusterModuleView({ mod, mode, shared, onToggleExpand }: ModuleC
           history={shared.systemHistory}
           caps={shared.systemCaps}
           preview={shared.preview}
-          onClick={handleSurfaceClick}
+          onToggleExpand={onToggleExpand}
         />
       );
     case "weather": {
@@ -189,7 +185,7 @@ export function ClusterModuleView({ mod, mode, shared, onToggleExpand }: ModuleC
           snapshot={wx?.data ?? null}
           status={wx?.status ?? (shared.locations.length === 0 ? "empty" : "loading")}
           preview={shared.preview}
-          onClick={handleSurfaceClick}
+          onToggleExpand={onToggleExpand}
         />
       );
     }
@@ -200,7 +196,7 @@ export function ClusterModuleView({ mod, mode, shared, onToggleExpand }: ModuleC
           mode={mode}
           data={shared.discord.data}
           preview={shared.preview}
-          onClick={handleSurfaceClick}
+          onToggleExpand={onToggleExpand}
         />
       );
     case "agents":
@@ -211,7 +207,7 @@ export function ClusterModuleView({ mod, mode, shared, onToggleExpand }: ModuleC
           data={shared.agents.data}
           nowMs={shared.agentsNowMs}
           preview={shared.preview}
-          onClick={handleSurfaceClick}
+          onToggleExpand={onToggleExpand}
         />
       );
     case "note":
@@ -222,7 +218,7 @@ export function ClusterModuleView({ mod, mode, shared, onToggleExpand }: ModuleC
           widgetId={shared.widgetId}
           editMode={shared.editMode}
           preview={shared.preview}
-          onClick={handleSurfaceClick}
+          onToggleExpand={onToggleExpand}
         />
       );
     default:
@@ -230,19 +226,22 @@ export function ClusterModuleView({ mod, mode, shared, onToggleExpand }: ModuleC
   }
 }
 
-function ClockClusterMod({
+const ClockClusterMod = memo(function ClockClusterMod({
   mod,
   mode,
   now,
   preview,
-  onClick,
+  onToggleExpand,
 }: {
   mod: ClusterModule;
   mode: "compact" | "expanded";
   now: Date;
   preview?: boolean;
-  onClick: (e: MouseEvent<HTMLDivElement>) => void;
+  onToggleExpand: (id: string) => void;
 }) {
+  const onClick = (e: MouseEvent<HTMLDivElement>) => {
+    if (!shouldIgnoreExpand(e)) onToggleExpand(mod.id);
+  };
   const settings = resolveClockSettings(mod.settings);
   const tz = validTimeZone(settings.timezone);
   const timeStr = formatTime(now, tz ?? undefined, settings.showSeconds);
@@ -299,26 +298,33 @@ function ClockClusterMod({
       </div>
     </div>
   );
-}
+});
 
-function MediaClusterMod({
+const MediaClusterMod = memo(function MediaClusterMod({
   mod,
   mode,
   media,
   pausedApp,
   preview,
-  onClick,
+  onToggleExpand,
 }: {
   mod: ClusterModule;
   mode: "compact" | "expanded";
   media: MediaSnapshot | null;
   pausedApp: boolean;
   preview?: boolean;
-  onClick: (e: MouseEvent<HTMLDivElement>) => void;
+  onToggleExpand: (id: string) => void;
 }) {
+  const onClick = (e: MouseEvent<HTMLDivElement>) => {
+    if (!shouldIgnoreExpand(e)) onToggleExpand(mod.id);
+  };
   const [mountNow] = useState(() => Date.now());
   const [scrubMs, setScrubMs] = useState<number | null>(null);
-  const livePosMs = useLiveMediaPosition(media, pausedApp || Boolean(preview));
+  const livePosMs = useLiveMediaPosition(
+    media,
+    pausedApp || Boolean(preview),
+    mode === "compact" ? 2000 : 1000,
+  );
 
   const settings = resolveNowPlayingSettings(mod.settings);
   const playing = media?.status === "playing";
@@ -520,7 +526,6 @@ function MediaClusterMod({
   const p0 = durMs > 0 ? Math.min(1, Math.max(0, startPos / safeDur)) : 0;
   const liveRatio = durMs > 0 ? Math.min(1, Math.max(0, displayPosMs / safeDur)) : 0;
   const remaining = durMs > 0 ? Math.max(1, safeDur - startPos) : 1;
-  const edgeAnimKey = `${trackKey}:${anchorPos}:${anchorUpdatedAt ?? 0}:${durMs}:${isAnimating ? 1 : 0}`;
 
   return (
     <div
@@ -593,7 +598,6 @@ function MediaClusterMod({
       <div className="c-media-prog-edge" aria-hidden="true">
         {durMs > 0 && (
           <i
-            key={edgeAnimKey}
             className={isAnimating ? "is-playing" : undefined}
             style={
               {
@@ -607,9 +611,9 @@ function MediaClusterMod({
       </div>
     </div>
   );
-}
+});
 
-function SystemClusterMod({
+const SystemClusterMod = memo(function SystemClusterMod({
   mod,
   mode,
   theme,
@@ -617,7 +621,7 @@ function SystemClusterMod({
   history,
   caps,
   preview,
-  onClick,
+  onToggleExpand,
 }: {
   mod: ClusterModule;
   mode: "compact" | "expanded";
@@ -626,8 +630,11 @@ function SystemClusterMod({
   history: SystemSample[];
   caps: SystemCaps | null;
   preview?: boolean;
-  onClick: (e: MouseEvent<HTMLDivElement>) => void;
+  onToggleExpand: (id: string) => void;
 }) {
+  const onClick = (e: MouseEvent<HTMLDivElement>) => {
+    if (!shouldIgnoreExpand(e)) onToggleExpand(mod.id);
+  };
   const settings = resolveSystemSettings(mod.settings);
   const cpuPct = sample ? Math.round(sample.cpu.usage) : 0;
   const memPct = sample && Number(sample.mem.totalBytes) > 0
@@ -642,7 +649,31 @@ function SystemClusterMod({
     ? formatSpeed(sample.net.rxBps, settings.unitsBits)
     : t("state.dash");
 
-  const barToneClass = (pct: number) => (pct >= 95 ? "is-crit" : pct >= 85 ? "is-warn" : "");
+  const [barSmooth, setBarSmooth] = useState<{
+    cpu: number;
+    mem: number;
+    gpu: number;
+    smoothCpu: boolean;
+    smoothMem: boolean;
+    smoothGpu: boolean;
+  }>({ cpu: cpuPct, mem: memPct, gpu: gpuPct ?? 0, smoothCpu: false, smoothMem: false, smoothGpu: false });
+
+  const gpuNum = gpuPct ?? 0;
+  if (barSmooth.cpu !== cpuPct || barSmooth.mem !== memPct || barSmooth.gpu !== gpuNum) {
+    setBarSmooth({
+      cpu: cpuPct,
+      mem: memPct,
+      gpu: gpuNum,
+      smoothCpu: Math.abs(cpuPct - barSmooth.cpu) >= 3,
+      smoothMem: Math.abs(memPct - barSmooth.mem) >= 3,
+      smoothGpu: Math.abs(gpuNum - barSmooth.gpu) >= 3,
+    });
+  }
+
+  const barClass = (pct: number, smooth: boolean) => {
+    const tone = pct >= 95 ? "is-crit" : pct >= 85 ? "is-warn" : "";
+    return [tone, smooth ? "is-smooth" : ""].filter(Boolean).join(" ");
+  };
 
   if (mode === "expanded") {
     const pts = history.slice(-60).map((s) => s.cpu.usage);
@@ -700,7 +731,7 @@ function SystemClusterMod({
             CPU <b style={{ color: "var(--ink-1)" }}>{sample ? `${cpuPct}%` : "—"}</b>
           </span>
           <div className="c-mini-bar">
-            <i className={barToneClass(cpuPct)} style={{ transform: `scaleX(${Math.min(1, cpuPct / 100)})` }} />
+            <i className={barClass(cpuPct, barSmooth.smoothCpu)} style={{ transform: `scaleX(${Math.min(1, cpuPct / 100)})` }} />
           </div>
         </div>
         <div className="c-sys-stat">
@@ -708,7 +739,7 @@ function SystemClusterMod({
             RAM <b style={{ color: "var(--ink-1)" }}>{sample ? `${memPct}%` : "—"}</b>
           </span>
           <div className="c-mini-bar">
-            <i className={barToneClass(memPct)} style={{ transform: `scaleX(${Math.min(1, memPct / 100)})` }} />
+            <i className={barClass(memPct, barSmooth.smoothMem)} style={{ transform: `scaleX(${Math.min(1, memPct / 100)})` }} />
           </div>
         </div>
         <div className="c-sys-stat">
@@ -720,7 +751,7 @@ function SystemClusterMod({
           </span>
           <div className="c-mini-bar">
             <i
-              className={gpuPct !== null ? barToneClass(gpuPct) : ""}
+              className={gpuPct !== null ? barClass(gpuPct, barSmooth.smoothGpu) : ""}
               style={{ transform: `scaleX(${gpuPct !== null ? Math.min(1, gpuPct / 100) : 0})` }}
             />
           </div>
@@ -729,9 +760,9 @@ function SystemClusterMod({
       </div>
     </div>
   );
-}
+});
 
-function WeatherClusterMod({
+const WeatherClusterMod = memo(function WeatherClusterMod({
   mod,
   mode,
   theme,
@@ -739,7 +770,7 @@ function WeatherClusterMod({
   snapshot,
   status,
   preview,
-  onClick,
+  onToggleExpand,
 }: {
   mod: ClusterModule;
   mode: "compact" | "expanded";
@@ -748,8 +779,11 @@ function WeatherClusterMod({
   snapshot: WeatherSnapshot | null;
   status: string;
   preview?: boolean;
-  onClick: (e: MouseEvent<HTMLDivElement>) => void;
+  onToggleExpand: (id: string) => void;
 }) {
+  const onClick = (e: MouseEvent<HTMLDivElement>) => {
+    if (!shouldIgnoreExpand(e)) onToggleExpand(mod.id);
+  };
   const settings = resolveWeatherSettings(mod.settings);
   const toUnit = (c: number) => (settings.unit === "f" ? (c * 9) / 5 + 32 : c);
   const fmtT = (c: number) => formatTemperature(toUnit(c));
@@ -836,21 +870,24 @@ function WeatherClusterMod({
       </div>
     </div>
   );
-}
+});
 
-function DiscordClusterMod({
+const DiscordClusterMod = memo(function DiscordClusterMod({
   mod,
   mode,
   data,
   preview,
-  onClick,
+  onToggleExpand,
 }: {
   mod: ClusterModule;
   mode: "compact" | "expanded";
   data: DiscordSnapshot | null;
   preview?: boolean;
-  onClick: (e: MouseEvent<HTMLDivElement>) => void;
+  onToggleExpand: (id: string) => void;
 }) {
+  const onClick = (e: MouseEvent<HTMLDivElement>) => {
+    if (!shouldIgnoreExpand(e)) onToggleExpand(mod.id);
+  };
   const running = Boolean(data?.running);
   const inCall = Boolean(data?.inCall);
   const participants = data?.participants ?? [];
@@ -862,7 +899,9 @@ function DiscordClusterMod({
   const [nowMs, setNowMs] = useState(() => Date.now());
   useEffect(() => {
     if (!inCall || preview) return;
-    const id = window.setInterval(() => setNowMs(Date.now()), 1_000);
+    const id = window.setInterval(() => {
+      if (!document.hidden) setNowMs(Date.now());
+    }, 1_000);
     return () => window.clearInterval(id);
   }, [inCall, preview]);
 
@@ -958,23 +997,26 @@ function DiscordClusterMod({
       </div>
     </div>
   );
-}
+});
 
-function AgentsClusterMod({
+const AgentsClusterMod = memo(function AgentsClusterMod({
   mod,
   mode,
   data,
   nowMs,
   preview,
-  onClick,
+  onToggleExpand,
 }: {
   mod: ClusterModule;
   mode: "compact" | "expanded";
   data: AgentsSnapshot | null;
   nowMs: number;
   preview?: boolean;
-  onClick: (e: MouseEvent<HTMLDivElement>) => void;
+  onToggleExpand: (id: string) => void;
 }) {
+  const onClick = (e: MouseEvent<HTMLDivElement>) => {
+    if (!shouldIgnoreExpand(e)) onToggleExpand(mod.id);
+  };
   const resolved = resolveAgentsSettings(mod.settings);
   const allSessions = data?.sessions ?? [];
   const visible = filterAgentSessions(allSessions, resolved.recentWindowMin, nowMs);
@@ -1095,7 +1137,7 @@ function AgentsClusterMod({
       </div>
     </div>
   );
-}
+});
 
 const PREVIEW_CLUSTER_NOTE = "- [x] Havregryn og kaffe\n- [ ] Mælk og æbler\n- [ ] Rugbrød";
 
@@ -1103,21 +1145,24 @@ const PREVIEW_CLUSTER_NOTE = "- [x] Havregryn og kaffe\n- [ ] Mælk og æbler\n-
 // blinker tomt mens disken genindlæses.
 const noteTextCache = new Map<string, string>();
 
-function NoteClusterMod({
+const NoteClusterMod = memo(function NoteClusterMod({
   mod,
   mode,
   widgetId,
   editMode,
   preview,
-  onClick,
+  onToggleExpand,
 }: {
   mod: ClusterModule;
   mode: "compact" | "expanded";
   widgetId: string;
   editMode: boolean;
   preview?: boolean;
-  onClick: (e: MouseEvent<HTMLDivElement>) => void;
+  onToggleExpand: (id: string) => void;
 }) {
+  const onClick = (e: MouseEvent<HTMLDivElement>) => {
+    if (!shouldIgnoreExpand(e)) onToggleExpand(mod.id);
+  };
   const settings = resolveNoteSettings(mod.settings);
   const isPreviewSample = Boolean(preview && widgetId.startsWith("preview-"));
   const [text, setText] = useState(() =>
@@ -1293,7 +1338,7 @@ function NoteClusterMod({
       </div>
     </div>
   );
-}
+});
 
 export function ClusterPillBarHeader({
   modules,

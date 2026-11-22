@@ -1,5 +1,5 @@
 import { ArrowDown, ArrowUp, Cpu, GraphicsCard, HardDrives, Memory } from "@phosphor-icons/react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { SystemCaps } from "../../../shared/bindings/SystemCaps";
 import type { SystemSample } from "../../../shared/bindings/SystemSample";
 import type { ThemeId } from "../../../shared/bindings/ThemeId";
@@ -79,19 +79,11 @@ interface SystemProps {
   onAriaChange?: (aria: string) => void;
 }
 
-const MAX_HISTORY = 60;
-
 export function System({ size, theme, settings, onAriaChange }: SystemProps) {
   const { status, data: sample, showSkeleton } = useProvider("system");
-  const rawHistory = useSystemHistory(true);
+  const history = useSystemHistory(true, sample);
   const [caps, setCaps] = useState<SystemCaps | null>(null);
-
-  const history = useMemo(() => {
-    if (!sample) return rawHistory;
-    const last = rawHistory[rawHistory.length - 1];
-    if (last && last.t === sample.t) return rawHistory;
-    return [...rawHistory, sample].slice(-MAX_HISTORY);
-  }, [rawHistory, sample]);
+  const lastAriaBucketRef = useRef<string>("");
 
   useEffect(() => {
     let active = true;
@@ -108,6 +100,16 @@ export function System({ size, theme, settings, onAriaChange }: SystemProps) {
 
   useEffect(() => {
     if (!sample || !onAriaChange) return;
+    const cpuBucket = Math.round(sample.cpu.usage / 5) * 5;
+    const memGb = Math.round(Number(sample.mem.usedBytes) / (1024 * 1024 * 1024));
+    const gpuBucket =
+      sample.gpu?.usage !== null && sample.gpu?.usage !== undefined
+        ? Math.round(sample.gpu.usage / 5) * 5
+        : -1;
+    const bucketKey = `${cpuBucket}:${memGb}:${gpuBucket}`;
+    if (lastAriaBucketRef.current === bucketKey) return;
+    lastAriaBucketRef.current = bucketKey;
+
     const cpuStr = `${Math.round(sample.cpu.usage)} procent`;
     const used = formatBytes(Number(sample.mem.usedBytes));
     const total = formatBytes(Number(sample.mem.totalBytes));
@@ -141,6 +143,7 @@ export function System({ size, theme, settings, onAriaChange }: SystemProps) {
       case "cpu": {
         const pct = Math.min(100, Math.max(0, sample.cpu.usage));
         const freq = sample.cpu.freqMhz ? formatFrequencyGhz(sample.cpu.freqMhz) : "";
+        const coreCount = sample.cpu.coreCount || sample.cpu.perCore.length;
         return {
           key: "cpu",
           label: t("system.cpu"),
@@ -150,7 +153,7 @@ export function System({ size, theme, settings, onAriaChange }: SystemProps) {
           valueText: formatPercent(pct / 100),
           integerPart: `${Math.round(pct)}`,
           unitPart: "%",
-          secondaryText: freq || `${sample.cpu.perCore.length} kerner`,
+          secondaryText: freq || `${coreCount} kerner`,
           tempText:
             settings.showTemps && sample.cpu.tempC !== null ? formatTemperature(sample.cpu.tempC) : "",
           tempValue: sample.cpu.tempC,
@@ -353,9 +356,10 @@ export function System({ size, theme, settings, onAriaChange }: SystemProps) {
       settings.primary === "cpu"
         ? [freq, primary.tempText].filter(Boolean).join(" · ")
         : primary.tempText;
+    const coreCount = sample.cpu.coreCount || sample.cpu.perCore.length;
     const footer =
       settings.primary === "cpu"
-        ? `${sample.cpu.perCore.length} kerner`
+        ? `${coreCount} kerner`
         : primary.secondaryText;
 
     return (

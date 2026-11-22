@@ -80,55 +80,128 @@ impl AgentPaths {
     }
 }
 
-/// Letvægts cache af DB-resultater så uændrede SQLite-filer ikke genlæses unødigt.
+/// Cache af DB-resultater, parsed fil-haler og manglende mapper så uændrede kilder aldrig genlæses fra disk.
+const MISSING_DIR_TTL_MS: i64 = 60_000;
+const MAX_CACHED_FILES: usize = 256;
+
 #[derive(Default)]
 pub struct SourceCache {
     db_entries: HashMap<PathBuf, CachedSource>,
+    missing_dirs: HashMap<PathBuf, i64>,
+    file_entries: HashMap<PathBuf, CachedFileSession>,
 }
 
 struct CachedSource {
     fingerprint: (i64, u64),
-    cached_at_ms: i64,
     sessions: Vec<AgentSession>,
 }
 
+#[derive(Clone)]
+struct CachedFileSession {
+    fingerprint: (i64, u64),
+    session: AgentSession,
+    /// For Codex .jsonl: den udtrukne thread_id som nøgle i `by_thread`.
+    merge_key: Option<String>,
+    /// Rå tail-status fra seneste læsning (så `allow_working` kan gen-evalueres i RAM).
+    raw_working_status: Option<AgentStatus>,
+    raw_working_detail: Option<String>,
+}
+
 impl SourceCache {
-    fn get_if_fresh(
+    fn dir_exists(&mut self, dir: &Path, now: i64) -> bool {
+        if let Some(&checked_at) = self.missing_dirs.get(dir) {
+            if now - checked_at < MISSING_DIR_TTL_MS {
+                return false;
+            }
+        }
+        if dir.is_dir() {
+            self.missing_dirs.remove(dir);
+            true
+        } else {
+            self.missing_dirs.insert(dir.to_path_buf(), now);
+            false
+        }
+    }
+
+    fn get_db_if_unchanged(
         &self,
         path: &Path,
         fp: (i64, u64),
+        procs: &ProcessIndex,
         now: i64,
     ) -> Option<Vec<AgentSession>> {
         let entry = self.db_entries.get(path)?;
         if entry.fingerprint != fp {
             return None;
         }
-        // Hvis nogen session stadig er aktiv, genlæs altid så status/timeout opdateres præcist.
-        if entry
-            .sessions
-            .iter()
-            .any(|s| matches!(s.status, AgentStatus::Working | AgentStatus::Waiting))
-        {
-            return None;
-        }
-        if now - entry.cached_at_ms > 10_000 {
-            return None;
-        }
-        Some(entry.sessions.clone())
+        Some(reconcile_cached_sessions(&entry.sessions, procs, now))
     }
 
-    fn store(&mut self, path: &Path, fp: Option<(i64, u64)>, now: i64, sessions: &[AgentSession]) {
+    fn store_db(&mut self, path: &Path, fp: Option<(i64, u64)>, sessions: &[AgentSession]) {
         if let Some(fingerprint) = fp {
             self.db_entries.insert(
                 path.to_path_buf(),
                 CachedSource {
                     fingerprint,
-                    cached_at_ms: now,
                     sessions: sessions.to_vec(),
                 },
             );
         }
     }
+
+    fn get_file(&self, path: &Path, fp: (i64, u64)) -> Option<&CachedFileSession> {
+        self.file_entries.get(path).filter(|e| e.fingerprint == fp)
+    }
+
+    fn store_file(&mut self, path: PathBuf, entry: CachedFileSession) {
+        if self.file_entries.len() >= MAX_CACHED_FILES && !self.file_entries.contains_key(&path) {
+            self.file_entries.clear();
+        }
+        self.file_entries.insert(path, entry);
+    }
+}
+
+fn exes_for_cached_agent(agent: &str) -> &'static [&'static str] {
+    match agent {
+        "antigravity" => &["antigravity", "language_server"],
+        "devin" => &["devin"],
+        "codex" => &["codex", "codex-cli"],
+        "claude-code" => &["claude", "claude-code"],
+        "cursor" => &["cursor"],
+        "gemini" => &["gemini"],
+        "opencode" => &["opencode"],
+        "windsurf" => &["windsurf"],
+        _ => &[],
+    }
+}
+
+fn reconcile_cached_sessions(
+    cached: &[AgentSession],
+    procs: &ProcessIndex,
+    now: i64,
+) -> Vec<AgentSession> {
+    let mut out = Vec::with_capacity(cached.len());
+    for s in cached {
+        let mut item = s.clone();
+        let exes = exes_for_cached_agent(&item.agent);
+        if !exes.is_empty() {
+            item.process_running = procs.has_any(exes);
+            item.pid = procs.first_pid(exes);
+        }
+        let age = now - item.last_active_ms;
+        if matches!(item.status, AgentStatus::Working | AgentStatus::Waiting) {
+            if !item.process_running || age > WORKING_TIMEOUT_MS {
+                item.status = AgentStatus::Idle;
+                item.detail = None;
+                item.subagent_count = 0;
+            }
+        }
+        let still_active = matches!(item.status, AgentStatus::Working | AgentStatus::Waiting);
+        if still_active || (item.last_active_ms > 0 && age <= MAX_RECENT_MS) {
+            out.push(item);
+        }
+    }
+    out
 }
 
 pub fn scan_all_sessions(
@@ -139,59 +212,85 @@ pub fn scan_all_sessions(
 ) -> Vec<AgentSession> {
     let mut sessions = Vec::new();
 
-    if let Some(cached) = cache
-        .as_deref()
-        .and_then(|c| db_fingerprint(&paths.agy_db).and_then(|fp| c.get_if_fresh(&paths.agy_db, fp, now)))
-    {
-        sessions.extend(cached);
-    } else {
-        let agy = scan_antigravity(paths, procs, now);
-        if let Some(c) = cache.as_deref_mut() {
-            c.store(&paths.agy_db, db_fingerprint(&paths.agy_db), now, &agy);
+    if let Some(fp) = db_fingerprint(&paths.agy_db) {
+        if let Some(cached) = cache
+            .as_deref()
+            .and_then(|c| c.get_db_if_unchanged(&paths.agy_db, fp, procs, now))
+        {
+            sessions.extend(cached);
+        } else {
+            let agy = scan_antigravity(paths, procs, now);
+            if let Some(c) = cache.as_deref_mut() {
+                c.store_db(&paths.agy_db, Some(fp), &agy);
+            }
+            sessions.extend(agy);
         }
-        sessions.extend(agy);
     }
 
     if let Some(devin_db) = paths.devin_db.as_deref() {
-        if let Some(cached) = cache
-            .as_deref()
-            .and_then(|c| db_fingerprint(devin_db).and_then(|fp| c.get_if_fresh(devin_db, fp, now)))
-        {
-            sessions.extend(cached);
-        } else {
-            let devin = scan_devin(devin_db, procs, now);
-            if let Some(c) = cache.as_deref_mut() {
-                c.store(devin_db, db_fingerprint(devin_db), now, &devin);
+        if let Some(fp) = db_fingerprint(devin_db) {
+            if let Some(cached) = cache
+                .as_deref()
+                .and_then(|c| c.get_db_if_unchanged(devin_db, fp, procs, now))
+            {
+                sessions.extend(cached);
+            } else {
+                let devin = scan_devin(devin_db, procs, now);
+                if let Some(c) = cache.as_deref_mut() {
+                    c.store_db(devin_db, Some(fp), &devin);
+                }
+                sessions.extend(devin);
             }
-            sessions.extend(devin);
         }
     }
 
-    sessions.extend(scan_codex(paths, procs, now));
-    sessions.extend(scan_claude_code(paths, procs, now));
+    sessions.extend(scan_codex_cached(paths, procs, now, cache.as_deref_mut()));
+    sessions.extend(scan_claude_code_cached(paths, procs, now, cache.as_deref_mut()));
 
     if let Some(cursor_db) = paths.cursor_db.as_deref() {
-        if let Some(cached) = cache
-            .as_deref()
-            .and_then(|c| db_fingerprint(cursor_db).and_then(|fp| c.get_if_fresh(cursor_db, fp, now)))
-        {
-            sessions.extend(cached);
-        } else {
-            let cursor = scan_cursor(cursor_db, procs, now);
-            if let Some(c) = cache.as_deref_mut() {
-                c.store(cursor_db, db_fingerprint(cursor_db), now, &cursor);
+        if let Some(fp) = db_fingerprint(cursor_db) {
+            if let Some(cached) = cache
+                .as_deref()
+                .and_then(|c| c.get_db_if_unchanged(cursor_db, fp, procs, now))
+            {
+                sessions.extend(cached);
+            } else {
+                let cursor = scan_cursor(cursor_db, procs, now);
+                if let Some(c) = cache.as_deref_mut() {
+                    c.store_db(cursor_db, Some(fp), &cursor);
+                }
+                sessions.extend(cursor);
             }
-            sessions.extend(cursor);
         }
     }
 
     if let Some(appdata) = paths.appdata.as_deref() {
-        sessions.extend(scan_editor_tasks(appdata, procs, now));
+        sessions.extend(scan_editor_tasks_cached(
+            appdata,
+            procs,
+            now,
+            cache.as_deref_mut(),
+        ));
     }
 
-    sessions.extend(scan_gemini_cli(&paths.gemini_tmp, procs, now));
-    sessions.extend(scan_opencode(&paths.opencode_dirs, procs, now));
-    sessions.extend(scan_windsurf_cascade(&paths.windsurf_cascade, procs, now));
+    sessions.extend(scan_gemini_cli_cached(
+        &paths.gemini_tmp,
+        procs,
+        now,
+        cache.as_deref_mut(),
+    ));
+    sessions.extend(scan_opencode_cached(
+        &paths.opencode_dirs,
+        procs,
+        now,
+        cache.as_deref_mut(),
+    ));
+    sessions.extend(scan_windsurf_cascade_cached(
+        &paths.windsurf_cascade,
+        procs,
+        now,
+        cache.as_deref_mut(),
+    ));
     sessions.extend(scan_aider(procs, now));
 
     sessions.sort_by(|a, b| {
@@ -302,7 +401,7 @@ pub fn scan_antigravity(paths: &AgentPaths, procs: &ProcessIndex, now: i64) -> V
             } else {
                 let d = tail_info
                     .tool_detail
-                    .or_else(|| tail_info.fallback_detail)
+                    .or(tail_info.fallback_detail)
                     .unwrap_or_else(|| "Arbejder…".to_string());
                 (AgentStatus::Working, Some(d))
             }
@@ -426,7 +525,7 @@ fn map_agy_tool_name(name: &str) -> String {
         "search_web" => "Søger på nettet",
         "invoke_subagent" | "swarm" => "Kører underagent",
         "exit_plan_mode" => "Skifter til udførelse",
-        "call_mcp_tool" | _ => "Bruger værktøj",
+        _ => "Bruger værktøj",
     }
     .to_string()
 }
@@ -707,98 +806,186 @@ fn devin_working_detail(
 // 3. Codex (~/.codex/sqlite/codex.db + ~/.codex/sessions/**/*.jsonl)
 // ---------------------------------------------------------------------------
 
+#[cfg(test)]
+#[allow(dead_code)]
 pub fn scan_codex(paths: &AgentPaths, procs: &ProcessIndex, now: i64) -> Vec<AgentSession> {
+    scan_codex_cached(paths, procs, now, None)
+}
+
+fn scan_codex_cached(
+    paths: &AgentPaths,
+    procs: &ProcessIndex,
+    now: i64,
+    mut cache: Option<&mut SourceCache>,
+) -> Vec<AgentSession> {
     let codex_running = procs.has_any(&["codex", "codex-cli"]);
     let codex_pid = procs.first_pid(&["codex", "codex-cli"]);
     let mut by_thread: HashMap<String, AgentSession> = HashMap::new();
 
-    if let Some(conn) = open_readonly(&paths.codex_db) {
-        let mut active_threads: HashMap<String, i64> = HashMap::new();
-        if let Ok(mut stmt) =
-            conn.prepare("SELECT thread_id, observed_at_ms FROM active_chat_turns")
+    if let Some(fp) = db_fingerprint(&paths.codex_db) {
+        let db_sessions = if let Some(cached) = cache
+            .as_deref()
+            .and_then(|c| c.get_db_if_unchanged(&paths.codex_db, fp, procs, now))
         {
-            if let Ok(iter) = stmt.query_map([], |r| {
-                Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))
-            }) {
-                for (tid, obs_ms) in iter.flatten() {
-                    active_threads
-                        .entry(tid)
-                        .and_modify(|prev| *prev = (*prev).max(obs_ms))
-                        .or_insert(obs_ms);
+            cached
+        } else {
+            let mut fresh = Vec::new();
+            if let Some(conn) = open_readonly(&paths.codex_db) {
+                let mut active_threads: HashMap<String, i64> = HashMap::new();
+                if let Ok(mut stmt) =
+                    conn.prepare("SELECT thread_id, observed_at_ms FROM active_chat_turns")
+                {
+                    if let Ok(iter) = stmt.query_map([], |r| {
+                        Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))
+                    }) {
+                        for (tid, obs_ms) in iter.flatten() {
+                            active_threads
+                                .entry(tid)
+                                .and_modify(|prev| *prev = (*prev).max(obs_ms))
+                                .or_insert(obs_ms);
+                        }
+                    }
+                }
+
+                if let Ok(mut stmt) = conn.prepare(
+                    "SELECT thread_id, display_title, cwd, source_updated_at, source_recency_at \
+                     FROM local_thread_catalog \
+                     WHERE missing_candidate = 0 \
+                     ORDER BY source_recency_at DESC \
+                     LIMIT 16",
+                ) {
+                    if let Ok(iter) = stmt.query_map([], |r| {
+                        Ok((
+                            r.get::<_, String>(0)?,
+                            r.get::<_, String>(1).unwrap_or_default(),
+                            r.get::<_, Option<String>>(2).unwrap_or(None),
+                            r.get::<_, f64>(3).unwrap_or(0.0),
+                            r.get::<_, f64>(4).unwrap_or(0.0),
+                        ))
+                    }) {
+                        for (tid, title, cwd, updated_at, recency_at) in iter.flatten() {
+                            if tid.is_empty() {
+                                continue;
+                            }
+                            let ts_f = updated_at.max(recency_at);
+                            let mut last_active_ms = float_epoch_to_ms(ts_f);
+                            let active_obs = active_threads.get(&tid).copied();
+                            if let Some(obs) = active_obs {
+                                last_active_ms = last_active_ms.max(normalize_epoch_ms(obs));
+                            }
+                            let is_active_turn = active_obs
+                                .map(|obs| now - normalize_epoch_ms(obs) <= WORKING_TIMEOUT_MS && codex_running)
+                                .unwrap_or(false);
+                            if !is_active_turn
+                                && (last_active_ms <= 0 || now - last_active_ms > MAX_RECENT_MS)
+                            {
+                                continue;
+                            }
+
+                            let (status, detail) = if is_active_turn {
+                                (AgentStatus::Working, Some("Arbejder…".to_string()))
+                            } else {
+                                (AgentStatus::Ready, Some("Klar til svar".to_string()))
+                            };
+
+                            fresh.push(AgentSession {
+                                id: format!("codex:{tid}"),
+                                agent: "codex".to_string(),
+                                agent_label: "Codex".to_string(),
+                                title: non_empty_trimmed(&title),
+                                project: cwd.as_deref().and_then(project_from_path_str),
+                                status,
+                                last_active_ms,
+                                detail,
+                                subagent_count: 0,
+                                todo: None,
+                                pid: codex_pid,
+                                process_running: codex_running,
+                            });
+                        }
+                    }
                 }
             }
-        }
-
-        if let Ok(mut stmt) = conn.prepare(
-            "SELECT thread_id, display_title, cwd, source_updated_at, source_recency_at \
-             FROM local_thread_catalog \
-             WHERE missing_candidate = 0 \
-             ORDER BY source_recency_at DESC \
-             LIMIT 16",
-        ) {
-            if let Ok(iter) = stmt.query_map([], |r| {
-                Ok((
-                    r.get::<_, String>(0)?,
-                    r.get::<_, String>(1).unwrap_or_default(),
-                    r.get::<_, Option<String>>(2).unwrap_or(None),
-                    r.get::<_, f64>(3).unwrap_or(0.0),
-                    r.get::<_, f64>(4).unwrap_or(0.0),
-                ))
-            }) {
-                for (tid, title, cwd, updated_at, recency_at) in iter.flatten() {
-                    if tid.is_empty() {
-                        continue;
-                    }
-                    let ts_f = updated_at.max(recency_at);
-                    let mut last_active_ms = float_epoch_to_ms(ts_f);
-                    let active_obs = active_threads.get(&tid).copied();
-                    if let Some(obs) = active_obs {
-                        last_active_ms = last_active_ms.max(normalize_epoch_ms(obs));
-                    }
-                    let is_active_turn = active_obs
-                        .map(|obs| now - normalize_epoch_ms(obs) <= WORKING_TIMEOUT_MS && codex_running)
-                        .unwrap_or(false);
-                    if !is_active_turn && (last_active_ms <= 0 || now - last_active_ms > MAX_RECENT_MS) {
-                        continue;
-                    }
-
-                    let (status, detail) = if is_active_turn {
-                        (AgentStatus::Working, Some("Arbejder…".to_string()))
-                    } else {
-                        (AgentStatus::Ready, Some("Klar til svar".to_string()))
-                    };
-
-                    by_thread.insert(
-                        tid.clone(),
-                        AgentSession {
-                            id: format!("codex:{tid}"),
-                            agent: "codex".to_string(),
-                            agent_label: "Codex".to_string(),
-                            title: non_empty_trimmed(&title),
-                            project: cwd.as_deref().and_then(project_from_path_str),
-                            status,
-                            last_active_ms,
-                            detail,
-                            subagent_count: 0,
-                            todo: None,
-                            pid: codex_pid,
-                            process_running: codex_running,
-                        },
-                    );
-                }
+            if let Some(c) = cache.as_deref_mut() {
+                c.store_db(&paths.codex_db, Some(fp), &fresh);
             }
+            fresh
+        };
+        for s in db_sessions {
+            let tid = s.id.strip_prefix("codex:").unwrap_or(&s.id).to_string();
+            by_thread.insert(tid, s);
         }
     }
 
-    // Suppler/opdater fra friske .jsonl-filer (skipper .jsonl.zst).
-    for (path, mtime_ms) in collect_recent_files(&paths.codex_sessions, &["jsonl"], 4, MAX_RECENT_MS, now, 12) {
-        let head = read_head(&path, HEAD_BYTES).unwrap_or_default();
-        let (head_tid, head_cwd, head_title) = parse_codex_head(&head);
-        let thread_id = head_tid.unwrap_or_else(|| path.to_string_lossy().to_string());
-        let project = head_cwd.as_deref().and_then(project_from_path_str);
+    let sessions_dir_ok = match cache.as_deref_mut() {
+        Some(c) => c.dir_exists(&paths.codex_sessions, now),
+        None => paths.codex_sessions.is_dir(),
+    };
+    if !sessions_dir_ok {
+        return by_thread.into_values().collect();
+    }
+
+    // Suppler/opdater fra friske .jsonl-filer (skipper .jsonl.zst og uændrede filer).
+    for (path, mtime_ms, file_len) in
+        collect_recent_files(&paths.codex_sessions, &["jsonl"], 4, MAX_RECENT_MS, now, 12)
+    {
+        let fp = (mtime_ms, file_len);
         let age = now - mtime_ms;
         let allow_working = age <= WORKING_TIMEOUT_MS && (codex_running || age <= SHORT_ACTIVE_MS);
-        let (tail_status, tail_detail, tail_todo) = parse_codex_tail(&path, allow_working);
+
+        let (thread_id, project, head_title, tail_status, tail_detail, tail_todo) =
+            if let Some(cached) = cache.as_deref().and_then(|c| c.get_file(&path, fp)).cloned() {
+                let (st, det) = match cached.raw_working_status {
+                    Some(AgentStatus::Working) if !allow_working => (Some(AgentStatus::Idle), None),
+                    other => (other, cached.raw_working_detail),
+                };
+                (
+                    cached
+                        .merge_key
+                        .unwrap_or_else(|| path.to_string_lossy().to_string()),
+                    cached.session.project,
+                    cached.session.title,
+                    st,
+                    det,
+                    cached.session.todo,
+                )
+            } else {
+                let head = read_head(&path, HEAD_BYTES).unwrap_or_default();
+                let (head_tid, head_cwd, head_title) = parse_codex_head(&head);
+                let thread_id = head_tid.unwrap_or_else(|| path.to_string_lossy().to_string());
+                let project = head_cwd.as_deref().and_then(project_from_path_str);
+                let (raw_st, raw_det, tail_todo) = parse_codex_tail(&path, true);
+                if let Some(c) = cache.as_deref_mut() {
+                    c.store_file(
+                        path.clone(),
+                        CachedFileSession {
+                            fingerprint: fp,
+                            merge_key: Some(thread_id.clone()),
+                            raw_working_status: raw_st,
+                            raw_working_detail: raw_det.clone(),
+                            session: AgentSession {
+                                id: format!("codex:{thread_id}"),
+                                agent: "codex".to_string(),
+                                agent_label: "Codex".to_string(),
+                                title: head_title.clone(),
+                                project: project.clone(),
+                                status: raw_st.unwrap_or(AgentStatus::Idle),
+                                last_active_ms: mtime_ms,
+                                detail: raw_det.clone(),
+                                subagent_count: 0,
+                                todo: tail_todo.clone(),
+                                pid: codex_pid,
+                                process_running: codex_running,
+                            },
+                        },
+                    );
+                }
+                let (st, det) = match raw_st {
+                    Some(AgentStatus::Working) if !allow_working => (Some(AgentStatus::Idle), None),
+                    other => (other, raw_det),
+                };
+                (thread_id, project, head_title, st, det, tail_todo)
+            };
 
         if let Some(existing) = by_thread.get_mut(&thread_id) {
             if mtime_ms > existing.last_active_ms {
@@ -982,20 +1169,35 @@ fn extract_codex_plan(val: &Value) -> Option<AgentTodoProgress> {
 // 4. Claude Code (~/.claude/projects/*/*.jsonl)
 // ---------------------------------------------------------------------------
 
+#[cfg(test)]
+#[allow(dead_code)]
 pub fn scan_claude_code(
     paths: &AgentPaths,
     procs: &ProcessIndex,
     now: i64,
 ) -> Vec<AgentSession> {
+    scan_claude_code_cached(paths, procs, now, None)
+}
+
+fn scan_claude_code_cached(
+    paths: &AgentPaths,
+    procs: &ProcessIndex,
+    now: i64,
+    mut cache: Option<&mut SourceCache>,
+) -> Vec<AgentSession> {
     let projects_dir = &paths.claude_projects;
-    if !projects_dir.is_dir() {
+    let dir_ok = match cache.as_deref_mut() {
+        Some(c) => c.dir_exists(projects_dir, now),
+        None => projects_dir.is_dir(),
+    };
+    if !dir_ok {
         return Vec::new();
     }
 
     let claude_running = procs.has_any(&["claude", "claude-code"]);
     let claude_pid = procs.first_pid(&["claude", "claude-code"]);
 
-    let mut newest_main_per_dir: HashMap<PathBuf, (PathBuf, i64)> = HashMap::new();
+    let mut newest_main_per_dir: HashMap<PathBuf, (PathBuf, i64, u64)> = HashMap::new();
     let mut active_subagents_per_dir: HashMap<PathBuf, u32> = HashMap::new();
 
     let mut stack = vec![(projects_dir.to_path_buf(), 0usize)];
@@ -1037,27 +1239,47 @@ pub fn scan_claude_code(
                 continue;
             }
 
+            let file_len = meta.len();
             newest_main_per_dir
                 .entry(parent)
                 .and_modify(|slot| {
                     if mtime_ms > slot.1 {
                         slot.0 = path.clone();
                         slot.1 = mtime_ms;
+                        slot.2 = file_len;
                     }
                 })
-                .or_insert((path, mtime_ms));
+                .or_insert((path, mtime_ms, file_len));
         }
     }
 
-    let mut sorted: Vec<(PathBuf, PathBuf, i64)> = newest_main_per_dir
+    let mut sorted: Vec<(PathBuf, PathBuf, i64, u64)> = newest_main_per_dir
         .into_iter()
-        .map(|(dir, (file, mtime))| (dir, file, mtime))
+        .map(|(dir, (file, mtime, len))| (dir, file, mtime, len))
         .collect();
-    sorted.sort_by(|a, b| b.2.cmp(&a.2));
+    sorted.sort_by_key(|a| std::cmp::Reverse(a.2));
     sorted.truncate(12);
 
     let mut out = Vec::new();
-    for (dir, path, mtime_ms) in sorted {
+    for (dir, path, mtime_ms, file_len) in sorted {
+        let fp = (mtime_ms, file_len);
+        let age = now - mtime_ms;
+        let allow_working = age <= WORKING_TIMEOUT_MS && (claude_running || age <= SHORT_ACTIVE_MS);
+        let subagent_count = active_subagents_per_dir.get(&dir).copied().unwrap_or(0);
+
+        if let Some(cached) = cache.as_deref().and_then(|c| c.get_file(&path, fp)).cloned() {
+            let mut session = cached.session;
+            if cached.raw_working_status == Some(AgentStatus::Working) && !allow_working {
+                session.status = AgentStatus::Idle;
+                session.detail = None;
+            }
+            session.subagent_count = subagent_count;
+            session.pid = claude_pid;
+            session.process_running = claude_running;
+            out.push(session);
+            continue;
+        }
+
         let head = read_head(&path, HEAD_BYTES).unwrap_or_default();
         let (head_cwd, head_title) = parse_claude_head(&head);
         let project = head_cwd
@@ -1069,26 +1291,49 @@ pub fn scan_claude_code(
                     .map(humanize_slug)
             });
 
-        let age = now - mtime_ms;
-        let allow_working = age <= WORKING_TIMEOUT_MS && (claude_running || age <= SHORT_ACTIVE_MS);
-        let tail = parse_claude_tail(&path, allow_working);
+        let tail = parse_claude_tail(&path, true);
         let todo = read_claude_todo_file(&paths.claude_todos, &path).or(tail.todo);
+        let raw_status = tail.status;
+        let raw_detail = tail.detail.clone();
 
-        let subagent_count = active_subagents_per_dir.get(&dir).copied().unwrap_or(0);
-        out.push(AgentSession {
+        let (eff_status, eff_detail) = if raw_status == AgentStatus::Working && !allow_working {
+            (AgentStatus::Idle, None)
+        } else {
+            (raw_status, raw_detail.clone())
+        };
+
+        let session = AgentSession {
             id: format!("claude-code:{}", path.display()),
             agent: "claude-code".to_string(),
             agent_label: "Claude Code".to_string(),
             title: tail.summary.or(head_title),
             project,
-            status: tail.status,
+            status: eff_status,
             last_active_ms: mtime_ms,
-            detail: tail.detail,
+            detail: eff_detail,
             subagent_count,
             todo,
             pid: claude_pid,
             process_running: claude_running,
-        });
+        };
+
+        if let Some(c) = cache.as_deref_mut() {
+            let mut stored = session.clone();
+            stored.status = raw_status;
+            stored.detail = raw_detail.clone();
+            c.store_file(
+                path,
+                CachedFileSession {
+                    fingerprint: fp,
+                    session: stored,
+                    merge_key: None,
+                    raw_working_status: Some(raw_status),
+                    raw_working_detail: raw_detail,
+                },
+            );
+        }
+
+        out.push(session);
     }
 
     out
@@ -1168,7 +1413,7 @@ fn read_claude_todo_file(todos_dir: &Path, session_path: &Path) -> Option<AgentT
             candidates.push((mtime, p));
         }
     }
-    candidates.sort_by(|a, b| b.0.cmp(&a.0));
+    candidates.sort_by_key(|a| std::cmp::Reverse(a.0));
     for (_, path) in candidates {
         if let Ok(raw) = fs::read_to_string(&path) {
             if let Ok(Value::Array(items)) = serde_json::from_str::<Value>(&raw) {
@@ -1423,7 +1668,18 @@ pub fn scan_cursor(db_path: &Path, procs: &ProcessIndex, now: i64) -> Vec<AgentS
 // 6. Cline / Roo Code / Kilo Code (ui_messages.json i globalStorage)
 // ---------------------------------------------------------------------------
 
+#[cfg(test)]
+#[allow(dead_code)]
 pub fn scan_editor_tasks(appdata: &Path, procs: &ProcessIndex, now: i64) -> Vec<AgentSession> {
+    scan_editor_tasks_cached(appdata, procs, now, None)
+}
+
+fn scan_editor_tasks_cached(
+    appdata: &Path,
+    procs: &ProcessIndex,
+    now: i64,
+    mut cache: Option<&mut SourceCache>,
+) -> Vec<AgentSession> {
     let editors: &[(&str, &str)] = &[
         ("Code", "code"),
         ("Code - Insiders", "code - insiders"),
@@ -1448,7 +1704,11 @@ pub fn scan_editor_tasks(appdata: &Path, procs: &ProcessIndex, now: i64) -> Vec<
                 .join("User/globalStorage")
                 .join(ext_id)
                 .join("tasks");
-            if !tasks_dir.is_dir() {
+            let dir_ok = match cache.as_deref_mut() {
+                Some(c) => c.dir_exists(&tasks_dir, now),
+                None => tasks_dir.is_dir(),
+            };
+            if !dir_ok {
                 continue;
             }
             let Ok(entries) = fs::read_dir(&tasks_dir) else {
@@ -1465,13 +1725,33 @@ pub fn scan_editor_tasks(appdata: &Path, procs: &ProcessIndex, now: i64) -> Vec<
                 if now - mtime_ms > MAX_RECENT_MS {
                     continue;
                 }
+                let fp = (mtime_ms, meta.len());
+                let age = now - mtime_ms;
+                let can_be_working = editor_running && age <= SHORT_ACTIVE_MS;
+
+                if let Some(cached) = cache.as_deref().and_then(|c| c.get_file(&ui_path, fp)).cloned()
+                {
+                    let mut session = cached.session;
+                    if cached.raw_working_status == Some(AgentStatus::Working) && !can_be_working {
+                        session.status = AgentStatus::Idle;
+                        session.detail = None;
+                    }
+                    session.pid = editor_pid;
+                    session.process_running = editor_running;
+                    out.push(session);
+                    continue;
+                }
+
                 let head = read_head(&ui_path, 2048).unwrap_or_default();
                 let title = extract_cline_task_title(&head);
                 let tail = read_tail(&ui_path, TAIL_BYTES).unwrap_or_default();
-                let age = now - mtime_ms;
-                let (status, detail) =
-                    classify_cline_tail(&tail, editor_running && age <= SHORT_ACTIVE_MS);
-                out.push(AgentSession {
+                let (raw_status, raw_detail) = classify_cline_tail(&tail, true);
+                let (status, detail) = if raw_status == AgentStatus::Working && !can_be_working {
+                    (AgentStatus::Idle, None)
+                } else {
+                    (raw_status, raw_detail.clone())
+                };
+                let session = AgentSession {
                     id: format!("{agent_id}:{}", ui_path.display()),
                     agent: (*agent_id).to_string(),
                     agent_label: (*label).to_string(),
@@ -1484,7 +1764,23 @@ pub fn scan_editor_tasks(appdata: &Path, procs: &ProcessIndex, now: i64) -> Vec<
                     todo: None,
                     pid: editor_pid,
                     process_running: editor_running,
-                });
+                };
+                if let Some(c) = cache.as_deref_mut() {
+                    let mut stored = session.clone();
+                    stored.status = raw_status;
+                    stored.detail = raw_detail.clone();
+                    c.store_file(
+                        ui_path,
+                        CachedFileSession {
+                            fingerprint: fp,
+                            session: stored,
+                            merge_key: None,
+                            raw_working_status: Some(raw_status),
+                            raw_working_detail: raw_detail,
+                        },
+                    );
+                }
+                out.push(session);
             }
         }
     }
@@ -1528,12 +1824,30 @@ fn classify_cline_tail(tail: &str, can_be_working: bool) -> (AgentStatus, Option
 // 7. Gemini CLI, OpenCode & Windsurf Cascade + Aider
 // ---------------------------------------------------------------------------
 
+#[cfg(test)]
+#[allow(dead_code)]
 pub fn scan_gemini_cli(root: &Path, procs: &ProcessIndex, now: i64) -> Vec<AgentSession> {
+    scan_gemini_cli_cached(root, procs, now, None)
+}
+
+fn scan_gemini_cli_cached(
+    root: &Path,
+    procs: &ProcessIndex,
+    now: i64,
+    mut cache: Option<&mut SourceCache>,
+) -> Vec<AgentSession> {
+    let dir_ok = match cache.as_deref_mut() {
+        Some(c) => c.dir_exists(root, now),
+        None => root.is_dir(),
+    };
+    if !dir_ok {
+        return Vec::new();
+    }
     let running = procs.has_any(&["gemini"]);
     let pid = procs.first_pid(&["gemini"]);
     let files = collect_recent_files(root, &["json"], 4, MAX_RECENT_MS, now, 8);
     let mut out = Vec::new();
-    for (path, mtime_ms) in files {
+    for (path, mtime_ms, file_len) in files {
         if !path
             .parent()
             .and_then(|p| p.file_name())
@@ -1543,13 +1857,18 @@ pub fn scan_gemini_cli(root: &Path, procs: &ProcessIndex, now: i64) -> Vec<Agent
         {
             continue;
         }
+        let fp = (mtime_ms, file_len);
         let age = now - mtime_ms;
         let working = age <= WORKING_TIMEOUT_MS && (running || age <= SHORT_ACTIVE_MS);
-        let head = read_head(&path, HEAD_BYTES).unwrap_or_default();
-        let project = extract_cwd_from_text(&head)
-            .as_deref()
-            .and_then(project_from_path_str);
-        out.push(AgentSession {
+        let project = if let Some(cached) = cache.as_deref().and_then(|c| c.get_file(&path, fp)) {
+            cached.session.project.clone()
+        } else {
+            let head = read_head(&path, HEAD_BYTES).unwrap_or_default();
+            extract_cwd_from_text(&head)
+                .as_deref()
+                .and_then(project_from_path_str)
+        };
+        let session = AgentSession {
             id: format!("gemini:{}", path.display()),
             agent: "gemini".to_string(),
             agent_label: "Gemini CLI".to_string(),
@@ -1570,29 +1889,68 @@ pub fn scan_gemini_cli(root: &Path, procs: &ProcessIndex, now: i64) -> Vec<Agent
             todo: None,
             pid,
             process_running: running,
-        });
+        };
+        if let Some(c) = cache.as_deref_mut() {
+            c.store_file(
+                path,
+                CachedFileSession {
+                    fingerprint: fp,
+                    session: session.clone(),
+                    merge_key: None,
+                    raw_working_status: None,
+                    raw_working_detail: None,
+                },
+            );
+        }
+        out.push(session);
     }
     out
 }
 
+#[cfg(test)]
+#[allow(dead_code)]
 pub fn scan_opencode(roots: &[PathBuf], procs: &ProcessIndex, now: i64) -> Vec<AgentSession> {
+    scan_opencode_cached(roots, procs, now, None)
+}
+
+fn scan_opencode_cached(
+    roots: &[PathBuf],
+    procs: &ProcessIndex,
+    now: i64,
+    mut cache: Option<&mut SourceCache>,
+) -> Vec<AgentSession> {
     let running = procs.has_any(&["opencode"]);
     let pid = procs.first_pid(&["opencode"]);
     let mut out = Vec::new();
     let mut seen_paths = HashSet::new();
 
     for root in roots {
-        for (path, mtime_ms) in collect_recent_files(root, &["json", "jsonl"], 4, MAX_RECENT_MS, now, 8) {
+        let dir_ok = match cache.as_deref_mut() {
+            Some(c) => c.dir_exists(root, now),
+            None => root.is_dir(),
+        };
+        if !dir_ok {
+            continue;
+        }
+        for (path, mtime_ms, file_len) in
+            collect_recent_files(root, &["json", "jsonl"], 4, MAX_RECENT_MS, now, 8)
+        {
             if !seen_paths.insert(path.clone()) {
                 continue;
             }
+            let fp = (mtime_ms, file_len);
             let age = now - mtime_ms;
             let working = age <= WORKING_TIMEOUT_MS && (running || age <= SHORT_ACTIVE_MS);
-            let head = read_head(&path, HEAD_BYTES).unwrap_or_default();
-            let project = extract_cwd_from_text(&head)
-                .as_deref()
-                .and_then(project_from_path_str);
-            out.push(AgentSession {
+            let project = if let Some(cached) = cache.as_deref().and_then(|c| c.get_file(&path, fp))
+            {
+                cached.session.project.clone()
+            } else {
+                let head = read_head(&path, HEAD_BYTES).unwrap_or_default();
+                extract_cwd_from_text(&head)
+                    .as_deref()
+                    .and_then(project_from_path_str)
+            };
+            let session = AgentSession {
                 id: format!("opencode:{}", path.display()),
                 agent: "opencode".to_string(),
                 agent_label: "OpenCode".to_string(),
@@ -1613,26 +1971,57 @@ pub fn scan_opencode(roots: &[PathBuf], procs: &ProcessIndex, now: i64) -> Vec<A
                 todo: None,
                 pid,
                 process_running: running,
-            });
+            };
+            if let Some(c) = cache.as_deref_mut() {
+                c.store_file(
+                    path,
+                    CachedFileSession {
+                        fingerprint: fp,
+                        session: session.clone(),
+                        merge_key: None,
+                        raw_working_status: None,
+                        raw_working_detail: None,
+                    },
+                );
+            }
+            out.push(session);
         }
     }
     out
 }
 
+#[cfg(test)]
+#[allow(dead_code)]
 pub fn scan_windsurf_cascade(
     cascade_dir: &Path,
     procs: &ProcessIndex,
     now: i64,
 ) -> Vec<AgentSession> {
+    scan_windsurf_cascade_cached(cascade_dir, procs, now, None)
+}
+
+fn scan_windsurf_cascade_cached(
+    cascade_dir: &Path,
+    procs: &ProcessIndex,
+    now: i64,
+    cache: Option<&mut SourceCache>,
+) -> Vec<AgentSession> {
     let running = procs.has_any(&["windsurf"]);
     if !running {
+        return Vec::new();
+    }
+    let dir_ok = match cache {
+        Some(c) => c.dir_exists(cascade_dir, now),
+        None => cascade_dir.is_dir(),
+    };
+    if !dir_ok {
         return Vec::new();
     }
     let pid = procs.first_pid(&["windsurf"]);
     let files = collect_recent_files(cascade_dir, &["pb"], 2, MAX_RECENT_MS, now, 6);
     files
         .into_iter()
-        .map(|(path, mtime_ms)| {
+        .map(|(path, mtime_ms, _)| {
             let age = now - mtime_ms;
             let working = age <= SHORT_ACTIVE_MS;
             AgentSession {
@@ -1701,7 +2090,7 @@ fn collect_recent_files(
     max_age_ms: i64,
     now: i64,
     limit: usize,
-) -> Vec<(PathBuf, i64)> {
+) -> Vec<(PathBuf, i64, u64)> {
     if !root.is_dir() {
         return Vec::new();
     }
@@ -1733,11 +2122,11 @@ fn collect_recent_files(
                 continue;
             };
             if now - mtime_ms <= max_age_ms {
-                found.push((path, mtime_ms));
+                found.push((path, mtime_ms, meta.len()));
             }
         }
     }
-    found.sort_by(|a, b| b.1.cmp(&a.1));
+    found.sort_by_key(|a| std::cmp::Reverse(a.1));
     found.truncate(limit);
     found
 }

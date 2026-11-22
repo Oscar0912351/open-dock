@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useMemo, useRef, useState } from "react";
 import type { Appearance } from "../../shared/bindings/Appearance";
 import type { ClusterConfig } from "../../shared/bindings/ClusterConfig";
 import type { GlassEngine } from "../../shared/bindings/GlassEngine";
@@ -53,7 +53,7 @@ export interface WidgetPreviewProps {
   className?: string;
 }
 
-export function WidgetPreview({
+export const WidgetPreview = memo(function WidgetPreview({
   id = "preview-widget",
   kind,
   size,
@@ -378,4 +378,4 @@ export function WidgetPreview({
       {inner}
     </div>
   );
-}
+});

@@ -103,21 +103,12 @@ export function ClusterShell({
     ? (resolveWeatherSettings(firstWeather.settings).locationId ?? locations[0]?.id ?? null)
     : null;
 
-  const now = useClock(hasClock && needsSeconds);
+  const now = useClock(hasClock && needsSeconds, hasClock);
   const media = useProvider("media", null, hasMedia);
   const system = useProvider("system", null, hasSystem);
   const discord = useProvider("discord", null, hasDiscord);
   const agents = useProvider("agents", null, hasAgents);
   const weather = useProvider("weather", weatherLocId, Boolean(firstWeather));
-
-  const rawSystemHistory = useSystemHistory(hasSystem);
-  const systemHistory = useMemo(() => {
-    const latest = system.data;
-    if (!hasSystem || !latest) return rawSystemHistory;
-    const last = rawSystemHistory[rawSystemHistory.length - 1];
-    if (last && last.t === latest.t) return rawSystemHistory;
-    return [...rawSystemHistory, latest].slice(-60);
-  }, [hasSystem, rawSystemHistory, system.data]);
 
   const [systemCaps, setSystemCaps] = useState<SystemCaps | null>(null);
 
@@ -350,7 +341,9 @@ export function ClusterShell({
   );
   useEffect(() => {
     if (!hasTimedAgents || preview) return;
-    const id = window.setInterval(() => setAgentsNowMs(Date.now()), 10_000);
+    const id = window.setInterval(() => {
+      if (!document.hidden) setAgentsNowMs(Date.now());
+    }, 10_000);
     return () => window.clearInterval(id);
   }, [hasTimedAgents, preview]);
 
@@ -390,6 +383,12 @@ export function ClusterShell({
       isPillBar,
     ],
   );
+
+  const systemExpanded = useMemo(
+    () => cluster.modules.some((m) => m.kind === "system" && modes.get(m.id) === "expanded"),
+    [cluster.modules, modes],
+  );
+  const systemHistory = useSystemHistory(hasSystem && systemExpanded, system.data);
 
   // Beregn initial Rust-højde så første boot ikke trigger unødig resize
   const initialIdleHeight = useMemo(() => {

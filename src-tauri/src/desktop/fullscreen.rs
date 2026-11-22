@@ -7,10 +7,7 @@ use std::{
 };
 
 use tauri::{AppHandle, Emitter, Manager};
-use tokio::{
-    sync::Notify,
-    time::{interval, MissedTickBehavior},
-};
+use tokio::sync::Notify;
 use windows::Win32::{
     System::Power::{GetSystemPowerStatus, SYSTEM_POWER_STATUS},
     UI::Shell::{
@@ -34,16 +31,19 @@ pub fn trigger_check() {
 
 pub fn start(app: AppHandle) {
     tauri::async_runtime::spawn(async move {
-        let mut poll = interval(Duration::from_secs(2));
-        poll.set_missed_tick_behavior(MissedTickBehavior::Delay);
         let notify = Arc::clone(&CHECK_NOTIFY);
         let mut last_auto: Option<PauseReason> = None;
         let mut last_fullscreen = false;
         let mut last_overlay = false;
 
         loop {
+            let sleep_dur = if last_overlay {
+                Duration::from_secs(2)
+            } else {
+                Duration::from_secs(5)
+            };
             tokio::select! {
-                _ = poll.tick() => {}
+                _ = tokio::time::sleep(sleep_dur) => {}
                 _ = notify.notified() => {
                     tokio::time::sleep(Duration::from_millis(120)).await;
                 }
@@ -52,11 +52,18 @@ pub fn start(app: AppHandle) {
             let state = app.state::<AppState>();
             let general = state.config.get().general;
             let edit_mode = state.edit_mode.load(Ordering::Acquire);
+            let has_live_wallpaper = state.wallpaper_status.read().active_surfaces > 0;
+            let need_fullscreen_check =
+                general.game_overlay || general.pause_on_fullscreen || has_live_wallpaper;
 
-            let is_fullscreen = !showdesktop::foreground_is_desktop()
-                && !showdesktop::foreground_is_shell_or_own()
-                && (shell_reports_fullscreen()
-                    || showdesktop::foreground_is_borderless_fullscreen());
+            let is_fullscreen = if need_fullscreen_check {
+                !showdesktop::foreground_is_desktop()
+                    && !showdesktop::foreground_is_shell_or_own()
+                    && (shell_reports_fullscreen()
+                        || showdesktop::foreground_is_borderless_fullscreen())
+            } else {
+                false
+            };
 
             if is_fullscreen != last_fullscreen {
                 last_fullscreen = is_fullscreen;
@@ -140,8 +147,10 @@ fn sync_top_widgets(app: &AppHandle, fullscreen: bool) {
                     );
                 }
             }
+            crate::windows::webview_opt::set_webview_suspended(&window, true);
             continue;
         }
+        crate::windows::webview_opt::set_webview_suspended(&window, false);
         match window.hwnd() {
             Ok(raw) => {
                 if let Err(error) =

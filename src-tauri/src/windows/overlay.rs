@@ -106,7 +106,9 @@ pub fn open_all(app: &AppHandle) -> Result<(), AppError> {
         let log_w = (mon.work_area.width as f64 / mon.scale).max(64.0);
         let log_h = (mon.work_area.height as f64 / mon.scale).max(64.0);
 
-        let window = WebviewWindowBuilder::new(app, &label, url)
+        let window = crate::windows::apply_webview_defaults(
+            WebviewWindowBuilder::new(app, &label, url),
+        )
             .title("Open Dock Overlay")
             .position(log_x, log_y)
             .inner_size(log_w, log_h)
@@ -166,8 +168,11 @@ pub fn open_all(app: &AppHandle) -> Result<(), AppError> {
     let phys_x = primary.work_area.x + (primary.work_area.width - phys_w) / 2;
     let phys_y = primary.work_area.y + (BAR_TOP_OFFSET * primary.scale).round() as i32;
 
-    let bar_window =
-        WebviewWindowBuilder::new(app, "overlay-bar", WebviewUrl::App("overlay.html?mode=bar".into()))
+    let bar_window = crate::windows::apply_webview_defaults(WebviewWindowBuilder::new(
+        app,
+        "overlay-bar",
+        WebviewUrl::App("overlay.html?mode=bar".into()),
+    ))
             .title("Open Dock Redigering")
             .inner_size(BAR_LOGICAL_WIDTH, BAR_LOGICAL_HEIGHT)
             .decorations(false)

@@ -10,7 +10,7 @@ use std::{
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use sysinfo::{CpuRefreshKind, MemoryRefreshKind, Networks, RefreshKind, System};
-use tauri::{AppHandle, Emitter, Manager, async_runtime::JoinHandle};
+use tauri::{async_runtime::JoinHandle, AppHandle, Manager};
 use ts_rs::TS;
 
 use crate::state::AppState;
@@ -24,6 +24,7 @@ const HISTORY_CAP: usize = 60;
 #[ts(export, export_to = "../../src/shared/bindings/")]
 pub struct CpuSample {
     pub usage: f32,
+    pub core_count: u32,
     pub per_core: Vec<f32>,
     pub freq_mhz: Option<u32>,
     pub temp_c: Option<f32>,
@@ -149,11 +150,26 @@ impl SystemProvider {
                 }
             };
 
+            let base_freq_mhz = {
+                let cpus = sys.cpus();
+                if cpus.is_empty() {
+                    None
+                } else {
+                    let sum: u64 = cpus.iter().map(|c| c.frequency()).sum();
+                    let avg = (sum / cpus.len() as u64) as u32;
+                    (avg > 0).then_some(avg)
+                }
+            };
+            let core_count = std::thread::available_parallelism()
+                .map(|n| n.get() as u32)
+                .unwrap_or_else(|_| sys.cpus().len() as u32);
+
             let mut hw = HardwareSampler::new();
             *caps_cache.lock() = Some(hw.caps.clone());
             let mut last_tick = Instant::now();
             let mut first_tick = true;
             let mut tick_count: u64 = 0;
+            let mut last_cpu_temp_c: Option<f32> = None;
 
             loop {
                 let sleep_ms = if first_tick {
@@ -171,10 +187,9 @@ impl SystemProvider {
                 first_tick = false;
                 tick_count = tick_count.wrapping_add(1);
 
-                sys.refresh_cpu_specifics(CpuRefreshKind::nothing().with_frequency());
                 sys.refresh_memory_specifics(MemoryRefreshKind::nothing().with_ram());
                 if let Some(ref mut net_list) = nets {
-                    net_list.refresh(tick_count.is_multiple_of(30));
+                    net_list.refresh(tick_count.is_multiple_of(60));
                 }
 
                 let now = Instant::now();
@@ -182,11 +197,16 @@ impl SystemProvider {
                 last_tick = now;
 
                 let hw_data = hw.sample();
-                let cpu_temp_c =
-                    tokio::task::spawn_blocking(super::cpu_sensor::sample_celsius)
+                let cpu_temp_c = if tick_count == 1 || tick_count.is_multiple_of(2) {
+                    let fresh = tokio::task::spawn_blocking(super::cpu_sensor::sample_celsius)
                         .await
                         .ok()
                         .flatten();
+                    last_cpu_temp_c = fresh;
+                    fresh
+                } else {
+                    last_cpu_temp_c
+                };
 
                 if let Some(ref mut caps) = *caps_cache.lock() {
                     if cpu_temp_c.is_some() {
@@ -198,15 +218,7 @@ impl SystemProvider {
                     continue;
                 };
 
-                let cpus = sys.cpus();
-                let freq_avg = if cpus.is_empty() {
-                    None
-                } else {
-                    let sum: u64 = cpus.iter().map(|c| c.frequency()).sum();
-                    let avg = (sum / cpus.len() as u64) as u32;
-                    (avg > 0).then_some(avg)
-                };
-                let freq_mhz = compute_effective_freq_mhz(freq_avg, hw_data.cpu_perf_pct);
+                let freq_mhz = compute_effective_freq_mhz(base_freq_mhz, hw_data.cpu_perf_pct);
 
                 let (mut rx_bytes, mut tx_bytes) = (0u64, 0u64);
                 if let Some(ref net_list) = nets {
@@ -241,7 +253,8 @@ impl SystemProvider {
                     uptime_s: System::uptime().unwrap_or(0),
                     cpu: CpuSample {
                         usage: cpu_usage,
-                        per_core: hw_data.cpu_per_core,
+                        core_count,
+                        per_core: Vec::new(),
                         freq_mhz,
                         temp_c: cpu_temp_c,
                     },
@@ -268,9 +281,13 @@ impl SystemProvider {
                     guard.push_back(sample.clone());
                 }
 
-                if let Err(err) = app_handle.emit("provider://system", &sample) {
-                    log::warn!(target: "provider:system", "Kunne ikke emitte provider://system: {err}");
-                }
+                super::scheduler::emit_provider(
+                    &app_handle,
+                    super::scheduler::ProviderKind::System,
+                    None,
+                    "provider://system",
+                    &sample,
+                );
             }
         });
 

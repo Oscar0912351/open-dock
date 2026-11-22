@@ -1,10 +1,19 @@
 use std::{
     collections::HashMap,
     path::PathBuf,
-    sync::mpsc::{self, RecvTimeoutError, Sender},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        mpsc::{self, RecvTimeoutError, Sender},
+    },
     thread,
     time::{Duration, Instant},
 };
+
+static OCCLUSION_DIRTY: AtomicBool = AtomicBool::new(true);
+
+pub fn mark_occlusion_dirty() {
+    OCCLUSION_DIRTY.store(true, Ordering::Release);
+}
 
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager};
@@ -558,10 +567,9 @@ fn engine_loop(app: AppHandle, rx: mpsc::Receiver<EngineCmd>) {
         let cmd = if let Some(c) = pending_cmd.take() {
             Some(c)
         } else if surfaces.is_empty() {
-            match rx.recv_timeout(Duration::from_millis(250)) {
+            match rx.recv() {
                 Ok(c) => Some(c),
-                Err(RecvTimeoutError::Timeout) => None,
-                Err(RecvTimeoutError::Disconnected) => break,
+                Err(_) => break,
             }
         } else {
             match rx.try_recv() {
@@ -737,7 +745,13 @@ fn engine_loop(app: AppHandle, rx: mpsc::Receiver<EngineCmd>) {
         }
 
         let now = Instant::now();
-        if now.duration_since(last_occlusion_check) >= Duration::from_millis(250) {
+        let occlusion_dirty = OCCLUSION_DIRTY.swap(false, Ordering::AcqRel);
+        let occlusion_interval = if locked_cached || surfaces.iter().all(|s| s.covered) {
+            Duration::from_millis(1500)
+        } else {
+            Duration::from_millis(1000)
+        };
+        if occlusion_dirty || now.duration_since(last_occlusion_check) >= occlusion_interval {
             last_occlusion_check = now;
             let next_locked = is_workstation_locked();
             if was_locked && !next_locked && !specs_cache.is_empty() {
@@ -831,7 +845,7 @@ fn engine_loop(app: AppHandle, rx: mpsc::Receiver<EngineCmd>) {
                 force_status,
             );
 
-            match rx.recv_timeout(Duration::from_millis(200)) {
+            match rx.recv_timeout(Duration::from_millis(1000)) {
                 Ok(next) => {
                     pending_cmd = Some(next);
                     continue;
@@ -1021,7 +1035,9 @@ fn publish_status_if_needed(
     if let Some(state) = app.try_state::<AppState>() {
         *state.wallpaper_status.write() = status.clone();
     }
-    let _ = app.emit_to("control", "wallpaper://status", status);
+    if app.get_webview_window("control").is_some() {
+        let _ = app.emit_to("control", "wallpaper://status", status);
+    }
 }
 
 fn compute_render_size(mon_w: u32, mon_h: u32, mode: WallpaperResolution) -> (u32, u32) {

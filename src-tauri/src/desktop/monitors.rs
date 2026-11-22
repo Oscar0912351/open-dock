@@ -22,6 +22,7 @@ pub struct MonitorInfo {
     pub scale: f64,
     pub logical_size: SizeF,
     pub plate_path: String,
+    pub glass_plate_path: String,
     pub avg_luma: f32,
     pub is_primary: bool,
 }
@@ -52,15 +53,12 @@ pub struct WidgetPlacement {
 }
 
 pub fn list_tauri_monitors(app: &AppHandle) -> Vec<TauriMonitorSnapshot> {
-    let primary_name = app
-        .primary_monitor()
-        .ok()
-        .flatten()
+    let primary = app.primary_monitor().ok().flatten();
+    let primary_name = primary
+        .as_ref()
         .and_then(|m| m.name().map(|n| n.to_string()));
-    let primary_pos = app
-        .primary_monitor()
-        .ok()
-        .flatten()
+    let primary_pos = primary
+        .as_ref()
         .map(|m| (m.position().x, m.position().y));
 
     let Ok(monitors) = app.available_monitors() else {
@@ -169,8 +167,9 @@ pub fn emit_all_placements(app: &AppHandle, monitors: &[MonitorEntry]) {
 pub fn start_poll(app: AppHandle) {
     tauri::async_runtime::spawn(async move {
         let mut last_snapshot = list_tauri_monitors(&app);
-        let mut poll = interval(Duration::from_secs(5));
+        let mut poll = interval(Duration::from_secs(30));
         poll.set_missed_tick_behavior(MissedTickBehavior::Delay);
+        poll.tick().await;
         loop {
             poll.tick().await;
             let current = list_tauri_monitors(&app);
@@ -405,6 +404,7 @@ mod tests {
                 height: h as f64 / scale,
             },
             plate_path: String::new(),
+            glass_plate_path: String::new(),
             avg_luma: 0.15,
             is_primary,
         }

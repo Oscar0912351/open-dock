@@ -174,7 +174,9 @@
   height: 100%;
   background: var(--accent);
   transform-origin: left center;
-  transition: transform 320ms var(--e-soft), background 240ms var(--e-soft);
+}
+.c-mini-bar > i.is-smooth {
+  transition: transform 140ms var(--e-out), background 180ms var(--e-soft);
 }
 
 .c-mini-bar > i.is-warn { background: var(--warn); }

@@ -3,6 +3,7 @@
   align-items: flex-end;
   gap: calc(2 * var(--u));
   height: calc(var(--eqh, 13) * var(--u));
+  contain: layout style paint;
 }
 .eq i {
   width: calc(2.5 * var(--u));
@@ -11,12 +12,15 @@
   background: var(--accent);
   transform-origin: bottom;
   transform: scaleY(var(--h, 0.35));
+  animation: od-eq var(--d) ease-in-out infinite;
+  animation-delay: var(--dl);
 }
 .theme-laerk .eq i {
   background: var(--ink-1);
 }
 .eq.paused i {
-  transform: scaleY(var(--h, 0.35));
+  animation: none;
+  transform: scaleY(var(--h));
 }
 
 .prog-hit {

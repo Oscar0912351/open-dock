@@ -2,4 +2,4 @@
 import type { RectI } from "./RectI";
 import type { SizeF } from "./SizeF";
 
-export type MonitorInfo = { name: string, rect: RectI, workArea: RectI, scale: number, logicalSize: SizeF, platePath: string, avgLuma: number, isPrimary: boolean, };
+export type MonitorInfo = { name: string, rect: RectI, workArea: RectI, scale: number, logicalSize: SizeF, platePath: string, glassPlatePath: string, avgLuma: number, isPrimary: boolean, };

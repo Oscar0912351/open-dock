@@ -1,5 +1,22 @@
 const NUMBER = new Intl.NumberFormat("da-DK", { maximumFractionDigits: 1 });
 const INTEGER = new Intl.NumberFormat("da-DK", { maximumFractionDigits: 0 });
+const dtfCache = new Map<string, Intl.DateTimeFormat>();
+
+export function getDateTimeFormatter(
+  locale: string,
+  cacheKey: string,
+  options: Intl.DateTimeFormatOptions,
+): Intl.DateTimeFormat {
+  let fmt = dtfCache.get(cacheKey);
+  if (!fmt) {
+    fmt = new Intl.DateTimeFormat(locale, options);
+    if (dtfCache.size > 64) {
+      dtfCache.clear();
+    }
+    dtfCache.set(cacheKey, fmt);
+  }
+  return fmt;
+}
 
 export function formatPercent(ratio: number): string {
   return `${INTEGER.format(ratio * 100)}\u202F%`;
@@ -40,17 +57,21 @@ export function formatFrequencyGhz(mhz: number): string {
 }
 
 export function formatTime(date: Date, timeZone?: string, showSeconds = false): string {
-  return new Intl.DateTimeFormat("da-DK", {
+  const key = `time:${timeZone ?? ""}:${showSeconds ? 1 : 0}`;
+  return getDateTimeFormatter("da-DK", key, {
     hour: "2-digit",
     minute: "2-digit",
     second: showSeconds ? "2-digit" : undefined,
     hourCycle: "h23",
     timeZone,
-  }).format(date).replaceAll(".", ":");
+  })
+    .format(date)
+    .replaceAll(".", ":");
 }
 
 export function formatDateShort(date: Date, timeZone?: string): string {
-  return new Intl.DateTimeFormat("da-DK", {
+  const key = `dshort:${timeZone ?? ""}`;
+  return getDateTimeFormatter("da-DK", key, {
     weekday: "short",
     day: "numeric",
     month: "short",
@@ -61,7 +82,8 @@ export function formatDateShort(date: Date, timeZone?: string): string {
 }
 
 export function formatDateLong(date: Date, timeZone?: string): string {
-  const formatted = new Intl.DateTimeFormat("da-DK", {
+  const key = `dlong:${timeZone ?? ""}`;
+  const formatted = getDateTimeFormatter("da-DK", key, {
     weekday: "long",
     day: "numeric",
     month: "short",
@@ -71,7 +93,8 @@ export function formatDateLong(date: Date, timeZone?: string): string {
 }
 
 export function formatDateAccessible(date: Date, timeZone?: string): string {
-  return new Intl.DateTimeFormat("da-DK", {
+  const key = `dacc:${timeZone ?? ""}`;
+  return getDateTimeFormatter("da-DK", key, {
     weekday: "long",
     day: "numeric",
     month: "long",
@@ -129,7 +152,7 @@ function wallTimeAsUtc(date: Date): number {
 }
 
 function zonedTimeAsUtc(date: Date, timeZone: string): number {
-  const parts = new Intl.DateTimeFormat("en-US", {
+  const parts = getDateTimeFormatter("en-US", `zoned:${timeZone}`, {
     timeZone,
     year: "numeric",
     month: "2-digit",

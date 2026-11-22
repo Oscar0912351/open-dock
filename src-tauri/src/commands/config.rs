@@ -25,11 +25,15 @@ pub fn appearance_get(app: AppHandle) -> Result<Appearance, AppError> {
 
 #[tauri::command]
 pub fn appearance_patch(app: AppHandle, patch: AppearancePatch) -> Result<Config, AppError> {
+    let glass_plate_affected = patch.theme_id.is_some() || patch.glass_strength.is_some();
     let config = app.state::<AppState>().config.mutate(|cfg| {
         cfg.appearance.apply_patch(patch);
         Ok(cfg.clone())
     })?;
     widget::reapply_glass_all(&app);
+    if glass_plate_affected {
+        crate::desktop::wallpaper::trigger_refresh_debounced();
+    }
     Ok(config)
 }
 
