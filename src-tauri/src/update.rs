@@ -1,8 +1,9 @@
 use std::{
     fs,
     io::Write,
-    path::PathBuf,
+    path::{Path, PathBuf},
     process::Command,
+    sync::atomic::{AtomicBool, Ordering},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
@@ -23,12 +24,18 @@ const STARTUP_CHECK_DELAY: Duration = Duration::from_secs(15);
 /// Cached result of the last update check, managed as Tauri state.
 pub struct UpdateTracker {
     pub last: Mutex<Option<UpdateStatus>>,
+    /// Verificeret, downloadet installer klar til silent install: (build_id, sti).
+    pub staged: Mutex<Option<(i64, PathBuf)>>,
+    /// Sandt mens et tjek eller en download er i gang — forhindrer dobbelt-arbejde.
+    pub working: AtomicBool,
 }
 
 impl Default for UpdateTracker {
     fn default() -> Self {
         Self {
             last: Mutex::new(None),
+            staged: Mutex::new(None),
+            working: AtomicBool::new(false),
         }
     }
 }
@@ -55,7 +62,14 @@ pub enum UpdateCheckState {
     /// Lokalt build uden build-id (dev/kilde-build) — opdateringstjek er slået fra.
     Dev,
     UpToDate,
+    /// Et nyt build findes — download starter straks automatisk.
     Available,
+    /// Installeren downloades i baggrunden (se update://progress for procent).
+    Downloading,
+    /// Installeren er hentet og verificeret — klar til genstart + silent install.
+    Ready,
+    /// Download eller verificering slog fejl — prøv igen via et nyt tjek.
+    Failed,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
@@ -207,30 +221,166 @@ async fn download_installer(app: &AppHandle, manifest: &ReleaseManifest) -> Resu
     Ok(path)
 }
 
-/// Henter frisk manifest, downloader, verificerer, starter installer og lukker appen.
+/// Gemmer status i trackeren og broadcaster den til frontend.
+fn set_status(app: &AppHandle, status: &UpdateStatus) {
+    if let Some(tracker) = app.try_state::<UpdateTracker>() {
+        *tracker.last.lock() = Some(status.clone());
+    }
+    if let Err(err) = app.emit("update://status", status) {
+        log::warn!(target: "update", "Kunne ikke sende update://status: {err}");
+    }
+}
+
+/// Henter manifest, sammenligner build-id og downloader automatisk i baggrunden
+/// hvis et nyt build findes. Bruges af både update_check-kommandoen og
+/// opstartstjekket — resultatet ender i Ready (eller Failed) og spejles i
+/// update://status-events hele vejen.
+pub async fn check_and_stage(app: &AppHandle) -> Result<UpdateStatus, AppError> {
+    let Some(tracker) = app.try_state::<UpdateTracker>() else {
+        return check().await;
+    };
+    if tracker.working.swap(true, Ordering::SeqCst) {
+        if let Some(last) = tracker.last.lock().clone() {
+            return Ok(last);
+        }
+        return check().await;
+    }
+    let result = run_cycle(app).await;
+    tracker.working.store(false, Ordering::SeqCst);
+    result
+}
+
+async fn run_cycle(app: &AppHandle) -> Result<UpdateStatus, AppError> {
+    let mut status = check().await?;
+    set_status(app, &status);
+    if status.state != UpdateCheckState::Available {
+        return Ok(status);
+    }
+    let Some(manifest) = status.latest.clone() else {
+        return Ok(status);
+    };
+    let Some(tracker) = app.try_state::<UpdateTracker>() else {
+        return Ok(status);
+    };
+
+    // Samme build allerede hentet og verificeret → gå direkte til Ready.
+    if let Some((build_id, path)) = tracker.staged.lock().clone() {
+        if build_id == manifest.build_id && path.exists() {
+            status.state = UpdateCheckState::Ready;
+            set_status(app, &status);
+            return Ok(status);
+        }
+    }
+
+    status.state = UpdateCheckState::Downloading;
+    set_status(app, &status);
+    match download_installer(app, &manifest).await {
+        Ok(path) => {
+            log::info!(target: "update", "Opdatering b{} hentet til {:?}", manifest.build_id, path);
+            *tracker.staged.lock() = Some((manifest.build_id, path));
+            status.state = UpdateCheckState::Ready;
+            status.checked_at = unix_now_s();
+            set_status(app, &status);
+            notify_ready(&app, &manifest.version);
+            Ok(status)
+        }
+        Err(err) => {
+            log::warn!(target: "update", "Download af opdatering fejlede: {err:?}");
+            status.state = UpdateCheckState::Failed;
+            set_status(app, &status);
+            Err(err)
+        }
+    }
+}
+
+/// Genstarter appen ind i den nye version: kører den verificerede installer
+/// silent (/S — ingen "allerede installeret"-dialog ved samme versionsnummer),
+/// og lader en frakoblet cmd-kæde vente, installere og starte appen igen.
 pub async fn install(app: &AppHandle) -> Result<(), AppError> {
     if local_build_id().is_none() {
         return Err(AppError::Other(
             "Opdatering er kun tilgængelig i release-builds".into(),
         ));
     }
-    let manifest = fetch_manifest(&client()).await?;
-    let installer = download_installer(app, &manifest).await?;
+    let tracker = app.try_state::<UpdateTracker>();
+    if let Some(t) = &tracker {
+        if t.working.swap(true, Ordering::SeqCst) {
+            return Err(AppError::Other(
+                "Opdateringen downloades stadig — vent et øjeblik".into(),
+            ));
+        }
+    }
+    let staged = tracker
+        .as_ref()
+        .and_then(|t| t.staged.lock().clone());
+
+    let result = async {
+        let installer = match staged {
+            Some((_, path)) if path.exists() => path,
+            _ => {
+                let manifest = fetch_manifest(&client()).await?;
+                download_installer(app, &manifest).await?
+            }
+        };
+        spawn_silent_install(&installer)?;
+        crate::commands::app::quit_app(app);
+        Ok(())
+    }
+    .await;
+
+    if let Some(t) = &tracker {
+        t.working.store(false, Ordering::SeqCst);
+    }
+    result
+}
+
+/// Starter en frakoblet cmd-kæde: kort pause (så appen når at lukke), derefter
+/// NSIS silent-install og til sidst genstart af det installerede build.
+fn spawn_silent_install(installer: &Path) -> Result<(), AppError> {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
+    let app_exe = std::env::current_exe()
+        .map_err(|err| AppError::Other(format!("Kunne ikke finde appens exe-sti: {err}")))?;
+    let install_dir = crate::paths::data_root()
+        .parent()
+        .map(|local| local.join("Open Dock"));
+    let relaunch = match &install_dir {
+        Some(dir) => {
+            let candidate = dir.join(app_exe.file_name().unwrap_or_default());
+            if app_exe.starts_with(dir) {
+                app_exe.clone()
+            } else if candidate.exists() {
+                candidate
+            } else {
+                app_exe.clone()
+            }
+        }
+        None => app_exe.clone(),
+    };
 
     log::info!(
         target: "update",
-        "Starter installer {:?} og lukker Open Dock",
-        installer
+        "Silent install {:?} og genstart af {:?}",
+        installer,
+        relaunch
     );
-    Command::new(&installer)
+    Command::new("cmd")
+        .arg("/c")
+        .raw_arg(format!(
+            "ping 127.0.0.1 -n 3 >nul & \"{}\" /S & \"{}\"",
+            installer.display(),
+            relaunch.display()
+        ))
+        .creation_flags(CREATE_NO_WINDOW)
         .spawn()
         .map_err(|err| AppError::Other(format!("Kunne ikke starte installationsprogrammet: {err}")))?;
-    crate::commands::app::quit_app(app);
     Ok(())
 }
 
-/// Kører ét opdateringstjek kort efter opstart (kun release-builds med build-id)
-/// og adviserer via event + Windows-notifikation hvis et nyt build findes.
+/// Kører ét opdateringstjek kort efter opstart (kun release-builds med build-id).
+/// Nye builds downloades automatisk; notifikationen kommer først når filen er
+/// verificeret og klar — så er genstart-knappen i toppen allerede synlig.
 pub fn install_background_check(app: &AppHandle) {
     if local_build_id().is_none() || cfg!(debug_assertions) {
         return;
@@ -238,36 +388,20 @@ pub fn install_background_check(app: &AppHandle) {
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
         tokio::time::sleep(STARTUP_CHECK_DELAY).await;
-        match check().await {
-            Ok(status) => {
-                if let Some(state) = app.try_state::<UpdateTracker>() {
-                    *state.last.lock() = Some(status.clone());
-                }
-                if let Err(err) = app.emit("update://status", &status) {
-                    log::warn!(target: "update", "Kunne ikke sende update://status: {err}");
-                }
-                if status.state == UpdateCheckState::Available {
-                    let remote_version = status
-                        .latest
-                        .as_ref()
-                        .map(|m| m.version.as_str())
-                        .unwrap_or("");
-                    notify_update(&app, remote_version);
-                }
-            }
-            Err(err) => {
-                log::info!(target: "update", "Baggrundstjek for opdatering fejlede: {err:?}");
-            }
+        if let Err(err) = check_and_stage(&app).await {
+            log::info!(target: "update", "Baggrundstjek for opdatering fejlede: {err:?}");
         }
     });
 }
 
-fn notify_update(app: &AppHandle, remote_version: &str) {
+fn notify_ready(app: &AppHandle, remote_version: &str) {
     use tauri_plugin_notification::NotificationExt;
     let body = if remote_version.is_empty() {
-        "En ny version af Open Dock er klar. Åbn Indstillinger for at installere den.".to_string()
+        "Opdateringen er hentet og klar — genstart Open Dock for at installere den.".to_string()
     } else {
-        format!("Open Dock {remote_version} er klar. Åbn Indstillinger for at installere den.")
+        format!(
+            "Open Dock {remote_version} er hentet og klar — genstart for at installere opdateringen."
+        )
     };
     let result = app
         .notification()

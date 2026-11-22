@@ -272,8 +272,17 @@ export function Settings() {
           : t("settings.cpuSensorInstall");
 
   const updateState = updateInfo?.state ?? null;
+  const downloadPct =
+    updateDl && updateDl.total > 0
+      ? Math.min(100, Math.round((updateDl.downloaded / updateDl.total) * 100))
+      : null;
+  const downloading = updateState === "downloading" || updateState === "available";
+
   const updateTone: "live" | "warn" | "muted" =
-    updateBusy === "install" || updateState === "available"
+    updateBusy === "install" ||
+    updateState === "ready" ||
+    updateState === "failed" ||
+    downloading
       ? "warn"
       : updateState === "upToDate"
         ? "live"
@@ -282,13 +291,19 @@ export function Settings() {
   const updateLabel =
     updateBusy === "check"
       ? t("settings.updateChecking")
-      : updateState === "available"
-        ? t("settings.updateStatusAvailable")
-        : updateState === "upToDate"
-          ? t("settings.updateStatusUpToDate")
-          : updateState === "dev"
-            ? t("settings.updateStatusDev")
-            : t("settings.updateStatusUnchecked");
+      : downloading
+        ? downloadPct !== null
+          ? t("settings.updateDownloading", { pct: downloadPct })
+          : t("settings.updateStatusDownloading")
+        : updateState === "ready"
+          ? t("settings.updateStatusReady")
+          : updateState === "failed"
+            ? t("settings.updateStatusFailed")
+            : updateState === "upToDate"
+              ? t("settings.updateStatusUpToDate")
+              : updateState === "dev"
+                ? t("settings.updateStatusDev")
+                : t("settings.updateStatusUnchecked");
 
   const buildDateFmt = getDateTimeFormatter("da-DK", "update-build", {
     day: "numeric",
@@ -301,25 +316,20 @@ export function Settings() {
       ? t("settings.updateChecking")
       : updateState === "dev"
         ? t("settings.updateHelpDev")
-        : updateState === "available" && updateInfo?.latest
-          ? t("settings.updateHelpAvailable", {
+        : downloading && updateInfo?.latest
+          ? t("settings.updateHelpDownloading", {
               version: updateInfo.latest.version,
-              date: buildDateFmt.format(new Date(updateInfo.latest.buildId * 1000)),
             })
-          : updateState === "upToDate"
-            ? t("settings.updateHelpUpToDate")
-            : t("settings.updateHelpUnchecked");
-
-  const downloadPct =
-    updateDl && updateDl.total > 0
-      ? Math.min(100, Math.round((updateDl.downloaded / updateDl.total) * 100))
-      : null;
-  const installLabel =
-    downloadPct !== null && downloadPct < 100
-      ? t("settings.updateDownloading", { pct: downloadPct })
-      : downloadPct === 100
-        ? t("settings.updateVerifying")
-        : t("settings.updateInstall");
+          : updateState === "ready" && updateInfo?.latest
+            ? t("settings.updateHelpReady", {
+                version: updateInfo.latest.version,
+                date: buildDateFmt.format(new Date(updateInfo.latest.buildId * 1000)),
+              })
+            : updateState === "failed"
+              ? t("settings.updateHelpFailed")
+              : updateState === "upToDate"
+                ? t("settings.updateHelpUpToDate")
+                : t("settings.updateHelpUnchecked");
 
   return (
     <div className="cc-route is-narrow">
@@ -608,13 +618,21 @@ export function Settings() {
             }
           >
             <div className="cc-sensor-actions">
-              {updateState === "available" ? (
+              {updateState === "ready" ? (
                 <Button
                   variant="primary"
                   disabled={updateBusy !== null}
                   onClick={() => void handleInstallUpdate()}
                 >
-                  {installLabel}
+                  {updateBusy === "install"
+                    ? t("settings.updateInstalling")
+                    : t("settings.updateRestart")}
+                </Button>
+              ) : downloading ? (
+                <Button variant="secondary" disabled>
+                  {downloadPct !== null
+                    ? t("settings.updateDownloading", { pct: downloadPct })
+                    : t("settings.updateStatusDownloading")}
                 </Button>
               ) : updateState !== "dev" ? (
                 <Button
@@ -624,7 +642,9 @@ export function Settings() {
                 >
                   {updateBusy === "check"
                     ? t("settings.updateChecking")
-                    : t("settings.updateCheck")}
+                    : updateState === "failed"
+                      ? t("settings.updateRetry")
+                      : t("settings.updateCheck")}
                 </Button>
               ) : null}
             </div>

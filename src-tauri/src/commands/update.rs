@@ -5,24 +5,14 @@ use crate::{
     update::{UpdateStatus, UpdateTracker},
 };
 
-/// Henter manifestet fra GitHub og sammenligner remote build-id med det indlejrede.
-/// Gemmer resultatet i UpdateTracker og sender det som update://status.
+/// Henter manifestet fra GitHub, sammenligner remote build-id med det indlejrede
+/// og downloader automatisk i baggrunden hvis et nyt build findes. Status og
+/// download-fremdrift sendes som update://status- og update://progress-events.
 #[tauri::command]
 pub async fn update_check(app: AppHandle) -> Result<UpdateStatus, AppError> {
-    let result = crate::update::check().await;
-    match &result {
-        Ok(status) => {
-            if let Some(tracker) = app.try_state::<UpdateTracker>() {
-                *tracker.last.lock() = Some(status.clone());
-            }
-            use tauri::Emitter;
-            if let Err(err) = app.emit("update://status", status) {
-                log::warn!(target: "cmd", "Kunne ikke sende update://status: {err}");
-            }
-        }
-        Err(error) => {
-            log::error!(target: "cmd", "update_check fejlede: {error:?}");
-        }
+    let result = crate::update::check_and_stage(&app).await;
+    if let Err(error) = &result {
+        log::error!(target: "cmd", "update_check fejlede: {error:?}");
     }
     result
 }
@@ -34,7 +24,9 @@ pub fn update_status(app: AppHandle) -> Option<UpdateStatus> {
         .and_then(|tracker| tracker.last.lock().clone())
 }
 
-/// Downloader nyeste installer, verificerer SHA-256, starter den og lukker appen.
+/// Lukker appen og lader en frakoblet kæde køre den verificerede installer
+/// silent (/S) og genstarte appen bagefter. Bruger den stagede download hvis
+/// den findes, ellers hentes og verificeres den først.
 #[tauri::command]
 pub async fn update_install(app: AppHandle) -> Result<(), AppError> {
     let result = crate::update::install(&app).await;
