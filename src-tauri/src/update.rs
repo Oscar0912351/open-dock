@@ -113,6 +113,18 @@ fn client() -> Client {
         .unwrap_or_else(|_| Client::new())
 }
 
+/// Downloads må ikke dø på en samlet request-timeout — en stor fil på en sløv
+/// forbindelse bruger længere tid end manifestet. Begræns i stedet connect-tid
+/// og stilstand mellem chunks, så fremskridt altid kan nå i mål.
+fn download_client() -> Client {
+    Client::builder()
+        .connect_timeout(Duration::from_secs(15))
+        .read_timeout(Duration::from_secs(30))
+        .user_agent(USER_AGENT)
+        .build()
+        .unwrap_or_else(|_| Client::new())
+}
+
 async fn fetch_manifest(client: &Client) -> Result<ReleaseManifest, AppError> {
     let response = client
         .get(MANIFEST_URL)
@@ -167,12 +179,43 @@ pub async fn check() -> Result<UpdateStatus, AppError> {
     })
 }
 
+/// Verificerer at en allerede-downloadet fil matcher manifestets SHA-256.
+fn verify_sha256(path: &Path, expected: &str) -> Result<bool, AppError> {
+    let bytes = fs::read(path)
+        .map_err(|err| AppError::Other(format!("Kunne ikke læse hentet fil: {err}")))?;
+    let digest = format!("{:x}", Sha256::digest(&bytes));
+    Ok(digest.eq_ignore_ascii_case(expected))
+}
+
 /// Downloader installeren fra manifestet, verificerer SHA-256 og returnerer stien.
 async fn download_installer(app: &AppHandle, manifest: &ReleaseManifest) -> Result<PathBuf, AppError> {
     if manifest.url.is_empty() || manifest.sha256.is_empty() {
         return Err(AppError::Other("Manifestet mangler url eller sha256".into()));
     }
-    let mut response = client()
+    let path = std::env::temp_dir().join(format!("open-dock-update-{}.exe", manifest.build_id));
+    // En tidligere session kan have hentet samme build — genbrug hvis hashet matcher.
+    if path.exists() {
+        if verify_sha256(&path, &manifest.sha256).unwrap_or(false) {
+            log::info!(target: "update", "Genbruger hentet installer {:?}", path);
+            return Ok(path);
+        }
+        let _ = fs::remove_file(&path);
+    }
+    // Ryd ældre builds op — filnavnet er per build-id og ellers hobles de op i TEMP.
+    if let Ok(entries) = fs::read_dir(std::env::temp_dir()) {
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let s = name.to_string_lossy();
+            if entry.path() != path
+                && s.starts_with("open-dock-update-")
+                && (s.ends_with(".exe") || s.ends_with(".download"))
+            {
+                let _ = fs::remove_file(entry.path());
+            }
+        }
+    }
+
+    let mut response = download_client()
         .get(&manifest.url)
         .send()
         .await
@@ -185,7 +228,6 @@ async fn download_installer(app: &AppHandle, manifest: &ReleaseManifest) -> Resu
     }
 
     let total = manifest.size.max(response.content_length().unwrap_or(0));
-    let path = std::env::temp_dir().join(format!("open-dock-update-{}.exe", manifest.build_id));
     let tmp_path = path.with_extension("download");
 
     let mut file = fs::File::create(&tmp_path)
@@ -214,6 +256,10 @@ async fn download_installer(app: &AppHandle, manifest: &ReleaseManifest) -> Resu
         return Err(AppError::Other(
             "Integritetstjek fejlede for den hentede fil".into(),
         ));
+    }
+    // fs::rename overskriver ikke en eksisterende fil på Windows.
+    if path.exists() {
+        let _ = fs::remove_file(&path);
     }
     if let Err(err) = fs::rename(&tmp_path, &path) {
         let _ = fs::remove_file(&tmp_path);
@@ -278,7 +324,15 @@ async fn run_cycle(app: &AppHandle) -> Result<UpdateStatus, AppError> {
     status.state = UpdateCheckState::Downloading;
     set_status(app, &status);
     let download_started = Instant::now();
-    match download_installer(app, &manifest).await {
+    let mut downloaded = download_installer(app, &manifest).await;
+    if downloaded.is_err() {
+        // Transient netfejl dræbte auto-downloaden her (body-timeout midt i
+        // streamen) — ét automatisk genforsøg før vi overhovedet melder fejl.
+        log::info!(target: "update", "Download fejlede — genforsøger om 3s");
+        tokio::time::sleep(Duration::from_secs(3)).await;
+        downloaded = download_installer(app, &manifest).await;
+    }
+    match downloaded {
         Ok(path) => {
             let elapsed = download_started.elapsed();
             if elapsed < MIN_DOWNLOAD_DISPLAY {
@@ -494,7 +548,12 @@ try {
 
 try { Wait-Process -Id $appPid -Timeout 15 } catch {}
 Start-Sleep -Milliseconds 600
-try { Start-Process -FilePath $installer -ArgumentList '/S' -Wait } catch {}
+$iproc = $null
+try { $iproc = Start-Process -FilePath $installer -ArgumentList '/S' -PassThru } catch {}
+if ($iproc) {
+    # En hængt installer må aldrig efterlade statusboksen evigt — dræb efter 3 min.
+    try { if (-not $iproc.WaitForExit(180000)) { Stop-Process -Id $iproc.Id -Force } } catch {}
+}
 try { if ($splashProc) { Stop-Process -Id $splashProc.Id -Force } } catch {}
 Start-Sleep -Milliseconds 300
 try { Start-Process -FilePath $relaunch } catch {}
