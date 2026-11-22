@@ -1,11 +1,15 @@
-use std::{mem::size_of, sync::OnceLock};
+use std::{ffi::c_void, mem::size_of, sync::OnceLock};
 
 use tauri::WebviewWindow;
-use windows::Win32::{
-    Foundation::HWND,
-    Graphics::Dwm::{
-        DwmSetWindowAttribute, DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_DONOTROUND, DWMWCP_ROUND,
-        DWM_WINDOW_CORNER_PREFERENCE,
+use windows::{
+    core::{w, PCSTR},
+    Win32::{
+        Foundation::HWND,
+        Graphics::Dwm::{
+            DwmSetWindowAttribute, DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_DONOTROUND,
+            DWMWCP_ROUND, DWM_WINDOW_CORNER_PREFERENCE,
+        },
+        System::LibraryLoader::{GetModuleHandleW, GetProcAddress},
     },
 };
 
@@ -74,11 +78,86 @@ pub fn effective_engine_in_context(
     effective_engine(preferred, widget_override, layer, size, windows_11)
 }
 
+/// SWCA-acrylic-tint per tema. Lav alpha med vilje: det rigtige indhold under
+/// widgetten (tapet eller vinduer) skal dominere ligesom på wallpaper-motoren;
+/// tinten samler kun udtrykket en smule.
 pub fn acrylic_tint_for_theme(theme: ThemeId) -> (u8, u8, u8, u8) {
     match theme {
-        ThemeId::Aurora => (18, 18, 22, 70),
-        ThemeId::Laerk => (244, 240, 233, 170),
-        ThemeId::Grafit => (18, 20, 24, 130),
+        ThemeId::Aurora => (18, 18, 22, 28),
+        ThemeId::Laerk => (244, 240, 233, 40),
+        ThemeId::Grafit => (18, 20, 24, 36),
+    }
+}
+
+const ACCENT_DISABLED: u32 = 0;
+const ACCENT_ENABLE_ACRYLICBLURBEHIND: u32 = 4;
+const WCA_ACCENT_POLICY: u32 = 0x13;
+
+#[repr(C)]
+struct AccentPolicy {
+    accent_state: u32,
+    accent_flags: u32,
+    gradient_color: u32,
+    animation_id: u32,
+}
+
+#[repr(C)]
+struct WindowCompositionAttribData {
+    attrib: u32,
+    pv_data: *mut c_void,
+    cb_data: usize,
+}
+
+type SetWindowCompositionAttributeFn =
+    unsafe extern "system" fn(HWND, *mut WindowCompositionAttribData) -> i32;
+
+/// Sætter ægte SWCA-acrylic med valgfri tint. `window_vibrancy::apply_acrylic`
+/// bruger på Windows 11 `DWMSBT_TRANSIENTWINDOW` — et fladt, gråt
+/// systemmateriale der hverken respekterer tinten eller viser det underliggende
+/// indhold tydeligt. SWCA-acrylic slør det DWM-komponerede indhold under
+/// vinduet (tapet + vinduer) med en tint vi selv styrer.
+fn set_accent(hwnd: HWND, acrylic: bool, tint: Option<(u8, u8, u8, u8)>) {
+    // Undokumenteret API — findes ikke i user32.lib og resolves derfor
+    // dynamisk, på samme måde som window_vibrancy gør internt.
+    let func = {
+        static FUNC: OnceLock<Option<SetWindowCompositionAttributeFn>> = OnceLock::new();
+        *FUNC.get_or_init(|| unsafe {
+            let module = GetModuleHandleW(w!("user32.dll")).ok()?;
+            let proc =
+                GetProcAddress(module, PCSTR(b"SetWindowCompositionAttribute\0".as_ptr()))?;
+            Some(std::mem::transmute::<
+                unsafe extern "system" fn() -> isize,
+                SetWindowCompositionAttributeFn,
+            >(proc))
+        })
+    };
+    let Some(set) = func else {
+        log::warn!("SetWindowCompositionAttribute kunne ikke resolves; acrylic sprunget over");
+        return;
+    };
+    let (r, g, b, a) = tint.unwrap_or_default();
+    // Acrylic tolererer ikke alpha=0 (slår effekten helt fra).
+    let alpha = if acrylic && a == 0 { 1 } else { a };
+    let mut policy = AccentPolicy {
+        accent_state: if acrylic {
+            ACCENT_ENABLE_ACRYLICBLURBEHIND
+        } else {
+            ACCENT_DISABLED
+        },
+        accent_flags: 0,
+        gradient_color: (r as u32)
+            | ((g as u32) << 8)
+            | ((b as u32) << 16)
+            | ((alpha as u32) << 24),
+        animation_id: 0,
+    };
+    let mut data = WindowCompositionAttribData {
+        attrib: WCA_ACCENT_POLICY,
+        pv_data: &mut policy as *mut _ as *mut c_void,
+        cb_data: size_of::<AccentPolicy>(),
+    };
+    unsafe {
+        set(hwnd, &mut data);
     }
 }
 
@@ -91,13 +170,15 @@ pub fn apply_window_glass(window: &WebviewWindow, engine: GlassEngine, theme: Th
     match engine {
         GlassEngine::Acrylic => {
             let tint = acrylic_tint_for_theme(theme);
-            if let Err(error) = window_vibrancy::apply_acrylic(window, Some(tint)) {
-                log::warn!("Kunne ikke aktivere Windows Acrylic: {error}");
-            }
+            set_accent(hwnd, true, Some(tint));
             set_corner_preference(hwnd, DWMWCP_ROUND);
         }
         GlassEngine::Wallpaper | GlassEngine::Tint => {
+            // clear_acrylic nulstiller også DWMWA_SYSTEMBACKDROP_TYPE hvis et
+            // ældre build satte transient-materialet; set_accent rydder en
+            // eventuel SWCA-acrylic.
             let _ = window_vibrancy::clear_acrylic(window);
+            set_accent(hwnd, false, None);
             set_corner_preference(hwnd, DWMWCP_DONOTROUND);
         }
     }
