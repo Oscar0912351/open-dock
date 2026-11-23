@@ -33,6 +33,7 @@ const EXIT_COPY_FAILED: i32 = 14;
 const EXIT_REGISTER_FAILED: i32 = 15;
 const EXIT_START_FAILED: i32 = 16;
 const EXIT_REMOVE_FAILED: i32 = 17;
+const EXIT_DRIVER_FAILED: i32 = 18;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
@@ -231,7 +232,7 @@ pub fn install_service() -> Result<CpuSensorStatus, String> {
                 SOURCE_DIR_FLAG.to_string(),
                 source_dir.to_string_lossy().to_string(),
             ];
-            match crate::elevation::run_elevated_self_and_wait(&args, 30_000) {
+            match crate::elevation::run_elevated_self_and_wait(&args, 60_000) {
                 Ok(c) => c as i32,
                 Err(crate::elevation::ElevatedRunError::Cancelled) => {
                     return Err("Administratoradgang blev annulleret".to_string());
@@ -289,6 +290,7 @@ fn exit_code_message(code: i32) -> &'static str {
         EXIT_REGISTER_FAILED => "Kunne ikke registrere Windows-tjenesten",
         EXIT_START_FAILED => "Tjenesten blev installeret, men kunne ikke startes",
         EXIT_REMOVE_FAILED => "Kunne ikke fjerne CPU-sensortjenesten helt",
+        EXIT_DRIVER_FAILED => "Kunne ikke installere PawnIO-driveren",
         _ => "Uventet fejl under konfiguration af CPU-sensortjenesten",
     }
 }
@@ -451,6 +453,21 @@ fn manifest_files() -> Result<Vec<(String, String)>, String> {
 }
 
 #[cfg(all(windows, target_arch = "x86_64"))]
+fn pawnio_installer() -> Result<(String, String), String> {
+    let manifest: Value =
+        serde_json::from_str(include_str!("../../resources/cpu-sensor/libraries.json"))
+            .map_err(|e| e.to_string())?;
+    let name = manifest["pawnio"]["file"]
+        .as_str()
+        .ok_or("missing PawnIO installer asset")?;
+    if name.contains(['/', '\\']) || !name.ends_with(".exe") {
+        return Err("invalid PawnIO installer path".into());
+    }
+    let hash = manifest["pawnio"]["sha256"].as_str().unwrap_or("").to_string();
+    Ok((name.to_string(), hash))
+}
+
+#[cfg(all(windows, target_arch = "x86_64"))]
 mod pipe_client {
     use super::*;
     use std::{
@@ -607,9 +624,79 @@ mod service_mgmt {
         }
     }
 
+    // LibreHardwareMonitor kræver PawnIO >= 2.2 og slår dens version op i
+    // uninstall-nøglen; vi spejler det så status matcher helperens driver-check.
+    fn pawnio_version() -> Option<(u32, u32, u32)> {
+        use windows::{
+            core::w,
+            Win32::{
+                Foundation::ERROR_SUCCESS,
+                System::Registry::{
+                    RegCloseKey, RegOpenKeyExW, RegQueryValueExW, HKEY, HKEY_LOCAL_MACHINE,
+                    KEY_READ, REG_SZ, REG_VALUE_TYPE,
+                },
+            },
+        };
+
+        struct KeyGuard(HKEY);
+        impl Drop for KeyGuard {
+            fn drop(&mut self) {
+                if !self.0.is_invalid() {
+                    unsafe {
+                        let _ = RegCloseKey(self.0);
+                    }
+                }
+            }
+        }
+
+        let mut hkey = HKEY::default();
+        let open = unsafe {
+            RegOpenKeyExW(
+                HKEY_LOCAL_MACHINE,
+                w!("SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\PawnIO"),
+                None,
+                KEY_READ,
+                &mut hkey,
+            )
+        };
+        if open != ERROR_SUCCESS {
+            return None;
+        }
+        let _guard = KeyGuard(hkey);
+
+        let mut value_type = REG_VALUE_TYPE::default();
+        let mut buf = [0u16; 64];
+        let mut size = (buf.len() * 2) as u32;
+        let query = unsafe {
+            RegQueryValueExW(
+                hkey,
+                w!("DisplayVersion"),
+                None,
+                Some(&mut value_type),
+                Some(buf.as_mut_ptr() as *mut u8),
+                Some(&mut size),
+            )
+        };
+        if query != ERROR_SUCCESS || value_type != REG_SZ || size == 0 {
+            return None;
+        }
+        let text = String::from_utf16_lossy(&buf);
+        let trimmed = text.trim_matches('\0').trim();
+        let mut parts = trimmed.split('.');
+        let major = parts.next()?.parse().ok()?;
+        let minor = parts.next().and_then(|p| p.parse().ok()).unwrap_or(0);
+        let patch = parts.next().and_then(|p| p.parse().ok()).unwrap_or(0);
+        Some((major, minor, patch))
+    }
+
+    fn driver_ready() -> bool {
+        query_named_service("PawnIO") != CpuSensorServiceState::NotInstalled
+            && pawnio_version().is_some_and(|v| v >= (2, 2, 0))
+    }
+
     pub(super) fn query_status() -> CpuSensorStatus {
         let state = query_named_service(SERVICE_NAME);
-        let driver_installed = query_named_service("PawnIO") != CpuSensorServiceState::NotInstalled;
+        let driver_installed = driver_ready();
         let outdated = if state == CpuSensorServiceState::NotInstalled {
             false
         } else {
@@ -746,14 +833,53 @@ mod service_mgmt {
             return EXIT_START_FAILED;
         }
 
+        let mut running = false;
         for _ in 0..40 {
             if query_named_service(SERVICE_NAME) == CpuSensorServiceState::Running {
-                return EXIT_OK;
+                running = true;
+                break;
             }
             thread::sleep(Duration::from_millis(150));
         }
+        if !running {
+            return EXIT_START_FAILED;
+        }
 
-        EXIT_START_FAILED
+        if driver_ready() {
+            return EXIT_OK;
+        }
+
+        install_pawnio_driver(&source_dir)
+    }
+
+    // Bundlet, hash-pinned officiel PawnIO-installer (må redistribueres uændret).
+    // Kører silent i samme eleverede session som tjeneste-installationen.
+    fn install_pawnio_driver(source_dir: &Path) -> i32 {
+        let (setup_name, setup_hash) = match pawnio_installer() {
+            Ok(pair) => pair,
+            Err(_) => return EXIT_HELPER_MISSING,
+        };
+        let setup = source_dir.join(&setup_name);
+        let Ok(_guard) = worker::checked_file(&setup, &setup_hash) else {
+            return EXIT_INTEGRITY_FAILED;
+        };
+        let ran = Command::new(&setup)
+            .args(["-install", "-silent"])
+            .current_dir(source_dir)
+            .creation_flags(CREATE_NO_WINDOW)
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+        if !ran {
+            return EXIT_DRIVER_FAILED;
+        }
+        for _ in 0..60 {
+            if driver_ready() {
+                return EXIT_OK;
+            }
+            thread::sleep(Duration::from_millis(250));
+        }
+        EXIT_DRIVER_FAILED
     }
 
     pub(super) fn elevated_uninstall() -> i32 {

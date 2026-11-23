@@ -50,6 +50,19 @@ fn build_cpu_sensor() {
         fingerprint.update(bytes);
     }
 
+    if let Some(pawnio) = metadata.get("pawnio") {
+        let name = pawnio["file"].as_str().unwrap();
+        assert!(!name.contains(['/', '\\']) && name.ends_with(".exe"));
+        let path = resources.join(name);
+        println!("cargo:rerun-if-changed={}", path.display());
+        let bytes = fs::read(&path).expect("Pinned PawnIO installer missing");
+        assert_eq!(
+            format!("{:x}", Sha256::digest(&bytes)),
+            pawnio["sha256"].as_str().unwrap(),
+            "PawnIO installer hash mismatch: {name}"
+        );
+    }
+
     let sources = [
         root.join("sensors/TemperatureSelection.cs"),
         root.join("sensors/Program.cs"),

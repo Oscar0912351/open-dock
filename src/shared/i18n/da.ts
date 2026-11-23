@@ -441,6 +441,7 @@ export const da = {
     cpuSensorStatusElevated: "Kører som admin",
     cpuSensorStatusLoading: "Tjekker…",
     cpuSensorInstall: "Aktivér",
+    cpuSensorInstallDriver: "Installér driver",
     cpuSensorInstalling: "Installerer…",
     cpuSensorRepair: "Start igen",
     cpuSensorUpdate: "Opdatér",

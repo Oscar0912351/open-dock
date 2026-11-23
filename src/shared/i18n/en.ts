@@ -443,6 +443,7 @@ export const en: Messages = {
     cpuSensorStatusElevated: "Running as admin",
     cpuSensorStatusLoading: "Checking…",
     cpuSensorInstall: "Enable",
+    cpuSensorInstallDriver: "Install driver",
     cpuSensorInstalling: "Installing…",
     cpuSensorRepair: "Restart",
     cpuSensorUpdate: "Update",

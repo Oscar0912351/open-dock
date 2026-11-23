@@ -450,12 +450,12 @@ pub fn request_authorize_code(
 }
 
 // Discord låser rpc-scopes til app-ejer + whitelistede testere på ikke-godkendte
-// apps, så et-klik via OSSI Central fejler for alle andre end Oscar selv. Giv en
-// handlingsrettet fejl der peger på egen-app-flowet i stedet for Discords rå tekst.
+// apps, så et-klik via OSSI Central fejler for alle der ikke er tilføjet som
+// testere. Giv en handlingsrettet fejl frem for Discords rå tekst.
 fn format_authorize_error(msg: &str) -> String {
     if msg.to_ascii_lowercase().contains("scope") {
-        "Discord afviste adgangen (invalid_scope) — et-klik-forbindelse kræver en app godkendt \
-         af Discord. Forbind i stedet med din egen Discord-app herunder."
+        "Discord afviste adgangen (invalid_scope) — et-klik-forbindelse virker kun for testere \
+         på Discord-appen. Bed udgiveren om tester-adgang, eller forbind med din egen app herunder."
             .into()
     } else if msg.is_empty() {
         "Discord afviste godkendelsen uden nærmere besked".into()
@@ -909,7 +909,8 @@ mod tests {
         let scope_err =
             "OAuth2 Error: invalid_scope: The requested scope is invalid, unknown, or malformed.";
         let mapped = format_authorize_error(scope_err);
-        assert!(mapped.contains("egen Discord-app"));
+        assert!(mapped.contains("tester-adgang"));
+        assert!(mapped.contains("egen app"));
         assert!(!mapped.contains("malformed"));
 
         let other = "OAuth2 Error: access_denied";

@@ -336,21 +336,26 @@ export function Settings() {
   const isInstalled =
     sensorStatus !== null &&
     (sensorStatus.state === "running" || sensorStatus.state === "stopped");
+  const needsDriver =
+    sensorStatus !== null && sensorStatus.state === "running" && !sensorStatus.driverInstalled;
   const needsInstallOrRepair =
     sensorStatus !== null &&
     !isUnsupported &&
-    (sensorStatus.state === "notInstalled" ||
+    (needsDriver ||
+      sensorStatus.state === "notInstalled" ||
       sensorStatus.state === "stopped" ||
       sensorStatus.outdated);
 
   const primaryActionLabel =
     sensorBusy === "install"
       ? t("settings.cpuSensorInstalling")
-      : sensorStatus?.state === "stopped"
-        ? t("settings.cpuSensorRepair")
-        : sensorStatus?.outdated
-          ? t("settings.cpuSensorUpdate")
-          : t("settings.cpuSensorInstall");
+      : needsDriver
+        ? t("settings.cpuSensorInstallDriver")
+        : sensorStatus?.state === "stopped"
+          ? t("settings.cpuSensorRepair")
+          : sensorStatus?.outdated
+            ? t("settings.cpuSensorUpdate")
+            : t("settings.cpuSensorInstall");
 
   const updateState = updateInfo?.state ?? null;
   const downloadPct =
