@@ -58,6 +58,10 @@ pub struct HardwareSampler {
     c_cpu_utility: Option<PDH_HCOUNTER>,
     c_cpu_total: Option<PDH_HCOUNTER>,
     c_cpu_fallback: Option<PDH_HCOUNTER>,
+    /// Jobliste bruger "% Processor Utility" foer Win11 24H2 og
+    /// reelt kerneforbrug ("% Processor Time") fra 24H2+. Vi matcher
+    /// det installerede Windows' metrik saa tallet svarer til TM.
+    tm_time_based: bool,
     c_gpu_engine: Option<PDH_HCOUNTER>,
     c_vram: Option<PDH_HCOUNTER>,
     c_disk_read: Option<PDH_HCOUNTER>,
@@ -154,10 +158,10 @@ impl HardwareSampler {
             c_cpu_perf,
             baseline_collected,
         ) = if open_status == ERROR_SUCCESS.0 {
-            // Samme taeller som Jobliste: "% Processor Utility" maaler reelt
-            // leveret arbejde (kan overstige nominel hastighed under boost),
-            // mens "% Processor Time" kun er travltids-andel og laeser
-            // systematisk lavt paa moderne CPU'er.
+            // "Utility" maaler arbejde ift. nominel hastighed (boost >100%),
+            // "Time" maaler travltids-andel. Jobliste viser Utility indtil
+            // Win11 24H2, og Time fra 24H2+ — vi registrerer begge og vælger
+            // i sample() efter `tm_time_based`.
             let c_cpu_utility = add_counter(
                 query,
                 w!("\\Processor Information(_Total)\\% Processor Utility"),
@@ -245,6 +249,7 @@ impl HardwareSampler {
             query: query_opt,
             c_cpu_utility,
             c_cpu_total,
+            tm_time_based: task_manager_uses_time_based_cpu(),
             c_cpu_fallback,
             c_gpu_engine,
             c_vram,
@@ -279,23 +284,21 @@ impl HardwareSampler {
                 if !self.baseline_collected {
                     self.baseline_collected = true;
                 } else {
-                    if let Some(counter) = self.c_cpu_utility {
-                        out.cpu_usage = sample_scalar_counter(counter)
+                    let (primary, secondary) = if self.tm_time_based {
+                        (self.c_cpu_total, self.c_cpu_utility)
+                    } else {
+                        (self.c_cpu_utility, self.c_cpu_total)
+                    };
+                    for counter in [primary, secondary, self.c_cpu_fallback]
+                        .into_iter()
+                        .flatten()
+                    {
+                        if let Some(value) = sample_scalar_counter(counter)
                             .filter(|v| v.is_finite() && *v >= 0.0)
-                            .map(|v| (v as f32).clamp(0.0, 100.0));
-                    }
-                    if out.cpu_usage.is_none() {
-                        if let Some(counter) = self.c_cpu_total {
-                            out.cpu_usage = sample_scalar_counter(counter)
-                                .filter(|v| v.is_finite() && *v >= 0.0)
-                                .map(|v| (v as f32).clamp(0.0, 100.0));
-                        }
-                    }
-                    if out.cpu_usage.is_none() {
-                        if let Some(counter) = self.c_cpu_fallback {
-                            out.cpu_usage = sample_scalar_counter(counter)
-                                .filter(|v| v.is_finite() && *v >= 0.0)
-                                .map(|v| (v as f32).clamp(0.0, 100.0));
+                            .map(|v| (v as f32).clamp(0.0, 100.0))
+                        {
+                            out.cpu_usage = Some(value);
+                            break;
                         }
                     }
                     if let Some(counter) = self.c_gpu_engine {
@@ -355,6 +358,17 @@ impl HardwareSampler {
 
         out
     }
+}
+
+/// Fra Windows 11 24H2 (build 26100) viser Jobliste reelt kerneforbrug
+/// ("% Processor Time"); aeldre versioner viser "% Processor Utility".
+/// Ukendt build -> antag moderne semantik.
+fn task_manager_uses_time_based_cpu() -> bool {
+    sysinfo::System::kernel_version()
+        .ok()
+        .and_then(|v| v.split('.').nth(2).and_then(|b| b.parse::<u32>().ok()))
+        .map(|build| build >= 26100)
+        .unwrap_or(true)
 }
 
 fn add_counter(query: PDH_HQUERY, path: PCWSTR, label: &str) -> Option<PDH_HCOUNTER> {
