@@ -25,7 +25,7 @@ use crate::{
 };
 
 const GRID_SUBCLASS_ID: usize = 0xD61A57;
-const BAR_LOGICAL_WIDTH: f64 = 560.0;
+const BAR_LOGICAL_WIDTH: f64 = 620.0;
 const BAR_LOGICAL_HEIGHT: f64 = 40.0;
 const BAR_TOP_OFFSET: f64 = 12.0;
 

@@ -85,6 +85,13 @@ body,
   color: rgba(244, 245, 246, 0.86);
   white-space: nowrap;
   user-select: none;
+  overflow: hidden;
+}
+
+.editbar span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .editbar b {
