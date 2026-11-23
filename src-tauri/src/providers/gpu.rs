@@ -58,10 +58,7 @@ pub struct HardwareSampler {
     c_cpu_utility: Option<PDH_HCOUNTER>,
     c_cpu_total: Option<PDH_HCOUNTER>,
     c_cpu_fallback: Option<PDH_HCOUNTER>,
-    /// Jobliste bruger "% Processor Utility" foer Win11 24H2 og
-    /// reelt kerneforbrug ("% Processor Time") fra 24H2+. Vi matcher
-    /// det installerede Windows' metrik saa tallet svarer til TM.
-    tm_time_based: bool,
+    cpu_utility_health: CpuUtilityHealth,
     c_gpu_engine: Option<PDH_HCOUNTER>,
     c_vram: Option<PDH_HCOUNTER>,
     c_disk_read: Option<PDH_HCOUNTER>,
@@ -158,10 +155,6 @@ impl HardwareSampler {
             c_cpu_perf,
             baseline_collected,
         ) = if open_status == ERROR_SUCCESS.0 {
-            // "Utility" maaler arbejde ift. nominel hastighed (boost >100%),
-            // "Time" maaler travltids-andel. Jobliste viser Utility indtil
-            // Win11 24H2, og Time fra 24H2+ — vi registrerer begge og vælger
-            // i sample() efter `tm_time_based`.
             let c_cpu_utility = add_counter(
                 query,
                 w!("\\Processor Information(_Total)\\% Processor Utility"),
@@ -249,7 +242,7 @@ impl HardwareSampler {
             query: query_opt,
             c_cpu_utility,
             c_cpu_total,
-            tm_time_based: task_manager_uses_time_based_cpu(),
+            cpu_utility_health: CpuUtilityHealth::default(),
             c_cpu_fallback,
             c_gpu_engine,
             c_vram,
@@ -284,23 +277,22 @@ impl HardwareSampler {
                 if !self.baseline_collected {
                     self.baseline_collected = true;
                 } else {
-                    let (primary, secondary) = if self.tm_time_based {
-                        (self.c_cpu_total, self.c_cpu_utility)
-                    } else {
-                        (self.c_cpu_utility, self.c_cpu_total)
-                    };
-                    for counter in [primary, secondary, self.c_cpu_fallback]
-                        .into_iter()
-                        .flatten()
-                    {
-                        if let Some(value) = sample_scalar_counter(counter)
-                            .filter(|v| v.is_finite() && *v >= 0.0)
-                            .map(|v| (v as f32).clamp(0.0, 100.0))
-                        {
-                            out.cpu_usage = Some(value);
-                            break;
-                        }
-                    }
+                    let cpu_perf = self
+                        .c_cpu_perf
+                        .and_then(sample_scalar_counter)
+                        .filter(|v| v.is_finite() && *v > 1.0 && *v < 500.0);
+                    out.cpu_perf_pct = cpu_perf;
+
+                    let cpu_utility = self.c_cpu_utility.and_then(sample_scalar_counter);
+                    let cpu_time = self.c_cpu_total.and_then(sample_scalar_counter);
+                    let cpu_fallback = self.c_cpu_fallback.and_then(sample_scalar_counter);
+                    out.cpu_usage = self.cpu_utility_health.select(
+                        cpu_utility,
+                        cpu_time,
+                        cpu_perf,
+                        cpu_fallback,
+                    );
+
                     if let Some(counter) = self.c_gpu_engine {
                         if let Some(raw_items) =
                             read_counter_array_items(counter, &mut self.array_buf, true)
@@ -323,10 +315,6 @@ impl HardwareSampler {
                     }
                     if let Some(counter) = self.c_disk_write {
                         out.disk_write_bps = sample_scalar_counter(counter).unwrap_or(0.0).max(0.0);
-                    }
-                    if let Some(counter) = self.c_cpu_perf {
-                        out.cpu_perf_pct = sample_scalar_counter(counter)
-                            .filter(|v| v.is_finite() && *v > 1.0 && *v < 500.0);
                     }
                 }
             }
@@ -360,15 +348,68 @@ impl HardwareSampler {
     }
 }
 
-/// Fra Windows 11 24H2 (build 26100) viser Jobliste reelt kerneforbrug
-/// ("% Processor Time"); aeldre versioner viser "% Processor Utility".
-/// Ukendt build -> antag moderne semantik.
-fn task_manager_uses_time_based_cpu() -> bool {
-    sysinfo::System::kernel_version()
-        .ok()
-        .and_then(|v| v.split('.').nth(2).and_then(|b| b.parse::<u32>().ok()))
-        .map(|build| build >= 26100)
-        .unwrap_or(true)
+#[derive(Debug, Default)]
+struct CpuUtilityHealth {
+    pinned: bool,
+    pinned_streak: u8,
+    healthy_streak: u8,
+}
+
+impl CpuUtilityHealth {
+    fn select(
+        &mut self,
+        utility: Option<f64>,
+        time: Option<f64>,
+        perf: Option<f64>,
+        fallback: Option<f64>,
+    ) -> Option<f32> {
+        let valid = |v: Option<f64>| v.filter(|x| x.is_finite() && *x >= 0.0);
+        let u = valid(utility);
+        let t = valid(time);
+        let p = valid(perf).filter(|x| *x > 10.0);
+        let f = valid(fallback);
+
+        let pinned_now = match (u, t, p) {
+            (Some(u), Some(t), Some(p)) => {
+                let tol = (p * 0.03).max(2.0);
+                (u - p).abs() <= tol && t < 90.0
+            }
+            _ => false,
+        };
+
+        let clearly_healthy = match (u, p) {
+            (Some(u), Some(p)) => u < p * 0.90,
+            _ => false,
+        };
+
+        if pinned_now {
+            self.healthy_streak = 0;
+            self.pinned_streak = self.pinned_streak.saturating_add(1);
+            if !self.pinned && self.pinned_streak >= 2 {
+                self.pinned = true;
+                log::info!(
+                    target: "provider:system",
+                    "PDH % Processor Utility følger % Processor Performance uden idle-states — skifter til % Processor Time"
+                );
+            }
+        } else if clearly_healthy {
+            self.pinned_streak = 0;
+            self.healthy_streak = self.healthy_streak.saturating_add(1);
+            if self.pinned && self.healthy_streak >= 2 {
+                self.pinned = false;
+            }
+        } else {
+            self.pinned_streak = 0;
+            self.healthy_streak = 0;
+        }
+
+        let chosen = if self.pinned || pinned_now {
+            t.or(f).or(u)
+        } else {
+            u.or(t).or(f)
+        };
+        chosen.map(|v| (v as f32).clamp(0.0, 100.0))
+    }
 }
 
 fn add_counter(query: PDH_HQUERY, path: PCWSTR, label: &str) -> Option<PDH_HCOUNTER> {
@@ -802,5 +843,43 @@ mod tests {
         assert_eq!(shorten_gpu_name("NVIDIA GeForce RTX 4070"), "RTX 4070");
         assert_eq!(shorten_gpu_name("AMD Radeon RX 7800 XT"), "RX 7800 XT");
         assert_eq!(shorten_gpu_name("Intel(R) Arc A770"), "Arc A770");
+    }
+
+    #[test]
+    fn cpu_utility_health_uses_utility_when_cstates_work_and_time_when_pinned() {
+        let mut normal = super::CpuUtilityHealth::default();
+        // Normal PC (C-states ON): Utility tracks actual work (48%) even when Time under-reports (18%)
+        assert_eq!(
+            normal.select(Some(48.0), Some(18.0), Some(120.0), None),
+            Some(48.0)
+        );
+        // Turbo-boosted heavy load (Utility 117%, Perf 180%, Time 65%): not pinned, clamped to 100
+        assert_eq!(
+            normal.select(Some(117.0), Some(65.0), Some(180.0), None),
+            Some(100.0)
+        );
+        // Genuine 100% all-core load (Time 99.5%, Utility == Perf 118%): not flagged as pinned
+        assert_eq!(
+            normal.select(Some(118.0), Some(99.5), Some(118.0), None),
+            Some(100.0)
+        );
+        assert!(!normal.pinned);
+
+        // C-states disabled PC (like Ryzen with C1=C2=C3=0): Utility == Perf (113.8%) while Time is 22.6%
+        let mut no_cstates = super::CpuUtilityHealth::default();
+        assert_eq!(
+            no_cstates.select(Some(113.8), Some(22.6), Some(113.8), None),
+            Some(22.6)
+        );
+        assert_eq!(
+            no_cstates.select(Some(113.4), Some(26.8), Some(113.4), None),
+            Some(26.8)
+        );
+        assert!(no_cstates.pinned);
+        // Stays on Time even when real load rises to 95%
+        assert_eq!(
+            no_cstates.select(Some(110.0), Some(95.0), Some(110.0), None),
+            Some(95.0)
+        );
     }
 }
