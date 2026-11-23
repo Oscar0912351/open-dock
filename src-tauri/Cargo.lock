@@ -2871,6 +2871,7 @@ version = "0.1.0"
 dependencies = [
  "base64 0.23.1",
  "image",
+ "jiff",
  "log",
  "nvml-wrapper",
  "parking_lot 0.13.0",

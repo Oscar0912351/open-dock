@@ -260,6 +260,7 @@ export function Weather({ size, theme, settings, locations, onAriaChange }: Weat
             <span className="meta trunc">
               {countryName}
               {updatedTime ? ` · ${t("weather.updated", { time: updatedTime }).toLowerCase()}` : ""}
+              {snapshot.source ? ` · ${snapshot.source}` : ""}
             </span>
           )}
         </div>

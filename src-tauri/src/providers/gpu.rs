@@ -55,6 +55,7 @@ pub struct GpuTickData {
 
 pub struct HardwareSampler {
     query: Option<PDH_HQUERY>,
+    c_cpu_utility: Option<PDH_HCOUNTER>,
     c_cpu_total: Option<PDH_HCOUNTER>,
     c_cpu_fallback: Option<PDH_HCOUNTER>,
     c_gpu_engine: Option<PDH_HCOUNTER>,
@@ -143,6 +144,7 @@ impl HardwareSampler {
 
         let (
             query_opt,
+            c_cpu_utility,
             c_cpu_total,
             c_cpu_fallback,
             c_gpu_engine,
@@ -152,12 +154,21 @@ impl HardwareSampler {
             c_cpu_perf,
             baseline_collected,
         ) = if open_status == ERROR_SUCCESS.0 {
+            // Samme taeller som Jobliste: "% Processor Utility" maaler reelt
+            // leveret arbejde (kan overstige nominel hastighed under boost),
+            // mens "% Processor Time" kun er travltids-andel og laeser
+            // systematisk lavt paa moderne CPU'er.
+            let c_cpu_utility = add_counter(
+                query,
+                w!("\\Processor Information(_Total)\\% Processor Utility"),
+                "CPU Utility",
+            );
             let c_cpu_total = add_counter(
                 query,
                 w!("\\Processor Information(_Total)\\% Processor Time"),
                 "CPU Total",
             );
-            let c_cpu_fallback = if c_cpu_total.is_none() {
+            let c_cpu_fallback = if c_cpu_utility.is_none() && c_cpu_total.is_none() {
                 add_counter(
                     query,
                     w!("\\Processor(_Total)\\% Processor Time"),
@@ -205,6 +216,7 @@ impl HardwareSampler {
 
             (
                 Some(query),
+                c_cpu_utility,
                 c_cpu_total,
                 c_cpu_fallback,
                 c_gpu_engine,
@@ -216,7 +228,7 @@ impl HardwareSampler {
             )
         } else {
             log::warn!(target: "provider:system", "PdhOpenQueryW fejlede med kode 0x{open_status:08x}");
-            (None, None, None, None, None, None, None, None, false)
+            (None, None, None, None, None, None, None, None, None, false)
         };
 
         let caps = SystemCaps {
@@ -231,6 +243,7 @@ impl HardwareSampler {
 
         Self {
             query: query_opt,
+            c_cpu_utility,
             c_cpu_total,
             c_cpu_fallback,
             c_gpu_engine,
@@ -266,10 +279,17 @@ impl HardwareSampler {
                 if !self.baseline_collected {
                     self.baseline_collected = true;
                 } else {
-                    if let Some(counter) = self.c_cpu_total {
+                    if let Some(counter) = self.c_cpu_utility {
                         out.cpu_usage = sample_scalar_counter(counter)
                             .filter(|v| v.is_finite() && *v >= 0.0)
                             .map(|v| (v as f32).clamp(0.0, 100.0));
+                    }
+                    if out.cpu_usage.is_none() {
+                        if let Some(counter) = self.c_cpu_total {
+                            out.cpu_usage = sample_scalar_counter(counter)
+                                .filter(|v| v.is_finite() && *v >= 0.0)
+                                .map(|v| (v as f32).clamp(0.0, 100.0));
+                        }
                     }
                     if out.cpu_usage.is_none() {
                         if let Some(counter) = self.c_cpu_fallback {
