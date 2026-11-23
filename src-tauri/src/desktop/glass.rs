@@ -99,12 +99,12 @@ pub fn resolve_live_backdrop_mode(
     windows_10_2004: bool,
     transparency_enabled: bool,
 ) -> LiveBackdropMode {
-    if engine != GlassEngine::Wallpaper || layer == Layer::Desktop {
+    if engine != GlassEngine::Wallpaper {
         return LiveBackdropMode::Off;
     }
     if windows_11 && transparency_enabled {
         LiveBackdropMode::NativeHostBackdrop
-    } else if windows_10_2004 {
+    } else if layer != Layer::Desktop && windows_10_2004 {
         LiveBackdropMode::CaptureD2d
     } else {
         LiveBackdropMode::Off
@@ -309,6 +309,14 @@ mod tests {
         );
         assert_eq!(
             resolve_live_backdrop_mode(GlassEngine::Wallpaper, Layer::Desktop, true, true, true),
+            LiveBackdropMode::NativeHostBackdrop
+        );
+        assert_eq!(
+            resolve_live_backdrop_mode(GlassEngine::Wallpaper, Layer::Desktop, true, true, false),
+            LiveBackdropMode::Off
+        );
+        assert_eq!(
+            resolve_live_backdrop_mode(GlassEngine::Wallpaper, Layer::Desktop, false, true, true),
             LiveBackdropMode::Off
         );
         assert_eq!(

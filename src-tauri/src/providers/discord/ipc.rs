@@ -52,6 +52,8 @@ pub struct RawParticipant {
     pub muted: bool,
     pub deafened: bool,
     pub is_self: bool,
+    /// `voice_state.session_id` — stabilt, unikt id for brugerens voice-session.
+    pub session_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -742,6 +744,7 @@ pub fn parse_voice_state_entry(
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
     let is_self = self_user_id.is_some_and(|sid| sid == id);
+    let session_id = vs.and_then(|o| non_empty_str(o.get("session_id")));
 
     Some(RawParticipant {
         id,
@@ -752,6 +755,7 @@ pub fn parse_voice_state_entry(
         muted,
         deafened,
         is_self,
+        session_id,
     })
 }
 
@@ -849,6 +853,7 @@ mod tests {
                         "discriminator": "0"
                     },
                     "voice_state": {
+                        "session_id": "sess-friend",
                         "mute": false,
                         "deaf": false,
                         "self_mute": true,
@@ -884,6 +889,7 @@ mod tests {
         assert!(ch.participants[0].muted);
         assert!(!ch.participants[0].deafened);
         assert!(!ch.participants[0].is_self);
+        assert_eq!(ch.participants[0].session_id.as_deref(), Some("sess-friend"));
 
         assert_eq!(ch.participants[1].display_name, "Oscar");
         assert!(!ch.participants[1].muted);

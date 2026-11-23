@@ -16,11 +16,10 @@ pub struct CallDetector {
     on: bool,
     raw_true: u32,
     raw_false: u32,
-    started_at: Option<i64>,
 }
 
 impl CallDetector {
-    pub fn tick(&mut self, raw: bool, now_ms: i64) -> bool {
+    pub fn tick(&mut self, raw: bool) -> bool {
         if raw {
             self.raw_true = self.raw_true.saturating_add(1);
             self.raw_false = 0;
@@ -30,24 +29,17 @@ impl CallDetector {
         }
         if !self.on && self.raw_true >= 2 {
             self.on = true;
-            self.started_at = Some(now_ms);
         }
         if self.on && self.raw_false >= 3 {
             self.on = false;
-            self.started_at = None;
         }
         self.on
-    }
-
-    pub fn started_at(&self) -> Option<i64> {
-        self.started_at
     }
 
     pub fn reset(&mut self) {
         self.on = false;
         self.raw_true = 0;
         self.raw_false = 0;
-        self.started_at = None;
     }
 }
 
@@ -104,16 +96,20 @@ pub struct AudioSessionMonitor {
 
 #[cfg(windows)]
 impl AudioSessionMonitor {
-    pub fn discord_mic_active(&mut self, pids: &[u32]) -> bool {
+    /// Finder en aktiv Discord capture-session og returnerer dens
+    /// session-instance-id — et stabilt id for den konkrete audio-session,
+    /// brugt som nøgle til at genkende samme call efter app-genstart.
+    /// `None` = ingen aktiv session (ikke i call).
+    pub fn discord_mic_session(&mut self, pids: &[u32]) -> Option<String> {
         use windows::core::Interface;
         use windows::Win32::Media::Audio::{
             eCapture, eCommunications, eConsole, AudioSessionStateActive, IAudioSessionControl2,
             IAudioSessionManager2, IMMDeviceEnumerator, MMDeviceEnumerator,
         };
-        use windows::Win32::System::Com::{CoCreateInstance, CLSCTX_ALL};
+        use windows::Win32::System::Com::{CoCreateInstance, CoTaskMemFree, CLSCTX_ALL};
 
         if pids.is_empty() {
-            return false;
+            return None;
         }
 
         if self.enumerator.is_none() {
@@ -121,13 +117,11 @@ impl AudioSessionMonitor {
                 Ok(e) => self.enumerator = Some(e),
                 Err(err) => {
                     log::warn!(target: "provider:discord", "MMDeviceEnumerator fejlede: {err}");
-                    return false;
+                    return None;
                 }
             }
         }
-        let Some(enumerator) = self.enumerator.as_ref() else {
-            return false;
-        };
+        let enumerator = self.enumerator.as_ref()?;
 
         let endpoints = [(eCapture, eCommunications), (eCapture, eConsole)];
         for (flow, role) in endpoints {
@@ -160,12 +154,22 @@ impl AudioSessionMonitor {
                 let Ok(state) = (unsafe { control2.GetState() }) else {
                     continue;
                 };
-                if state == AudioSessionStateActive {
-                    return true;
+                if state != AudioSessionStateActive {
+                    continue;
                 }
+                let id = unsafe { control2.GetSessionInstanceIdentifier() }
+                    .ok()
+                    .map(|pw| {
+                        let s = unsafe { pw.to_string() }.unwrap_or_default();
+                        unsafe { CoTaskMemFree(Some(pw.as_ptr().cast())) };
+                        s
+                    })
+                    .filter(|s| !s.is_empty())
+                    .unwrap_or_else(|| format!("pid:{pid}"));
+                return Some(id);
             }
         }
-        false
+        None
     }
 }
 
@@ -175,8 +179,8 @@ pub struct AudioSessionMonitor;
 
 #[cfg(not(windows))]
 impl AudioSessionMonitor {
-    pub fn discord_mic_active(&mut self, _pids: &[u32]) -> bool {
-        false
+    pub fn discord_mic_session(&mut self, _pids: &[u32]) -> Option<String> {
+        None
     }
 }
 
@@ -187,32 +191,29 @@ mod tests {
     #[test]
     fn requires_two_positive_samples_before_call() {
         let mut d = CallDetector::default();
-        assert!(!d.tick(true, 1000));
-        assert!(d.tick(true, 3000));
-        assert_eq!(d.started_at(), Some(3000));
+        assert!(!d.tick(true));
+        assert!(d.tick(true));
     }
 
     #[test]
     fn single_blip_does_not_trigger_call() {
         let mut d = CallDetector::default();
-        assert!(!d.tick(true, 1000));
-        assert!(!d.tick(false, 3000));
-        assert!(!d.tick(true, 5000));
-        assert!(d.tick(true, 7000));
+        assert!(!d.tick(true));
+        assert!(!d.tick(false));
+        assert!(!d.tick(true));
+        assert!(d.tick(true));
     }
 
     #[test]
     fn requires_three_negative_samples_before_leave() {
         let mut d = CallDetector::default();
-        d.tick(true, 1000);
-        d.tick(true, 3000);
-        assert!(d.tick(false, 5000));
-        assert!(d.tick(false, 7000));
-        assert!(d.tick(true, 9000));
-        assert_eq!(d.started_at(), Some(3000));
-        assert!(d.tick(false, 11000));
-        assert!(d.tick(false, 13000));
-        assert!(!d.tick(false, 15000));
-        assert_eq!(d.started_at(), None);
+        d.tick(true);
+        d.tick(true);
+        assert!(d.tick(false));
+        assert!(d.tick(false));
+        assert!(d.tick(true));
+        assert!(d.tick(false));
+        assert!(d.tick(false));
+        assert!(!d.tick(false));
     }
 }

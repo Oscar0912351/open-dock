@@ -2,6 +2,7 @@
 //! kanalnavn & mute/deafen) med WASAPI mikrofon-fallback når RPC ikke er forbundet.
 
 pub mod avatars;
+pub mod call_timer;
 pub mod credentials;
 pub mod ipc;
 pub mod wasapi;
@@ -23,6 +24,7 @@ use tauri::{AppHandle, Emitter, Manager};
 use ts_rs::TS;
 
 use crate::error::AppError;
+use call_timer::CallTimer;
 use credentials::{DiscordRpcCredentials, DEFAULT_REDIRECT_URI};
 use ipc::{DiscordIpcPipe, PipeError, RawParticipant, SelfUserProfile, OP_PONG};
 use wasapi::{AudioSessionMonitor, CallDetector};
@@ -936,6 +938,7 @@ struct RpcSessionState {
     self_deaf: bool,
     can_control_voice: bool,
     call_started_at: Option<i64>,
+    self_session_id: Option<String>,
     subscribed_channel_id: Option<String>,
     self_user_id: Option<String>,
     requested_avatars: HashSet<String>,
@@ -952,9 +955,20 @@ impl RpcSessionState {
             self_deaf: false,
             can_control_voice,
             call_started_at: None,
+            self_session_id: None,
             subscribed_channel_id: None,
             self_user_id,
             requested_avatars: HashSet::new(),
+        }
+    }
+
+    /// Slår call-timerens start-tidspunkt op i `timer`. RPC `session_id` er
+    /// en autoritativ sessions-nøgle: den kan kun matche et gemt record hvis
+    /// voice-sessionen faktisk fortsatte på tværs af app-genstart.
+    fn call_timer_value(&self, timer: &mut CallTimer, now_ms: i64) -> i64 {
+        match self.self_session_id.as_deref() {
+            Some(sid) => timer.observe(&format!("rpc:{sid}"), true, now_ms),
+            None => timer.observe_unknown(now_ms),
         }
     }
 
@@ -962,6 +976,8 @@ impl RpcSessionState {
         &mut self,
         pipe: &mut DiscordIpcPipe,
         parsed: Option<ipc::ParsedVoiceChannel>,
+        timer: &mut CallTimer,
+        now_ms: i64,
     ) {
         match parsed {
             None => {
@@ -973,6 +989,8 @@ impl RpcSessionState {
                 self.participants.clear();
                 self.speaking_ids.clear();
                 self.call_started_at = None;
+                self.self_session_id = None;
+                timer.clear();
             }
             Some(ch) => {
                 let changed = self.subscribed_channel_id.as_deref() != Some(ch.id.as_str());
@@ -982,13 +1000,16 @@ impl RpcSessionState {
                     }
                     subscribe_channel(pipe, &ch.id);
                     self.subscribed_channel_id = Some(ch.id.clone());
-                    if self.call_started_at.is_none() {
-                        self.call_started_at = Some(unix_now_ms());
-                    }
                 }
+                self.self_session_id = ch
+                    .participants
+                    .iter()
+                    .find(|p| p.is_self)
+                    .and_then(|p| p.session_id.clone());
                 self.channel_id = Some(ch.id);
                 self.channel_name = ch.name;
                 self.participants = ch.participants;
+                self.call_started_at = Some(self.call_timer_value(timer, now_ms));
                 let active_ids: HashSet<&str> =
                     self.participants.iter().map(|p| p.id.as_str()).collect();
                 self.speaking_ids.retain(|id| active_ids.contains(id.as_str()));
@@ -1240,12 +1261,14 @@ fn run_discord_thread(
     let _com = ComGuard::init();
     let mut detector = CallDetector::default();
     let mut audio_monitor = AudioSessionMonitor::default();
+    let mut call_timer = CallTimer::load(&config_dir);
     let mut last_key: Option<SnapshotKey> = None;
     let mut active_pipe: Option<(DiscordIpcPipe, RpcSessionState)> = None;
     let mut cached_creds: Option<DiscordRpcCredentials> = credentials::load_credentials(&config_dir);
     let mut next_rpc_attempt = Instant::now();
     let mut next_audio_poll = Instant::now();
     let mut consecutive_transport_errors: u32 = 0;
+    let mut last_error_is_transport = false;
 
     let emit_snapshot = |snapshot: DiscordSnapshot, last_key: &mut Option<SnapshotKey>| {
         *latest.lock() = Some(snapshot.clone());
@@ -1343,6 +1366,7 @@ fn run_discord_thread(
         if pause_for_auth {
             close_active_pipe(&mut active_pipe);
             consecutive_transport_errors = 0;
+            last_error_is_transport = false;
         }
 
         if let Some((mut pipe, can_write, profile)) = attached_pipe {
@@ -1358,12 +1382,14 @@ fn run_discord_thread(
             active_pipe = Some((pipe, state));
             detector.reset();
             consecutive_transport_errors = 0;
+            last_error_is_transport = false;
             set_rpc_connected(true, can_write, Some(&profile), None);
         } else if reload_requested {
             cached_creds = credentials::load_credentials(&config_dir);
             close_active_pipe(&mut active_pipe);
             detector.reset();
             consecutive_transport_errors = 0;
+            last_error_is_transport = false;
             next_rpc_attempt = Instant::now();
             next_audio_poll = Instant::now();
             if cached_creds.is_none() {
@@ -1392,6 +1418,7 @@ fn run_discord_thread(
                                 active_pipe = Some((pipe, state));
                                 detector.reset();
                                 consecutive_transport_errors = 0;
+                                last_error_is_transport = false;
                                 log::info!(target: "provider:discord", "Discord RPC forbundet");
                                 set_rpc_connected(true, can_write, Some(&profile), None);
                             }
@@ -1413,6 +1440,7 @@ fn run_discord_thread(
                                 } else {
                                     None
                                 };
+                                last_error_is_transport = ui_err.is_some();
                                 set_rpc_connected(false, false, None, ui_err);
                                 next_rpc_attempt = Instant::now() + backoff;
                             }
@@ -1422,11 +1450,16 @@ fn run_discord_thread(
                                     "Discord RPC afviste token: {err}"
                                 );
                                 consecutive_transport_errors = 0;
+                                last_error_is_transport = false;
                                 set_rpc_connected(false, false, None, Some(err));
                                 next_rpc_attempt = Instant::now() + IPC_RECONNECT_BACKOFF;
                             }
                         }
                     } else {
+                        if last_error_is_transport {
+                            last_error_is_transport = false;
+                            set_rpc_connected(false, false, None, None);
+                        }
                         consecutive_transport_errors = 0;
                         next_rpc_attempt = Instant::now() + IPC_RECONNECT_BACKOFF;
                     }
@@ -1491,7 +1524,7 @@ fn run_discord_thread(
                                 broken = true;
                                 break;
                             }
-                            if process_rpc_frame(&mut pipe, &mut state, &val) {
+                            if process_rpc_frame(&mut pipe, &mut state, &mut call_timer, &val) {
                                 changed = true;
                             }
                         }
@@ -1535,12 +1568,27 @@ fn run_discord_thread(
                     AUDIO_POLL_CLOSED
                 };
             let now = unix_now_ms();
+            let session_id = if running {
+                audio_monitor.discord_mic_session(&pids)
+            } else {
+                None
+            };
             let in_call = if running {
-                let raw = audio_monitor.discord_mic_active(&pids);
-                detector.tick(raw, now)
+                detector.tick(session_id.is_some())
             } else {
                 detector.reset();
                 false
+            };
+            let call_started_at = if in_call {
+                Some(match session_id.as_deref() {
+                    // WASAPI-nøglen er ikke autoritativ: genoptagelse kræver
+                    // friskt heartbeat (se CallTimer::observe).
+                    Some(id) => call_timer.observe(&format!("wasapi:{id}"), false, now),
+                    None => call_timer.observe_unknown(now),
+                })
+            } else {
+                call_timer.clear();
+                None
             };
             let snap = DiscordSnapshot {
                 running,
@@ -1555,7 +1603,7 @@ fn run_discord_thread(
                 self_mute: false,
                 self_deaf: false,
                 can_control_voice: false,
-                call_started_at: if in_call { detector.started_at() } else { None },
+                call_started_at,
                 updated_at: now,
             };
             emit_snapshot(snap, &mut last_key);
@@ -1592,6 +1640,7 @@ fn run_discord_thread(
 fn process_rpc_frame(
     pipe: &mut DiscordIpcPipe,
     state: &mut RpcSessionState,
+    timer: &mut CallTimer,
     val: &serde_json::Value,
 ) -> bool {
     let cmd = val.get("cmd").and_then(|v| v.as_str()).unwrap_or("");
@@ -1607,7 +1656,7 @@ fn process_rpc_frame(
     match (cmd, evt) {
         ("GET_SELECTED_VOICE_CHANNEL", _) => {
             let parsed = ipc::parse_voice_channel(data, state.self_user_id.as_deref());
-            state.apply_voice_channel(pipe, parsed);
+            state.apply_voice_channel(pipe, parsed, timer, unix_now_ms());
             true
         }
         ("GET_VOICE_SETTINGS", _) | ("SET_VOICE_SETTINGS", _) | ("DISPATCH", "VOICE_SETTINGS_UPDATE") => {
@@ -1621,7 +1670,7 @@ fn process_rpc_frame(
         ("DISPATCH", "VOICE_CHANNEL_SELECT") => {
             let ch_id = ipc::non_empty_str(data.get("channel_id"));
             if ch_id.is_none() {
-                state.apply_voice_channel(pipe, None);
+                state.apply_voice_channel(pipe, None, timer, unix_now_ms());
                 return true;
             }
             let _ = pipe.send_command("GET_SELECTED_VOICE_CHANNEL", json!({}), None);
@@ -1639,6 +1688,11 @@ fn process_rpc_frame(
                             .get("self_deaf")
                             .and_then(|v| v.as_bool())
                             .unwrap_or(state.self_deaf);
+                    }
+                    if p.session_id.is_some() {
+                        state.self_session_id = p.session_id.clone();
+                        state.call_started_at =
+                            Some(state.call_timer_value(timer, unix_now_ms()));
                     }
                 }
                 state.upsert_participant(p);

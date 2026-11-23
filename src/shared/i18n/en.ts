@@ -132,6 +132,8 @@ export const en: Messages = {
     rpcStatusConnected: "Connected ({user})",
     rpcStatusConnectedShort: "Connected",
     rpcStatusWaitingShort: "Waiting for Discord",
+    rpcStatusLinkedIdle: "Linked · Ready when Discord opens",
+    rpcStatusErrorShort: "Connection error",
     rpcStatusDisconnectedShort: "Not connected",
     rpcStatusReady: "Ready · Waiting for Discord",
     rpcStatusFallback: "Audio fallback (not connected)",

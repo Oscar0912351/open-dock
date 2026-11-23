@@ -550,11 +550,20 @@ export function Settings() {
           {(() => {
             const discordLinked = Boolean(discordStatus?.configured);
             const discordConnected = Boolean(discordStatus?.connected);
+            const activeDiscordError = discordError || discordStatus?.lastError || null;
+            const hasDiscordError = Boolean(activeDiscordError);
+            const showDiscordReconnect =
+              discordLinked && !discordConnected && (hasDiscordError || discordBusy === "connect");
             const discordTone: "live" | "warn" | "muted" = discordConnected
               ? "live"
-              : discordLinked
+              : hasDiscordError
                 ? "warn"
                 : "muted";
+            const discordMetaLabel = discordConnected
+              ? `${t("discord.rpcTitle")} · ${t("discord.rpcStatusConnectedShort")}`
+              : hasDiscordError
+                ? `${t("discord.rpcTitle")} · ${t("discord.rpcStatusErrorShort")}`
+                : t("discord.rpcStatusLinkedIdle");
             const discordDisplayName =
               discordStatus?.displayName?.trim() ||
               discordStatus?.username?.trim() ||
@@ -606,12 +615,7 @@ export function Settings() {
                   {discordLinked ? (
                     <div className={`cc-discord-meta is-${discordTone}`}>
                       <span className="cc-discord-dot" aria-hidden="true" />
-                      <span>
-                        {t("discord.rpcTitle")} ·{" "}
-                        {discordConnected
-                          ? t("discord.rpcStatusConnectedShort")
-                          : t("discord.rpcStatusWaitingShort")}
-                      </span>
+                      <span>{discordMetaLabel}</span>
                     </div>
                   ) : (
                     <p className="cc-discord-desc">{t("discord.rpcViaCentralHelp")}</p>
@@ -621,15 +625,17 @@ export function Settings() {
                 <div className="cc-discord-actions">
                   {discordLinked ? (
                     <>
-                      <Button
-                        variant="ghost"
-                        disabled={discordBusy !== null}
-                        onClick={() => void handleDiscordConnectCentral()}
-                      >
-                        {discordBusy === "connect"
-                          ? t("discord.rpcConnecting")
-                          : t("discord.rpcReconnect")}
-                      </Button>
+                      {showDiscordReconnect && (
+                        <Button
+                          variant="ghost"
+                          disabled={discordBusy !== null}
+                          onClick={() => void handleDiscordConnectCentral()}
+                        >
+                          {discordBusy === "connect"
+                            ? t("discord.rpcConnecting")
+                            : t("discord.rpcReconnect")}
+                        </Button>
+                      )}
                       <Button
                         variant="secondary"
                         disabled={discordBusy !== null}

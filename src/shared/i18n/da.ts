@@ -130,6 +130,8 @@ export const da = {
     rpcStatusConnected: "Forbundet ({user})",
     rpcStatusConnectedShort: "Forbundet",
     rpcStatusWaitingShort: "Afventer Discord",
+    rpcStatusLinkedIdle: "Tilknyttet · Klar når Discord åbnes",
+    rpcStatusErrorShort: "Forbindelsesfejl",
     rpcStatusDisconnectedShort: "Ikke forbundet",
     rpcStatusReady: "Klar · Afventer Discord",
     rpcStatusFallback: "Lydbaseret (ikke forbundet)",

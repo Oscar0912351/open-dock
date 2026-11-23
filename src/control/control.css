@@ -2913,6 +2913,10 @@ button.cc-titlebar-update:focus-visible {
   background: var(--c-ok);
 }
 
+.cc-discord-meta.is-warn {
+  color: var(--c-warn);
+}
+
 .cc-discord-meta.is-warn .cc-discord-dot {
   background: var(--c-warn);
 }
