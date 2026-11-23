@@ -167,7 +167,7 @@ export const en: Messages = {
   agents: {
     empty: {
       title: "No active agents",
-      body: "Shows live activity from Antigravity, Devin, Claude Code, Codex, Hermes, Grok Bot and others",
+      body: "Shows live activity from Antigravity, Devin, Claude Code, Codex, Qoder, Hermes, Grok Bot and others",
     },
     working: "Working…",
     waiting: "Waiting for you",
@@ -243,7 +243,7 @@ export const en: Messages = {
     },
     agents: {
       name: "AI Agents",
-      desc: "Watch local AI agents in real time – Antigravity, Devin, Claude Code, Codex, Hermes, Grok Bot and more",
+      desc: "Watch local AI agents in real time – Antigravity, Devin, Claude Code, Codex, Qoder, Hermes, Grok Bot and more",
     },
     cluster: { name: "Adaptive Cluster", desc: "Compact boxes that expand when needed" },
   },

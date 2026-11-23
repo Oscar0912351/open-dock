@@ -388,81 +388,80 @@ pub fn extract_rpc_error(val: &Value) -> Option<String> {
     Some(msg.to_string())
 }
 
+const AUTHORIZE_SCOPE_FALLBACKS: [&[&str]; 3] = [
+    &["rpc", "rpc.voice.read", "rpc.voice.write"],
+    &["rpc", "rpc.voice.read"],
+    &["rpc"],
+];
+
 pub fn request_authorize_code(
     client_id: &str,
 ) -> Result<(String, bool, SelfUserProfile, DiscordIpcPipe), String> {
     let mut pipe = connect_and_handshake(client_id)?;
     let initial_profile = pipe.self_profile.clone();
 
-    let write_scopes = json!(["rpc", "rpc.voice.read", "rpc.voice.write"]);
-    let nonce = pipe
-        .send_command(
-            "AUTHORIZE",
-            json!({
-                "client_id": client_id.trim(),
-                "scopes": write_scopes,
-                "prompt": "consent",
-            }),
-            None,
-        )
-        .map_err(|e| e.to_string())?;
+    let mut last_err = String::new();
+    let mut granted: Option<(String, bool)> = None;
+    for scopes in AUTHORIZE_SCOPE_FALLBACKS {
+        let can_write = scopes.contains(&"rpc.voice.write");
+        let nonce = pipe
+            .send_command(
+                "AUTHORIZE",
+                json!({
+                    "client_id": client_id.trim(),
+                    "scopes": scopes,
+                    "prompt": "consent",
+                }),
+                None,
+            )
+            .map_err(|e| e.to_string())?;
 
-    let resp = pipe
-        .wait_for_nonce(&nonce, Duration::from_secs(60))
-        .map_err(|e| e.to_string())?;
+        let resp = pipe
+            .wait_for_nonce(&nonce, Duration::from_secs(60))
+            .map_err(|e| e.to_string())?;
 
-    if let Some(err_msg) = extract_rpc_error(&resp) {
-        if err_msg.to_ascii_lowercase().contains("scope") {
-            let read_scopes = json!(["rpc", "rpc.voice.read"]);
-            let retry_nonce = pipe
-                .send_command(
-                    "AUTHORIZE",
-                    json!({
-                        "client_id": client_id.trim(),
-                        "scopes": read_scopes,
-                        "prompt": "consent",
-                    }),
-                    None,
-                )
-                .map_err(|e| e.to_string())?;
-            let retry_resp = pipe
-                .wait_for_nonce(&retry_nonce, Duration::from_secs(60))
-                .map_err(|e| e.to_string())?;
-            if let Some(retry_err) = extract_rpc_error(&retry_resp) {
-                pipe.close();
-                return Err(retry_err);
+        if let Some(err_msg) = extract_rpc_error(&resp) {
+            last_err = err_msg;
+            if last_err.to_ascii_lowercase().contains("scope") {
+                continue;
             }
-            let code = match retry_resp
-                .get("data")
-                .and_then(|d| d.get("code"))
-                .and_then(|v| v.as_str())
-                .filter(|s| !s.is_empty())
-            {
-                Some(c) => c.to_string(),
-                None => {
-                    pipe.close();
-                    return Err("Discord returnerede ingen autorisationskode".to_string());
-                }
-            };
-            return Ok((code, false, initial_profile, pipe));
+            break;
         }
-        pipe.close();
-        return Err(err_msg);
+
+        match resp
+            .get("data")
+            .and_then(|d| d.get("code"))
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+        {
+            Some(code) => granted = Some((code.to_string(), can_write)),
+            None => last_err = "Discord returnerede ingen autorisationskode".to_string(),
+        }
+        break;
     }
 
-    let code = match resp
-        .get("data")
-        .and_then(|d| d.get("code"))
-        .and_then(|v| v.as_str())
-        .filter(|s| !s.is_empty())
-    {
-        Some(c) => c.to_string(),
+    match granted {
+        Some((code, can_write)) => Ok((code, can_write, initial_profile, pipe)),
         None => {
             pipe.close();
-            return Err("Discord returnerede ingen autorisationskode".to_string());
+            Err(format_authorize_error(&last_err))
         }
-    };
-    Ok((code, true, initial_profile, pipe))
+    }
+}
+
+// Discord låser rpc-scopes til app-ejer + whitelistede testere på ikke-godkendte
+// apps, så et-klik via OSSI Central fejler for alle andre end Oscar selv. Giv en
+// handlingsrettet fejl der peger på egen-app-flowet i stedet for Discords rå tekst.
+fn format_authorize_error(msg: &str) -> String {
+    if msg.to_ascii_lowercase().contains("scope") {
+        "Discord afviste adgangen (invalid_scope) — et-klik-forbindelse kræver en app godkendt \
+         af Discord. Forbind i stedet med din egen Discord-app herunder."
+            .into()
+    } else if msg.is_empty() {
+        "Discord afviste godkendelsen uden nærmere besked".into()
+    } else {
+        msg.to_string()
+    }
 }
 
 pub fn url_encode(input: &str) -> String {
@@ -903,5 +902,18 @@ mod tests {
         });
         let parsed_dm = parse_voice_channel(&dm, None).expect("dm");
         assert_eq!(parsed_dm.name, None);
+    }
+
+    #[test]
+    fn authorize_error_maps_scope_rejection_to_guidance() {
+        let scope_err =
+            "OAuth2 Error: invalid_scope: The requested scope is invalid, unknown, or malformed.";
+        let mapped = format_authorize_error(scope_err);
+        assert!(mapped.contains("egen Discord-app"));
+        assert!(!mapped.contains("malformed"));
+
+        let other = "OAuth2 Error: access_denied";
+        assert_eq!(format_authorize_error(other), other);
+        assert!(!format_authorize_error("").is_empty());
     }
 }

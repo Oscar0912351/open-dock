@@ -14,6 +14,7 @@ import { ipc, on, toAssetUrl } from "../../shared/ipc";
 import { Button } from "../components/Button";
 import { Card, SettingRow } from "../components/Card";
 import { ConfirmDialog } from "../components/Drawer";
+import { Input } from "../components/Input";
 import { Segmented } from "../components/Segmented";
 import { Select } from "../components/Select";
 import { ShortcutInput } from "../components/ShortcutInput";
@@ -59,6 +60,10 @@ export function Settings() {
   const [discordBusy, setDiscordBusy] = useState<"connect" | "disconnect" | null>(null);
   const [discordError, setDiscordError] = useState<string | null>(null);
   const [failedDiscordAvatar, setFailedDiscordAvatar] = useState<string | null>(null);
+  const [showCustomApp, setShowCustomApp] = useState(false);
+  const [customClientId, setCustomClientId] = useState("");
+  const [customSecret, setCustomSecret] = useState("");
+  const [copiedRedirect, setCopiedRedirect] = useState(false);
 
   const [updateInfo, setUpdateInfo] = useState<UpdateStatus | null>(null);
   const [updateBusy, setUpdateBusy] = useState<"check" | "install" | null>(null);
@@ -144,9 +149,32 @@ export function Settings() {
     };
   }, []);
 
+  // Fold egen-app-formularen ud når Discord afviser scopes (invalid_scope rammer
+  // alle der ikke er testere på den ikke-godkendte Central-app).
+  useEffect(() => {
+    const err = discordError ?? discordStatus?.lastError ?? "";
+    if (err.toLowerCase().includes("scope")) setShowCustomApp(true);
+  }, [discordError, discordStatus?.lastError]);
+
+  useEffect(() => {
+    if (
+      showCustomApp &&
+      !customClientId &&
+      discordStatus &&
+      !discordStatus.viaCentral &&
+      discordStatus.clientId
+    ) {
+      setCustomClientId(discordStatus.clientId);
+    }
+  }, [showCustomApp, customClientId, discordStatus]);
+
   if (!config) return null;
 
   const { general } = config;
+  const discordRedirectUri = discordStatus?.redirectUri?.trim() || "http://127.0.0.1";
+  const customSecretSaved = Boolean(
+    discordStatus?.configured && !discordStatus.viaCentral && discordStatus.hasSecret,
+  );
 
   const handleInstallSensor = async () => {
     setSensorBusy("install");
@@ -176,18 +204,47 @@ export function Settings() {
     }
   };
 
-  const handleDiscordConnectCentral = async () => {
+  const runDiscordConnect = async (connect: () => Promise<DiscordRpcStatus>) => {
     if (discordBusy !== null) return;
     setDiscordBusy("connect");
     setDiscordError(null);
     setFailedDiscordAvatar(null);
     try {
-      const next = await ipc.discordRpcConnectCentral();
+      const next = await connect();
       setDiscordStatus(next);
     } catch (err) {
       setDiscordError(formatError(err));
     } finally {
       setDiscordBusy(null);
+    }
+  };
+
+  const handleDiscordConnectCentral = () =>
+    runDiscordConnect(() => ipc.discordRpcConnectCentral());
+
+  // Egen app: tom secret = behold gemt (Rust-siden genbruger stored creds).
+  const handleDiscordConnectCustom = () =>
+    runDiscordConnect(async () => {
+      const next = await ipc.discordRpcConnect(customClientId, customSecret);
+      setCustomSecret("");
+      setShowCustomApp(false);
+      return next;
+    });
+
+  const handleDiscordReconnect = () =>
+    runDiscordConnect(() =>
+      discordStatus?.viaCentral
+        ? ipc.discordRpcConnectCentral()
+        : ipc.discordRpcConnect(discordStatus?.clientId ?? "", ""),
+    );
+
+  const handleCopyRedirect = async () => {
+    try {
+      await navigator.clipboard.writeText(discordRedirectUri);
+      setCopiedRedirect(true);
+      window.setTimeout(() => setCopiedRedirect(false), 1600);
+    } catch {
+      // Uden clipboard-adgang: brugeren kan stadig markere og kopiere teksten.
     }
   };
 
@@ -629,13 +686,20 @@ export function Settings() {
                         <Button
                           variant="ghost"
                           disabled={discordBusy !== null}
-                          onClick={() => void handleDiscordConnectCentral()}
+                          onClick={() => void handleDiscordReconnect()}
                         >
                           {discordBusy === "connect"
                             ? t("discord.rpcConnecting")
                             : t("discord.rpcReconnect")}
                         </Button>
                       )}
+                      <Button
+                        variant="ghost"
+                        disabled={discordBusy !== null}
+                        onClick={() => setShowCustomApp((v) => !v)}
+                      >
+                        {showCustomApp ? t("discord.rpcHideCustomApp") : t("discord.rpcEdit")}
+                      </Button>
                       <Button
                         variant="secondary"
                         disabled={discordBusy !== null}
@@ -645,20 +709,94 @@ export function Settings() {
                       </Button>
                     </>
                   ) : (
-                    <Button
-                      variant="primary"
-                      disabled={discordBusy !== null || discordStatus === null}
-                      onClick={() => void handleDiscordConnectCentral()}
-                    >
-                      {discordBusy === "connect"
-                        ? t("discord.rpcConnecting")
-                        : t("discord.rpcConnect")}
-                    </Button>
+                    <>
+                      <Button
+                        variant="primary"
+                        disabled={discordBusy !== null || discordStatus === null}
+                        onClick={() => void handleDiscordConnectCentral()}
+                      >
+                        {discordBusy === "connect"
+                          ? t("discord.rpcConnecting")
+                          : t("discord.rpcConnect")}
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        disabled={discordBusy !== null}
+                        onClick={() => setShowCustomApp((v) => !v)}
+                      >
+                        {showCustomApp
+                          ? t("discord.rpcHideCustomApp")
+                          : t("discord.rpcUseCustomApp")}
+                      </Button>
+                    </>
                   )}
                 </div>
               </div>
             );
           })()}
+
+          {showCustomApp && (
+            <div className="cc-discord-custom">
+              <p className="cc-discord-desc">{t("discord.rpcHelpDisconnected")}</p>
+              <div className="cc-discord-guide">
+                <span>{t("discord.rpcGuideStep1")}</span>
+                <div>
+                  <span>{t("discord.rpcGuideStep2")}</span>
+                  <span className="cc-discord-redirect">
+                    <code className="cc-mono">{discordRedirectUri}</code>
+                    <button
+                      type="button"
+                      className="cc-link-btn"
+                      onClick={() => void handleCopyRedirect()}
+                    >
+                      {copiedRedirect ? t("discord.rpcCopied") : t("discord.rpcCopy")}
+                    </button>
+                  </span>
+                </div>
+                <span>{t("discord.rpcGuideStep3")}</span>
+              </div>
+              <div className="cc-discord-fields">
+                <label className="cc-discord-field">
+                  <span className="cc-field-label">{t("discord.rpcClientId")}</span>
+                  <Input
+                    value={customClientId}
+                    onChange={(e) => setCustomClientId(e.target.value)}
+                    inputMode="numeric"
+                    autoComplete="off"
+                    spellCheck={false}
+                  />
+                </label>
+                <label className="cc-discord-field">
+                  <span className="cc-field-label">{t("discord.rpcClientSecret")}</span>
+                  <Input
+                    type="password"
+                    value={customSecret}
+                    onChange={(e) => setCustomSecret(e.target.value)}
+                    autoComplete="off"
+                    spellCheck={false}
+                  />
+                  {customSecretSaved && (
+                    <span className="cc-field-help">{t("discord.rpcClientSecretSaved")}</span>
+                  )}
+                </label>
+              </div>
+              <div className="cc-discord-custom-actions">
+                <Button
+                  variant="primary"
+                  disabled={
+                    discordBusy !== null ||
+                    !customClientId.trim() ||
+                    (!customSecretSaved && !customSecret.trim())
+                  }
+                  onClick={() => void handleDiscordConnectCustom()}
+                >
+                  {discordBusy === "connect"
+                    ? t("discord.rpcConnecting")
+                    : t("discord.rpcConnect")}
+                </Button>
+              </div>
+            </div>
+          )}
 
           {(discordError || discordStatus?.lastError) && (
             <div className="cc-sensor-error" role="alert">

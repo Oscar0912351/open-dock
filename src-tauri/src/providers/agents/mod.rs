@@ -937,6 +937,146 @@ mod tests {
     }
 
     #[test]
+    fn detects_qoder_live_turn_ready_and_waiting_states() {
+        let td = TestDir::new("qoder");
+        let paths = td.paths();
+        let now: i64 = 1_795_469_200_000;
+
+        let db = paths.qoder_db.as_ref().unwrap();
+        fs::create_dir_all(db.parent().unwrap()).unwrap();
+        let conn = Connection::open(db).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE chat_sessions (
+                session_id TEXT PRIMARY KEY,
+                title TEXT NOT NULL,
+                cwd TEXT NOT NULL,
+                updated_at TIMESTAMP NOT NULL,
+                archived INTEGER NOT NULL DEFAULT 0,
+                deleted_at TIMESTAMP
+            );
+            CREATE TABLE chat_session_messages (
+                session_id TEXT NOT NULL,
+                message_id TEXT NOT NULL,
+                sequence INTEGER NOT NULL,
+                role TEXT,
+                status TEXT NOT NULL DEFAULT 'completed',
+                payload_json TEXT NOT NULL DEFAULT '{}',
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL,
+                PRIMARY KEY (session_id, message_id)
+            );",
+        )
+        .unwrap();
+
+        conn.execute(
+            "INSERT INTO chat_sessions VALUES ('s1', 'Gennemgå system', 'C:\\Users\\oscar\\Desktop\\APPS', ?1, 0, NULL)",
+            [now - 5_000],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO chat_session_messages (session_id, message_id, sequence, role, status, payload_json, created_at, updated_at) \
+             VALUES ('s1', 'm1', 1, 'assistant', 'completed', '{}', ?1, ?1)",
+            [now - 60_000],
+        )
+        .unwrap();
+
+        conn.execute(
+            "INSERT INTO chat_sessions VALUES ('s2', 'Anden opgave', 'D:\\work\\Proj', ?1, 0, NULL)",
+            [now - 10_000],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO chat_session_messages (session_id, message_id, sequence, role, status, payload_json, created_at, updated_at) \
+             VALUES ('s2', 'm2', 1, 'assistant', 'completed', '{}', ?1, ?1)",
+            [now - 10_000],
+        )
+        .unwrap();
+
+        conn.execute(
+            "INSERT INTO chat_sessions VALUES ('s3', 'Venter på svar', 'D:\\work\\Wait', ?1, 0, NULL)",
+            [now - 3_000],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO chat_session_messages (session_id, message_id, sequence, role, status, payload_json, created_at, updated_at) \
+             VALUES ('s3', 'm3', 1, 'assistant', 'completed', '{}', ?1, ?1)",
+            [now - 3_000],
+        )
+        .unwrap();
+
+        // Turn-buffer: s1 kører Edit, s3 venter med AskUserQuestion.
+        let tdb = paths.qoder_turn_db.as_ref().unwrap();
+        let tconn = Connection::open(tdb).unwrap();
+        tconn.execute_batch(
+            "CREATE TABLE active_turn_projection_items (
+                session_id TEXT NOT NULL,
+                turn_id TEXT NOT NULL,
+                item_id TEXT NOT NULL,
+                ordinal INTEGER NOT NULL,
+                parent_tool_use_id TEXT,
+                item_type TEXT NOT NULL,
+                item_json TEXT NOT NULL,
+                created_at INTEGER NOT NULL,
+                PRIMARY KEY (session_id, turn_id, item_id)
+            );
+            CREATE TABLE pending_turn_projections (
+                session_id TEXT NOT NULL,
+                message_id TEXT NOT NULL,
+                created_at INTEGER NOT NULL,
+                PRIMARY KEY (session_id, message_id)
+            );",
+        )
+        .unwrap();
+        tconn.execute(
+            "INSERT INTO active_turn_projection_items \
+             (session_id, turn_id, item_id, ordinal, parent_tool_use_id, item_type, item_json, created_at) \
+             VALUES ('s1', 't1', 'i1', 1, NULL, 'assistant', ?1, ?2)",
+            (
+                r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","name":"Edit","input":{}}]}}"#,
+                now - 2_000,
+            ),
+        )
+        .unwrap();
+        tconn.execute(
+            "INSERT INTO active_turn_projection_items \
+             (session_id, turn_id, item_id, ordinal, parent_tool_use_id, item_type, item_json, created_at) \
+             VALUES ('s3', 't3', 'i3', 1, NULL, 'assistant', ?1, ?2)",
+            (
+                r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","name":"AskUserQuestion","input":{}}]}}"#,
+                now - 1_000,
+            ),
+        )
+        .unwrap();
+
+        let procs = ProcessIndex::from_exes(&["Qoder.exe"]);
+        let sessions = sources::scan_qoder(&paths, &procs, now);
+        assert_eq!(sessions.len(), 3, "alle tre sessioner: {sessions:?}");
+
+        let s1 = sessions.iter().find(|s| s.id == "qoder:s1").unwrap();
+        assert_eq!(s1.status, AgentStatus::Working);
+        assert_eq!(s1.detail.as_deref(), Some("Redigerer filer"));
+        assert_eq!(s1.title.as_deref(), Some("Gennemgå system"));
+        assert_eq!(s1.project.as_deref(), Some("APPS"));
+        assert_eq!(s1.agent_label, "Qoder");
+
+        let s2 = sessions.iter().find(|s| s.id == "qoder:s2").unwrap();
+        assert_eq!(s2.status, AgentStatus::Ready);
+        assert_eq!(s2.project.as_deref(), Some("Proj"));
+
+        let s3 = sessions.iter().find(|s| s.id == "qoder:s3").unwrap();
+        assert_eq!(s3.status, AgentStatus::Waiting);
+        assert_eq!(s3.detail.as_deref(), Some("Stiller et spørgsmål"));
+
+        // Uden kørende proces nedgraderes live-turns til message-DB-status.
+        let dead = sources::scan_qoder(&paths, &ProcessIndex::empty(), now);
+        let s1d = dead.iter().find(|s| s.id == "qoder:s1").unwrap();
+        assert_eq!(s1d.status, AgentStatus::Ready);
+        let s3d = dead.iter().find(|s| s.id == "qoder:s3").unwrap();
+        assert_ne!(s3d.status, AgentStatus::Working);
+        assert_ne!(s3d.status, AgentStatus::Waiting);
+    }
+
+    #[test]
     #[ignore = "Kører mod brugerens rigtige lokale databaser"]
     fn live_scan_smoke() {
         let paths = AgentPaths::from_env();

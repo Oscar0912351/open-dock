@@ -165,7 +165,7 @@ export const da = {
   agents: {
     empty: {
       title: "Ingen aktive agenter",
-      body: "Viser live aktivitet fra Antigravity, Devin, Claude Code, Codex, Hermes, Grok Bot m.fl.",
+      body: "Viser live aktivitet fra Antigravity, Devin, Claude Code, Codex, Qoder, Hermes, Grok Bot m.fl.",
     },
     working: "Arbejder…",
     waiting: "Afventer dig",
@@ -241,7 +241,7 @@ export const da = {
     },
     agents: {
       name: "AI Agenter",
-      desc: "Se aktive AI-agenter i realtid – Antigravity, Devin, Claude Code, Codex, Hermes, Grok Bot m.fl.",
+      desc: "Se aktive AI-agenter i realtid – Antigravity, Devin, Claude Code, Codex, Qoder, Hermes, Grok Bot m.fl.",
     },
     cluster: { name: "Adaptiv Klynge", desc: "Kompakte bokse der udvider sig efter behov" },
   },
