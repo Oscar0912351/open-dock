@@ -191,6 +191,7 @@ unsafe extern "system" fn watcher_proc(
                     });
                 }
             }
+            backdrop_capture::notify_color_change();
         }
     } else if msg == WM_DISPLAYCHANGE || msg == WM_DPICHANGED {
         log::debug!("Skærm- eller DPI-ændring modtaget; opdaterer plader og placering");

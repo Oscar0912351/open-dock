@@ -1,6 +1,7 @@
 use std::{
     collections::HashMap,
     mem::{size_of, ManuallyDrop},
+    ptr,
     sync::{
         atomic::{AtomicBool, AtomicU64, Ordering},
         mpsc::{self, SyncSender},
@@ -14,7 +15,19 @@ use parking_lot::{Condvar, Mutex};
 use windows::{
     core::{Interface, HRESULT},
     Win32::{
-        Foundation::{D2DERR_RECREATE_TARGET, E_ACCESSDENIED, HMODULE, HWND, RECT},
+        Devices::Display::{
+            DisplayConfigGetDeviceInfo, GetDisplayConfigBufferSizes, QueryDisplayConfig,
+            DISPLAYCONFIG_DEVICE_INFO_GET_ADVANCED_COLOR_INFO,
+            DISPLAYCONFIG_DEVICE_INFO_GET_SDR_WHITE_LEVEL,
+            DISPLAYCONFIG_DEVICE_INFO_GET_SOURCE_NAME, DISPLAYCONFIG_DEVICE_INFO_HEADER,
+            DISPLAYCONFIG_GET_ADVANCED_COLOR_INFO, DISPLAYCONFIG_MODE_INFO,
+            DISPLAYCONFIG_PATH_INFO, DISPLAYCONFIG_SDR_WHITE_LEVEL,
+            DISPLAYCONFIG_SOURCE_DEVICE_NAME, QDC_ONLY_ACTIVE_PATHS,
+        },
+        Foundation::{
+            D2DERR_RECREATE_TARGET, ERROR_INSUFFICIENT_BUFFER, ERROR_SUCCESS, E_ACCESSDENIED,
+            HMODULE, HWND, RECT,
+        },
         Graphics::{
             Direct2D::{
                 CLSID_D2D1Border, CLSID_D2D1ColorMatrix, CLSID_D2D1GaussianBlur,
@@ -35,19 +48,29 @@ use windows::{
                 D2D1_GAUSSIANBLUR_PROP_STANDARD_DEVIATION, D2D1_INTERPOLATION_MODE_LINEAR,
                 D2D1_PROPERTY_TYPE_UNKNOWN, D2D1_SATURATION_PROP_SATURATION,
             },
-            Direct3D::{D3D_DRIVER_TYPE_UNKNOWN, D3D_FEATURE_LEVEL_11_0},
+            Direct3D::{
+                D3D_DRIVER_TYPE_UNKNOWN, D3D_FEATURE_LEVEL_11_0,
+                D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST,
+            },
             Direct3D11::{
-                D3D11CreateDevice, ID3D11Device, ID3D11DeviceContext, ID3D11Texture2D,
-                D3D11_BIND_SHADER_RESOURCE, D3D11_CREATE_DEVICE_BGRA_SUPPORT, D3D11_SDK_VERSION,
-                D3D11_TEXTURE2D_DESC, D3D11_USAGE_DEFAULT,
+                D3D11CreateDevice, ID3D11Buffer, ID3D11Device, ID3D11DeviceContext,
+                ID3D11PixelShader, ID3D11RasterizerState, ID3D11RenderTargetView, ID3D11Resource,
+                ID3D11ShaderResourceView, ID3D11Texture2D, ID3D11VertexShader,
+                D3D11_BIND_CONSTANT_BUFFER, D3D11_BIND_RENDER_TARGET, D3D11_BIND_SHADER_RESOURCE,
+                D3D11_BUFFER_DESC, D3D11_CPU_ACCESS_WRITE, D3D11_CREATE_DEVICE_BGRA_SUPPORT,
+                D3D11_CULL_NONE, D3D11_FILL_SOLID, D3D11_MAPPED_SUBRESOURCE,
+                D3D11_MAP_WRITE_DISCARD, D3D11_RASTERIZER_DESC, D3D11_SDK_VERSION,
+                D3D11_TEXTURE2D_DESC, D3D11_USAGE_DEFAULT, D3D11_USAGE_DYNAMIC, D3D11_VIEWPORT,
             },
             Dxgi::{
                 Common::{
-                    DXGI_ALPHA_MODE_PREMULTIPLIED, DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_SAMPLE_DESC,
+                    DXGI_ALPHA_MODE_PREMULTIPLIED, DXGI_COLOR_SPACE_RGB_FULL_G10_NONE_P709,
+                    DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020, DXGI_FORMAT,
+                    DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_FORMAT_R16G16B16A16_FLOAT, DXGI_SAMPLE_DESC,
                 },
                 CreateDXGIFactory1, IDXGIAdapter, IDXGIAdapter1, IDXGIDevice, IDXGIFactory2,
-                IDXGIOutput1, IDXGIOutputDuplication, IDXGIResource, IDXGISurface,
-                IDXGISwapChain1, DXGI_ERROR_ACCESS_LOST, DXGI_ERROR_DEVICE_REMOVED,
+                IDXGIOutput1, IDXGIOutput5, IDXGIOutput6, IDXGIOutputDuplication, IDXGIResource,
+                IDXGISurface, IDXGISwapChain1, DXGI_ERROR_ACCESS_LOST, DXGI_ERROR_DEVICE_REMOVED,
                 DXGI_ERROR_DEVICE_RESET, DXGI_ERROR_NOT_CURRENTLY_AVAILABLE,
                 DXGI_ERROR_SESSION_DISCONNECTED, DXGI_ERROR_WAIT_TIMEOUT,
                 DXGI_OUTDUPL_FRAME_INFO, DXGI_OUTDUPL_MOVE_RECT, DXGI_PRESENT,
@@ -59,6 +82,8 @@ use windows::{
     },
 };
 use windows_numerics::Vector2;
+
+use crate::wallpaper::shader_compiler::compile_hlsl;
 
 pub struct SendSwapChain(pub IDXGISwapChain1);
 unsafe impl Send for SendSwapChain {}
@@ -121,6 +146,7 @@ struct TargetRuntime {
 struct WorkerSharedState {
     targets: HashMap<isize, TargetRuntime>,
     display_dirty: bool,
+    color_dirty: bool,
     shutdown: bool,
     last_drag_at: Option<Instant>,
 }
@@ -285,6 +311,7 @@ fn get_or_spawn_worker_locked(
         state: Mutex::new(WorkerSharedState {
             targets: HashMap::new(),
             display_dirty: false,
+            color_dirty: false,
             shutdown: false,
             last_drag_at: None,
         }),
@@ -540,6 +567,19 @@ pub fn notify_display_change() {
     for w in workers {
         let mut st = w.state.lock();
         st.display_dirty = true;
+        st.color_dirty = true;
+        w.cv.notify_all();
+    }
+}
+
+pub fn notify_color_change() {
+    let workers: Vec<Arc<WorkerControl>> = {
+        let coord = COORDINATOR.lock();
+        coord.workers.values().cloned().collect()
+    };
+    for w in workers {
+        let mut st = w.state.lock();
+        st.color_dirty = true;
         w.cv.notify_all();
     }
 }
@@ -592,8 +632,387 @@ impl Drop for ComMtaGuard {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct MonitorColorInfo {
+    hdr_enabled: bool,
+    sdr_white_scale: f32,
+}
+
+fn utf16_z_slice(buf: &[u16]) -> &[u16] {
+    let end = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
+    &buf[..end]
+}
+
+fn device_name_display(buf: &[u16]) -> String {
+    String::from_utf16_lossy(utf16_z_slice(buf))
+}
+
+pub fn sdr_white_scale_from_raw(raw: u32) -> f32 {
+    if raw == 0 {
+        1.0
+    } else {
+        (raw as f32 / 1000.0).clamp(1.0, 20.0)
+    }
+}
+
+fn query_monitor_color_info(
+    device_name: &[u16; 32],
+    dxgi_output: &IDXGIOutput1,
+) -> MonitorColorInfo {
+    let dxgi_hdr = dxgi_output
+        .cast::<IDXGIOutput6>()
+        .ok()
+        .and_then(|out6| unsafe { out6.GetDesc1() }.ok())
+        .map(|d1| {
+            matches!(
+                d1.ColorSpace,
+                DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020
+                    | DXGI_COLOR_SPACE_RGB_FULL_G10_NONE_P709
+            )
+        })
+        .unwrap_or(false);
+
+    let target_gdi = utf16_z_slice(device_name);
+    let mut paths: Vec<DISPLAYCONFIG_PATH_INFO> = Vec::new();
+    let mut modes: Vec<DISPLAYCONFIG_MODE_INFO> = Vec::new();
+    let mut queried = false;
+
+    for _ in 0..3 {
+        let mut path_count = 0_u32;
+        let mut mode_count = 0_u32;
+        let sz_rc = unsafe {
+            GetDisplayConfigBufferSizes(QDC_ONLY_ACTIVE_PATHS, &mut path_count, &mut mode_count)
+        };
+        if sz_rc != ERROR_SUCCESS || path_count == 0 {
+            break;
+        }
+        paths.resize(path_count as usize, DISPLAYCONFIG_PATH_INFO::default());
+        modes.resize(mode_count as usize, DISPLAYCONFIG_MODE_INFO::default());
+        let q_rc = unsafe {
+            QueryDisplayConfig(
+                QDC_ONLY_ACTIVE_PATHS,
+                &mut path_count,
+                paths.as_mut_ptr(),
+                &mut mode_count,
+                modes.as_mut_ptr(),
+                None,
+            )
+        };
+        if q_rc == ERROR_SUCCESS {
+            paths.truncate(path_count as usize);
+            queried = true;
+            break;
+        }
+        if q_rc != ERROR_INSUFFICIENT_BUFFER {
+            break;
+        }
+    }
+
+    if queried && !target_gdi.is_empty() {
+        for path in &paths {
+            let mut sn = DISPLAYCONFIG_SOURCE_DEVICE_NAME {
+                header: DISPLAYCONFIG_DEVICE_INFO_HEADER {
+                    r#type: DISPLAYCONFIG_DEVICE_INFO_GET_SOURCE_NAME,
+                    size: size_of::<DISPLAYCONFIG_SOURCE_DEVICE_NAME>() as u32,
+                    adapterId: path.sourceInfo.adapterId,
+                    id: path.sourceInfo.id,
+                },
+                ..Default::default()
+            };
+            let rc_sn = unsafe { DisplayConfigGetDeviceInfo(&mut sn.header) };
+            if rc_sn != ERROR_SUCCESS.0 as i32 {
+                continue;
+            }
+            if utf16_z_slice(&sn.viewGdiDeviceName) != target_gdi {
+                continue;
+            }
+
+            let mut ac = DISPLAYCONFIG_GET_ADVANCED_COLOR_INFO {
+                header: DISPLAYCONFIG_DEVICE_INFO_HEADER {
+                    r#type: DISPLAYCONFIG_DEVICE_INFO_GET_ADVANCED_COLOR_INFO,
+                    size: size_of::<DISPLAYCONFIG_GET_ADVANCED_COLOR_INFO>() as u32,
+                    adapterId: path.targetInfo.adapterId,
+                    id: path.targetInfo.id,
+                },
+                ..Default::default()
+            };
+            let ccd_hdr = if unsafe { DisplayConfigGetDeviceInfo(&mut ac.header) }
+                == ERROR_SUCCESS.0 as i32
+            {
+                (unsafe { ac.Anonymous.value } & 0x2) != 0
+            } else {
+                false
+            };
+
+            let mut wl = DISPLAYCONFIG_SDR_WHITE_LEVEL {
+                header: DISPLAYCONFIG_DEVICE_INFO_HEADER {
+                    r#type: DISPLAYCONFIG_DEVICE_INFO_GET_SDR_WHITE_LEVEL,
+                    size: size_of::<DISPLAYCONFIG_SDR_WHITE_LEVEL>() as u32,
+                    adapterId: path.targetInfo.adapterId,
+                    id: path.targetInfo.id,
+                },
+                ..Default::default()
+            };
+            let sdr_white_scale = if unsafe { DisplayConfigGetDeviceInfo(&mut wl.header) }
+                == ERROR_SUCCESS.0 as i32
+            {
+                sdr_white_scale_from_raw(wl.SDRWhiteLevel)
+            } else {
+                1.0
+            };
+
+            return MonitorColorInfo {
+                hdr_enabled: ccd_hdr || dxgi_hdr,
+                sdr_white_scale,
+            };
+        }
+    }
+
+    MonitorColorInfo {
+        hdr_enabled: dxgi_hdr,
+        sdr_white_scale: 1.0,
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct HdrToSdrParams {
+    inv_sdr_scale: f32,
+    _pad: [f32; 3],
+}
+
+const HDR_TO_SDR_HLSL: &str = r#"
+Texture2D<float4> srcTex : register(t0);
+
+cbuffer Params : register(b0) {
+    float invSdrScale;
+    float _pad0;
+    float _pad1;
+    float _pad2;
+};
+
+float4 VSMain(uint id : SV_VertexID) : SV_Position {
+    float2 uv = float2((id << 1) & 2, id & 2);
+    return float4(uv * float2(2.0, -2.0) + float2(-1.0, 1.0), 0.0, 1.0);
+}
+
+float linearToSrgb(float c) {
+    c = saturate(c);
+    return (c <= 0.0031308) ? (c * 12.92) : (1.055 * pow(max(c, 0.0031308), 1.0 / 2.4) - 0.055);
+}
+
+float4 PSMain(float4 pos : SV_Position) : SV_Target {
+    float3 lin = srcTex.Load(int3(int2(pos.xy), 0)).rgb * invSdrScale;
+    return float4(linearToSrgb(lin.r), linearToSrgb(lin.g), linearToSrgb(lin.b), 1.0);
+}
+"#;
+
+struct HdrToSdrConverter {
+    vs: ID3D11VertexShader,
+    ps: ID3D11PixelShader,
+    cbuf: ID3D11Buffer,
+    raster_state: ID3D11RasterizerState,
+}
+
+impl HdrToSdrConverter {
+    fn new(device: &ID3D11Device) -> Result<Self, String> {
+        let vs_bytes = compile_hlsl(
+            HDR_TO_SDR_HLSL,
+            b"VSMain\0",
+            b"vs_5_0\0",
+            b"hdr_to_sdr.hlsl\0",
+        )
+        .map_err(|e| format!("HDR VS kompilering: {e:?}"))?;
+        let ps_bytes = compile_hlsl(
+            HDR_TO_SDR_HLSL,
+            b"PSMain\0",
+            b"ps_5_0\0",
+            b"hdr_to_sdr.hlsl\0",
+        )
+        .map_err(|e| format!("HDR PS kompilering: {e:?}"))?;
+
+        let mut vs: Option<ID3D11VertexShader> = None;
+        let mut ps: Option<ID3D11PixelShader> = None;
+        unsafe {
+            device
+                .CreateVertexShader(&vs_bytes, None, Some(&mut vs))
+                .map_err(|e| format!("HDR CreateVertexShader: {e}"))?;
+            device
+                .CreatePixelShader(&ps_bytes, None, Some(&mut ps))
+                .map_err(|e| format!("HDR CreatePixelShader: {e}"))?;
+        }
+        let vs = vs.ok_or_else(|| "HDR vertex shader returnerede None".to_string())?;
+        let ps = ps.ok_or_else(|| "HDR pixel shader returnerede None".to_string())?;
+
+        let cbuf_desc = D3D11_BUFFER_DESC {
+            ByteWidth: size_of::<HdrToSdrParams>() as u32,
+            Usage: D3D11_USAGE_DYNAMIC,
+            BindFlags: D3D11_BIND_CONSTANT_BUFFER.0 as u32,
+            CPUAccessFlags: D3D11_CPU_ACCESS_WRITE.0 as u32,
+            MiscFlags: 0,
+            StructureByteStride: 0,
+        };
+        let mut cbuf: Option<ID3D11Buffer> = None;
+        unsafe {
+            device
+                .CreateBuffer(&cbuf_desc, None, Some(&mut cbuf))
+                .map_err(|e| format!("HDR CreateBuffer: {e}"))?;
+        }
+        let cbuf = cbuf.ok_or_else(|| "HDR cbuf returnerede None".to_string())?;
+
+        let raster_desc = D3D11_RASTERIZER_DESC {
+            FillMode: D3D11_FILL_SOLID,
+            CullMode: D3D11_CULL_NONE,
+            DepthClipEnable: false.into(),
+            ScissorEnable: false.into(),
+            ..Default::default()
+        };
+        let mut raster_state: Option<ID3D11RasterizerState> = None;
+        unsafe {
+            device
+                .CreateRasterizerState(&raster_desc, Some(&mut raster_state))
+                .map_err(|e| format!("HDR CreateRasterizerState: {e}"))?;
+        }
+        let raster_state =
+            raster_state.ok_or_else(|| "HDR raster_state returnerede None".to_string())?;
+
+        Ok(Self {
+            vs,
+            ps,
+            cbuf,
+            raster_state,
+        })
+    }
+
+    fn convert(
+        &self,
+        ctx: &ID3D11DeviceContext,
+        srv: &ID3D11ShaderResourceView,
+        rtv: &ID3D11RenderTargetView,
+        width: u32,
+        height: u32,
+        inv_sdr_scale: f32,
+    ) -> Result<(), String> {
+        let params = HdrToSdrParams {
+            inv_sdr_scale,
+            _pad: [0.0; 3],
+        };
+        let cbuf_res: ID3D11Resource = self
+            .cbuf
+            .cast()
+            .map_err(|e| format!("HDR cbuf ID3D11Resource cast: {e}"))?;
+        let mut mapped = D3D11_MAPPED_SUBRESOURCE::default();
+        unsafe {
+            ctx.Map(&cbuf_res, 0, D3D11_MAP_WRITE_DISCARD, 0, Some(&mut mapped))
+                .map_err(|e| format!("HDR cbuf Map: {e}"))?;
+            if !mapped.pData.is_null() {
+                ptr::copy_nonoverlapping(&params, mapped.pData as *mut HdrToSdrParams, 1);
+            }
+            ctx.Unmap(&cbuf_res, 0);
+        }
+
+        let vp = D3D11_VIEWPORT {
+            TopLeftX: 0.0,
+            TopLeftY: 0.0,
+            Width: width.max(1) as f32,
+            Height: height.max(1) as f32,
+            MinDepth: 0.0,
+            MaxDepth: 1.0,
+        };
+
+        unsafe {
+            // Direct2D deler immediate context med D3D11 og efterlader egen pipeline-state.
+            ctx.IASetInputLayout(None);
+            ctx.IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+            ctx.VSSetShader(&self.vs, None);
+            ctx.GSSetShader(None, None);
+            ctx.HSSetShader(None, None);
+            ctx.DSSetShader(None, None);
+            ctx.PSSetShader(&self.ps, None);
+            ctx.PSSetConstantBuffers(0, Some(&[Some(self.cbuf.clone())]));
+            ctx.PSSetShaderResources(0, Some(&[Some(srv.clone())]));
+            ctx.RSSetState(&self.raster_state);
+            ctx.RSSetViewports(Some(&[vp]));
+            ctx.OMSetBlendState(None, None, 0xFFFF_FFFF);
+            ctx.OMSetDepthStencilState(None, 0);
+            ctx.OMSetRenderTargets(Some(&[Some(rtv.clone())]), None);
+            ctx.Draw(3, 0);
+            ctx.OMSetRenderTargets(None, None);
+            ctx.PSSetShaderResources(0, Some(&[None]));
+        }
+
+        Ok(())
+    }
+}
+
+struct HdrInputCache {
+    tex: ID3D11Texture2D,
+    srv: ID3D11ShaderResourceView,
+    width: u32,
+    height: u32,
+    format: DXGI_FORMAT,
+}
+
+fn ensure_hdr_input_cache<'a>(
+    d3d_device: &ID3D11Device,
+    slot: &'a mut Option<HdrInputCache>,
+    width: u32,
+    height: u32,
+    format: DXGI_FORMAT,
+) -> Result<&'a HdrInputCache, String> {
+    let matches = slot
+        .as_ref()
+        .map(|c| c.width == width && c.height == height && c.format == format)
+        .unwrap_or(false);
+    if !matches {
+        let tex_desc = D3D11_TEXTURE2D_DESC {
+            Width: width.max(1),
+            Height: height.max(1),
+            MipLevels: 1,
+            ArraySize: 1,
+            Format: format,
+            SampleDesc: DXGI_SAMPLE_DESC {
+                Count: 1,
+                Quality: 0,
+            },
+            Usage: D3D11_USAGE_DEFAULT,
+            BindFlags: D3D11_BIND_SHADER_RESOURCE.0 as u32,
+            CPUAccessFlags: 0,
+            MiscFlags: 0,
+        };
+        let mut tex: Option<ID3D11Texture2D> = None;
+        unsafe {
+            d3d_device
+                .CreateTexture2D(&tex_desc, None, Some(&mut tex))
+                .map_err(|e| format!("CreateTexture2D HDR cache: {e}"))?;
+        }
+        let tex = tex.ok_or_else(|| "CreateTexture2D HDR cache returnerede None".to_string())?;
+        let res: ID3D11Resource = tex
+            .cast()
+            .map_err(|e| format!("HDR cache ID3D11Resource cast: {e}"))?;
+        let mut srv: Option<ID3D11ShaderResourceView> = None;
+        unsafe {
+            d3d_device
+                .CreateShaderResourceView(&res, None, Some(&mut srv))
+                .map_err(|e| format!("CreateShaderResourceView HDR cache: {e}"))?;
+        }
+        let srv = srv.ok_or_else(|| "CreateShaderResourceView returnerede None".to_string())?;
+        *slot = Some(HdrInputCache {
+            tex,
+            srv,
+            width,
+            height,
+            format,
+        });
+    }
+    slot.as_ref()
+        .ok_or_else(|| "HDR input cache ikke initialiseret".to_string())
+}
+
 struct MonitorGpuPipeline {
     mon_rect: RECT,
+    device_name: [u16; 32],
+    color_info: MonitorColorInfo,
     d3d_device: ID3D11Device,
     d3d_context: ID3D11DeviceContext,
     dxgi_factory: IDXGIFactory2,
@@ -601,7 +1020,12 @@ struct MonitorGpuPipeline {
     dc: ID2D1DeviceContext,
     desktop_tex: ID3D11Texture2D,
     desktop_tex_desc: D3D11_TEXTURE2D_DESC,
+    desktop_rtv: ID3D11RenderTargetView,
     desktop_bitmap: ID2D1Bitmap1,
+    hdr_converter: Option<HdrToSdrConverter>,
+    hdr_input: Option<HdrInputCache>,
+    last_frame_was_hdr: bool,
+    logged_format: Option<DXGI_FORMAT>,
     color_matrix_fx: ID2D1Effect,
     _border_fx: ID2D1Effect,
     blur_fx: ID2D1Effect,
@@ -610,10 +1034,10 @@ struct MonitorGpuPipeline {
 
 fn find_adapter_and_output(
     target_key: MonitorKey,
-) -> Result<(IDXGIAdapter1, IDXGIOutput1, RECT), String> {
+) -> Result<(IDXGIAdapter1, IDXGIOutput1, RECT, [u16; 32]), String> {
     let factory: IDXGIFactory2 =
         unsafe { CreateDXGIFactory1() }.map_err(|e| format!("CreateDXGIFactory1: {e}"))?;
-    let mut best: Option<(IDXGIAdapter1, IDXGIOutput1, RECT, i64)> = None;
+    let mut best: Option<(IDXGIAdapter1, IDXGIOutput1, RECT, [u16; 32], i64)> = None;
     let target_rect = RECT::from(target_key);
 
     let mut a_idx = 0_u32;
@@ -636,21 +1060,21 @@ fn find_adapter_and_output(
                 continue;
             };
             if r == target_rect {
-                return Ok((adapter, output1, r));
+                return Ok((adapter, output1, r, desc.DeviceName));
             }
             let ix0 = target_rect.left.max(r.left);
             let iy0 = target_rect.top.max(r.top);
             let ix1 = target_rect.right.min(r.right);
             let iy1 = target_rect.bottom.min(r.bottom);
             let area = ((ix1 - ix0).max(0) as i64) * ((iy1 - iy0).max(0) as i64);
-            let better = best.as_ref().map(|b| area > b.3).unwrap_or(true);
+            let better = best.as_ref().map(|b| area > b.4).unwrap_or(true);
             if better {
-                best = Some((adapter.clone(), output1, r, area));
+                best = Some((adapter.clone(), output1, r, desc.DeviceName, area));
             }
         }
     }
 
-    best.map(|(a, o, r, _)| (a, o, r))
+    best.map(|(a, o, r, name, _)| (a, o, r, name))
         .ok_or_else(|| "Kunne ikke finde DXGI-skærmoutput til capture".to_string())
 }
 
@@ -659,20 +1083,27 @@ fn create_desktop_texture_and_bitmap(
     dc: &ID2D1DeviceContext,
     width: u32,
     height: u32,
-    format: windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT,
-) -> Result<(ID3D11Texture2D, D3D11_TEXTURE2D_DESC, ID2D1Bitmap1), String> {
+) -> Result<
+    (
+        ID3D11Texture2D,
+        D3D11_TEXTURE2D_DESC,
+        ID3D11RenderTargetView,
+        ID2D1Bitmap1,
+    ),
+    String,
+> {
     let tex_desc = D3D11_TEXTURE2D_DESC {
         Width: width.max(1),
         Height: height.max(1),
         MipLevels: 1,
         ArraySize: 1,
-        Format: format,
+        Format: DXGI_FORMAT_B8G8R8A8_UNORM,
         SampleDesc: DXGI_SAMPLE_DESC {
             Count: 1,
             Quality: 0,
         },
         Usage: D3D11_USAGE_DEFAULT,
-        BindFlags: D3D11_BIND_SHADER_RESOURCE.0 as u32,
+        BindFlags: (D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_RENDER_TARGET).0 as u32,
         CPUAccessFlags: 0,
         MiscFlags: 0,
     };
@@ -683,12 +1114,22 @@ fn create_desktop_texture_and_bitmap(
             .map_err(|e| format!("CreateTexture2D desktop cache: {e}"))?;
     }
     let tex = tex.ok_or_else(|| "CreateTexture2D returnerede None".to_string())?;
+    let res: ID3D11Resource = tex
+        .cast()
+        .map_err(|e| format!("desktop ID3D11Resource cast: {e}"))?;
+    let mut rtv: Option<ID3D11RenderTargetView> = None;
+    unsafe {
+        d3d_device
+            .CreateRenderTargetView(&res, None, Some(&mut rtv))
+            .map_err(|e| format!("CreateRenderTargetView desktop cache: {e}"))?;
+    }
+    let rtv = rtv.ok_or_else(|| "CreateRenderTargetView returnerede None".to_string())?;
     let surface: IDXGISurface = tex
         .cast()
         .map_err(|e| format!("desktop IDXGISurface cast: {e}"))?;
     let bmp_props = D2D1_BITMAP_PROPERTIES1 {
         pixelFormat: D2D1_PIXEL_FORMAT {
-            format,
+            format: DXGI_FORMAT_B8G8R8A8_UNORM,
             alphaMode: D2D1_ALPHA_MODE_IGNORE,
         },
         dpiX: 96.0,
@@ -698,12 +1139,13 @@ fn create_desktop_texture_and_bitmap(
     };
     let bmp = unsafe { dc.CreateBitmapFromDxgiSurface(&surface, Some(&bmp_props)) }
         .map_err(|e| format!("CreateBitmapFromDxgiSurface desktop: {e}"))?;
-    Ok((tex, tex_desc, bmp))
+    Ok((tex, tex_desc, rtv, bmp))
 }
 
 impl MonitorGpuPipeline {
     fn create(mon_key: MonitorKey) -> Result<Self, String> {
-        let (adapter, dxgi_output, mon_rect) = find_adapter_and_output(mon_key)?;
+        let (adapter, dxgi_output, mon_rect, device_name) = find_adapter_and_output(mon_key)?;
+        let color_info = query_monitor_color_info(&device_name, &dxgi_output);
         let base_adapter: IDXGIAdapter = adapter
             .cast()
             .map_err(|e| format!("IDXGIAdapter cast: {e}"))?;
@@ -748,13 +1190,8 @@ impl MonitorGpuPipeline {
         }
 
         let (mon_w, mon_h) = rect_dims(mon_rect);
-        let (desktop_tex, desktop_tex_desc, desktop_bitmap) = create_desktop_texture_and_bitmap(
-            &d3d_device,
-            &dc,
-            mon_w,
-            mon_h,
-            DXGI_FORMAT_B8G8R8A8_UNORM,
-        )?;
+        let (desktop_tex, desktop_tex_desc, desktop_rtv, desktop_bitmap) =
+            create_desktop_texture_and_bitmap(&d3d_device, &dc, mon_w, mon_h)?;
 
         const FORCE_OPAQUE_ALPHA_MATRIX: [f32; 20] = [
             1.0, 0.0, 0.0, 0.0,
@@ -846,6 +1283,8 @@ impl MonitorGpuPipeline {
 
         Ok(Self {
             mon_rect,
+            device_name,
+            color_info,
             d3d_device,
             d3d_context,
             dxgi_factory,
@@ -853,7 +1292,12 @@ impl MonitorGpuPipeline {
             dc,
             desktop_tex,
             desktop_tex_desc,
+            desktop_rtv,
             desktop_bitmap,
+            hdr_converter: None,
+            hdr_input: None,
+            last_frame_was_hdr: false,
+            logged_format: None,
             color_matrix_fx,
             _border_fx: border_fx,
             blur_fx,
@@ -861,22 +1305,17 @@ impl MonitorGpuPipeline {
         })
     }
 
-    fn ensure_desktop_format(&mut self, incoming: &D3D11_TEXTURE2D_DESC) -> Result<(), String> {
-        if incoming.Width == self.desktop_tex_desc.Width
-            && incoming.Height == self.desktop_tex_desc.Height
-            && incoming.Format == self.desktop_tex_desc.Format
-        {
+    fn ensure_desktop_dims(&mut self, width: u32, height: u32) -> Result<(), String> {
+        let w = width.max(1);
+        let h = height.max(1);
+        if w == self.desktop_tex_desc.Width && h == self.desktop_tex_desc.Height {
             return Ok(());
         }
-        let (tex, desc, bmp) = create_desktop_texture_and_bitmap(
-            &self.d3d_device,
-            &self.dc,
-            incoming.Width,
-            incoming.Height,
-            incoming.Format,
-        )?;
+        let (tex, desc, rtv, bmp) =
+            create_desktop_texture_and_bitmap(&self.d3d_device, &self.dc, w, h)?;
         self.desktop_tex = tex;
         self.desktop_tex_desc = desc;
+        self.desktop_rtv = rtv;
         self.desktop_bitmap = bmp;
         unsafe {
             self.color_matrix_fx.SetInput(0, &self.desktop_bitmap, true);
@@ -884,8 +1323,106 @@ impl MonitorGpuPipeline {
         Ok(())
     }
 
-    fn acquire_duplication(&self) -> Result<IDXGIOutputDuplication, windows_core::Error> {
-        unsafe { self.dxgi_output.DuplicateOutput(&self.d3d_device) }
+    fn acquire_duplication(&mut self) -> Result<IDXGIOutputDuplication, windows_core::Error> {
+        self.color_info = query_monitor_color_info(&self.device_name, &self.dxgi_output);
+        log::info!(
+            "CaptureD2d duplikering aktiv for {} (hdr={}, sdr_scale={:.3}x)",
+            device_name_display(&self.device_name),
+            self.color_info.hdr_enabled,
+            self.color_info.sdr_white_scale
+        );
+        if let Ok(output5) = self.dxgi_output.cast::<IDXGIOutput5>() {
+            let formats = if self.color_info.hdr_enabled {
+                [DXGI_FORMAT_R16G16B16A16_FLOAT, DXGI_FORMAT_B8G8R8A8_UNORM]
+            } else {
+                [DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_FORMAT_R16G16B16A16_FLOAT]
+            };
+            unsafe { output5.DuplicateOutput1(&self.d3d_device, 0, &formats) }
+        } else {
+            unsafe { self.dxgi_output.DuplicateOutput(&self.d3d_device) }
+        }
+    }
+
+    fn ingest_desktop_frame(
+        &mut self,
+        tex: &ID3D11Texture2D,
+        desc: &D3D11_TEXTURE2D_DESC,
+    ) -> Result<(), String> {
+        self.ensure_desktop_dims(desc.Width, desc.Height)?;
+
+        if self.logged_format != Some(desc.Format) {
+            self.logged_format = Some(desc.Format);
+            log::info!(
+                "CaptureD2d desktop-format: {:?} ({}x{}, hdr_convert={})",
+                desc.Format,
+                desc.Width,
+                desc.Height,
+                desc.Format == DXGI_FORMAT_R16G16B16A16_FLOAT
+            );
+        }
+
+        if desc.Format == DXGI_FORMAT_R16G16B16A16_FLOAT {
+            if self.hdr_converter.is_none() {
+                self.hdr_converter = Some(HdrToSdrConverter::new(&self.d3d_device)?);
+            }
+            let input_cache = ensure_hdr_input_cache(
+                &self.d3d_device,
+                &mut self.hdr_input,
+                desc.Width,
+                desc.Height,
+                desc.Format,
+            )?;
+            unsafe {
+                self.d3d_context.CopyResource(&input_cache.tex, tex);
+            }
+            let inv_scale = 1.0 / self.color_info.sdr_white_scale.max(1.0);
+            if let Some(ref conv) = self.hdr_converter {
+                conv.convert(
+                    &self.d3d_context,
+                    &input_cache.srv,
+                    &self.desktop_rtv,
+                    desc.Width,
+                    desc.Height,
+                    inv_scale,
+                )?;
+            }
+            self.last_frame_was_hdr = true;
+            unsafe {
+                self.color_matrix_fx.SetInput(0, &self.desktop_bitmap, true);
+            }
+            Ok(())
+        } else if desc.Format == DXGI_FORMAT_B8G8R8A8_UNORM {
+            unsafe {
+                self.d3d_context.CopyResource(&self.desktop_tex, tex);
+                self.color_matrix_fx.SetInput(0, &self.desktop_bitmap, true);
+            }
+            self.last_frame_was_hdr = false;
+            Ok(())
+        } else {
+            Err(format!("Ikke-understøttet capture-format: {:?}", desc.Format))
+        }
+    }
+
+    fn reconvert_cached_hdr(&mut self) -> Result<bool, String> {
+        if !self.last_frame_was_hdr {
+            return Ok(false);
+        }
+        let (Some(ref conv), Some(ref cache)) = (&self.hdr_converter, &self.hdr_input) else {
+            return Ok(false);
+        };
+        let inv_scale = 1.0 / self.color_info.sdr_white_scale.max(1.0);
+        conv.convert(
+            &self.d3d_context,
+            &cache.srv,
+            &self.desktop_rtv,
+            cache.width,
+            cache.height,
+            inv_scale,
+        )?;
+        unsafe {
+            self.color_matrix_fx.SetInput(0, &self.desktop_bitmap, true);
+        }
+        Ok(true)
     }
 
     fn create_widget_swapchain(
@@ -1106,11 +1643,19 @@ fn monitor_worker_loop(ctrl: Arc<WorkerControl>) {
     let mut move_buf: Vec<DXGI_OUTDUPL_MOVE_RECT> = Vec::with_capacity(16);
     let mut dirty_buf: Vec<RECT> = Vec::with_capacity(64);
     let mut last_desktop_activity = Instant::now() - Duration::from_secs(10);
+    let mut last_color_poll = Instant::now();
     let mut initial_acquire_attempted = false;
 
     'outer: loop {
-        // 1. Check lifecycle, pause, and display changes.
-        let (need_rebuild, any_need_swapchain, all_paused, min_redraw_wait_ms, drag_recent) = {
+        // 1. Check lifecycle, pause, and display/color changes.
+        let (
+            need_rebuild,
+            color_dirty,
+            any_need_swapchain,
+            all_paused,
+            min_redraw_wait_ms,
+            drag_recent,
+        ) = {
             let mut st = ctrl.state.lock();
             if st.shutdown || st.targets.is_empty() {
                 drop(st);
@@ -1118,7 +1663,8 @@ fn monitor_worker_loop(ctrl: Arc<WorkerControl>) {
             }
             if st.display_dirty {
                 st.display_dirty = false;
-                (true, false, false, None, false)
+                st.color_dirty = false;
+                (true, false, false, false, None, false)
             } else {
                 let any_active = st.targets.values().any(|t| !t.spec.paused);
                 let any_sc = st.targets.values().any(|t| t.needs_swapchain);
@@ -1132,6 +1678,8 @@ fn monitor_worker_loop(ctrl: Arc<WorkerControl>) {
                     });
                     continue 'outer;
                 }
+                let color_dirty = st.color_dirty;
+                st.color_dirty = false;
                 let now = Instant::now();
                 let min_wait = st
                     .targets
@@ -1146,7 +1694,14 @@ fn monitor_worker_loop(ctrl: Arc<WorkerControl>) {
                     .last_drag_at
                     .map(|at| at.elapsed() < Duration::from_millis(450))
                     .unwrap_or(false);
-                (false, any_sc, !any_active && !any_sc, min_wait, drag_recent)
+                (
+                    false,
+                    color_dirty,
+                    any_sc,
+                    !any_active && !any_sc,
+                    min_wait,
+                    drag_recent,
+                )
             }
         };
         let _ = all_paused;
@@ -1155,6 +1710,7 @@ fn monitor_worker_loop(ctrl: Arc<WorkerControl>) {
             drop(duplication.take());
             has_desktop_frame = false;
             initial_acquire_attempted = false;
+            last_color_poll = Instant::now();
             match MonitorGpuPipeline::create(ctrl.mon_key) {
                 Ok(new_p) => {
                     pipeline = new_p;
@@ -1177,12 +1733,57 @@ fn monitor_worker_loop(ctrl: Arc<WorkerControl>) {
             continue 'outer;
         }
 
+        let need_color_check = duplication.is_some()
+            && (color_dirty
+                || ((pipeline.last_frame_was_hdr || pipeline.color_info.hdr_enabled)
+                    && last_color_poll.elapsed() >= Duration::from_secs(2)));
+        if need_color_check {
+            last_color_poll = Instant::now();
+            let next_info = query_monitor_color_info(&pipeline.device_name, &pipeline.dxgi_output);
+            if next_info.hdr_enabled != pipeline.color_info.hdr_enabled {
+                log::info!(
+                    "CaptureD2d HDR-tilstand ændret for {}: {} -> {}; genopretter duplikering",
+                    device_name_display(&pipeline.device_name),
+                    pipeline.color_info.hdr_enabled,
+                    next_info.hdr_enabled
+                );
+                pipeline.color_info = next_info;
+                drop(duplication.take());
+                has_desktop_frame = false;
+                continue 'outer;
+            }
+            if (next_info.sdr_white_scale - pipeline.color_info.sdr_white_scale).abs() > 0.005 {
+                log::info!(
+                    "CaptureD2d SDR-hvidniveau ændret for {}: {:.3}x -> {:.3}x",
+                    device_name_display(&pipeline.device_name),
+                    pipeline.color_info.sdr_white_scale,
+                    next_info.sdr_white_scale
+                );
+                pipeline.color_info = next_info;
+                match pipeline.reconvert_cached_hdr() {
+                    Ok(true) => {
+                        let mut st = ctrl.state.lock();
+                        for t in st.targets.values_mut() {
+                            if !t.spec.paused {
+                                t.needs_redraw = true;
+                            }
+                        }
+                    }
+                    Ok(false) => {}
+                    Err(err) => {
+                        log::warn!("CaptureD2d HDR-genkonvertering fejlede: {err}");
+                    }
+                }
+            }
+        }
+
         // 2. Ensure IDXGIOutputDuplication is active.
         if duplication.is_none() {
             match pipeline.acquire_duplication() {
                 Ok(d) => {
                     duplication = Some(d);
                     has_desktop_frame = false;
+                    last_color_poll = Instant::now();
                 }
                 Err(err) => {
                     let hr = err.code();
@@ -1284,16 +1885,8 @@ fn monitor_worker_loop(ctrl: Arc<WorkerControl>) {
                             if let Ok(tex) = res.cast::<ID3D11Texture2D>() {
                                 let mut desc = D3D11_TEXTURE2D_DESC::default();
                                 unsafe { tex.GetDesc(&mut desc) };
-                                match pipeline.ensure_desktop_format(&desc) {
+                                match pipeline.ingest_desktop_frame(&tex, &desc) {
                                     Ok(()) => {
-                                        unsafe {
-                                            pipeline
-                                                .d3d_context
-                                                .CopyResource(&pipeline.desktop_tex, &tex);
-                                            pipeline
-                                                .color_matrix_fx
-                                                .SetInput(0, &pipeline.desktop_bitmap, true);
-                                        }
                                         has_desktop_frame = true;
                                         got_new_desktop = true;
                                         last_desktop_activity = Instant::now();
@@ -1602,5 +2195,238 @@ mod tests {
             redraw_wait_ms(true, Some(now - Duration::from_millis(16)), min_16, now),
             0
         );
+    }
+
+    #[test]
+    fn sdr_white_scale_from_raw_clamps_and_scales() {
+        assert!((sdr_white_scale_from_raw(0) - 1.0).abs() < 1e-6);
+        assert!((sdr_white_scale_from_raw(1000) - 1.0).abs() < 1e-6);
+        assert!((sdr_white_scale_from_raw(2500) - 2.5).abs() < 1e-6);
+        assert!((sdr_white_scale_from_raw(5500) - 5.5).abs() < 1e-6);
+        assert!((sdr_white_scale_from_raw(100_000) - 20.0).abs() < 1e-6);
+    }
+
+    fn srgb_u8_to_linear(v: u8) -> f32 {
+        let c = v as f32 / 255.0;
+        if c <= 0.04045 {
+            c / 12.92
+        } else {
+            ((c + 0.055) / 1.055).powf(2.4)
+        }
+    }
+
+    fn f32_to_f16_bits(val: f32) -> u16 {
+        let bits = val.to_bits();
+        let sign = ((bits >> 16) & 0x8000) as u16;
+        let exp = ((bits >> 23) & 0xFF) as i32;
+        let frac = bits & 0x007F_FFFF;
+
+        if exp == 0xFF {
+            if frac == 0 {
+                return sign | 0x7C00;
+            }
+            return sign | 0x7E00 | ((frac >> 13) as u16).max(1);
+        }
+
+        let exp16 = exp - 127 + 15;
+        if exp16 >= 31 {
+            return sign | 0x7C00;
+        }
+        if exp16 <= 0 {
+            if exp16 < -10 {
+                return sign;
+            }
+            let mant = (frac | 0x0080_0000) >> (14 - exp16);
+            return sign | (mant as u16);
+        }
+        let round = (frac + 0x1000) >> 13;
+        let exp_part = (exp16 as u16) << 10;
+        sign | (exp_part + round as u16)
+    }
+
+    #[test]
+    fn hdr_to_sdr_shader_inverts_dwm_sdr_white_level_1_to_1() {
+        use windows::Win32::Graphics::{
+            Direct3D::{D3D_DRIVER_TYPE_HARDWARE, D3D_DRIVER_TYPE_WARP},
+            Direct3D11::{D3D11_CPU_ACCESS_READ, D3D11_MAP_READ, D3D11_SUBRESOURCE_DATA, D3D11_USAGE_STAGING},
+        };
+
+        let _com = ComMtaGuard::init();
+        let levels = [D3D_FEATURE_LEVEL_11_0];
+        let mut device: Option<ID3D11Device> = None;
+        let mut context: Option<ID3D11DeviceContext> = None;
+        let hw = unsafe {
+            D3D11CreateDevice(
+                None,
+                D3D_DRIVER_TYPE_HARDWARE,
+                HMODULE::default(),
+                D3D11_CREATE_DEVICE_BGRA_SUPPORT,
+                Some(&levels),
+                D3D11_SDK_VERSION,
+                Some(&mut device),
+                None,
+                Some(&mut context),
+            )
+        };
+        if hw.is_err() || device.is_none() || context.is_none() {
+            device = None;
+            context = None;
+            unsafe {
+                D3D11CreateDevice(
+                    None,
+                    D3D_DRIVER_TYPE_WARP,
+                    HMODULE::default(),
+                    D3D11_CREATE_DEVICE_BGRA_SUPPORT,
+                    Some(&levels),
+                    D3D11_SDK_VERSION,
+                    Some(&mut device),
+                    None,
+                    Some(&mut context),
+                )
+                .expect("D3D11 device (HW eller WARP)");
+            }
+        }
+        let device = device.unwrap();
+        let ctx = context.unwrap();
+        let converter = HdrToSdrConverter::new(&device).expect("HdrToSdrConverter::new");
+
+        let sdr_scale = sdr_white_scale_from_raw(5500);
+        let encode_px = |r: u8, g: u8, b: u8, a: f32| -> [u16; 4] {
+            [
+                f32_to_f16_bits(srgb_u8_to_linear(r) * sdr_scale),
+                f32_to_f16_bits(srgb_u8_to_linear(g) * sdr_scale),
+                f32_to_f16_bits(srgb_u8_to_linear(b) * sdr_scale),
+                f32_to_f16_bits(a),
+            ]
+        };
+
+        let pixels: [[u16; 4]; 4] = [
+            encode_px(148, 160, 168, 0.0),
+            encode_px(255, 255, 255, 0.0),
+            encode_px(24, 24, 28, 0.0),
+            [
+                f32_to_f16_bits(12.0),
+                f32_to_f16_bits(12.0),
+                f32_to_f16_bits(12.0),
+                f32_to_f16_bits(1.0),
+            ],
+        ];
+
+        let src_desc = D3D11_TEXTURE2D_DESC {
+            Width: 4,
+            Height: 1,
+            MipLevels: 1,
+            ArraySize: 1,
+            Format: DXGI_FORMAT_R16G16B16A16_FLOAT,
+            SampleDesc: DXGI_SAMPLE_DESC {
+                Count: 1,
+                Quality: 0,
+            },
+            Usage: D3D11_USAGE_DEFAULT,
+            BindFlags: D3D11_BIND_SHADER_RESOURCE.0 as u32,
+            CPUAccessFlags: 0,
+            MiscFlags: 0,
+        };
+        let init_data = D3D11_SUBRESOURCE_DATA {
+            pSysMem: pixels.as_ptr() as *const _,
+            SysMemPitch: 4 * 8,
+            SysMemSlicePitch: 0,
+        };
+        let mut src_tex: Option<ID3D11Texture2D> = None;
+        unsafe {
+            device
+                .CreateTexture2D(&src_desc, Some(&init_data), Some(&mut src_tex))
+                .unwrap();
+        }
+        let src_tex = src_tex.unwrap();
+        let src_res: ID3D11Resource = src_tex.cast().unwrap();
+        let mut srv: Option<ID3D11ShaderResourceView> = None;
+        unsafe {
+            device
+                .CreateShaderResourceView(&src_res, None, Some(&mut srv))
+                .unwrap();
+        }
+        let srv = srv.unwrap();
+
+        let dst_desc = D3D11_TEXTURE2D_DESC {
+            Width: 4,
+            Height: 1,
+            MipLevels: 1,
+            ArraySize: 1,
+            Format: DXGI_FORMAT_B8G8R8A8_UNORM,
+            SampleDesc: DXGI_SAMPLE_DESC {
+                Count: 1,
+                Quality: 0,
+            },
+            Usage: D3D11_USAGE_DEFAULT,
+            BindFlags: D3D11_BIND_RENDER_TARGET.0 as u32,
+            CPUAccessFlags: 0,
+            MiscFlags: 0,
+        };
+        let mut dst_tex: Option<ID3D11Texture2D> = None;
+        unsafe {
+            device
+                .CreateTexture2D(&dst_desc, None, Some(&mut dst_tex))
+                .unwrap();
+        }
+        let dst_tex = dst_tex.unwrap();
+        let dst_res: ID3D11Resource = dst_tex.cast().unwrap();
+        let mut rtv: Option<ID3D11RenderTargetView> = None;
+        unsafe {
+            device
+                .CreateRenderTargetView(&dst_res, None, Some(&mut rtv))
+                .unwrap();
+        }
+        let rtv = rtv.unwrap();
+
+        converter
+            .convert(&ctx, &srv, &rtv, 4, 1, 1.0 / sdr_scale)
+            .expect("HDR->SDR convert");
+
+        let staging_desc = D3D11_TEXTURE2D_DESC {
+            Usage: D3D11_USAGE_STAGING,
+            BindFlags: 0,
+            CPUAccessFlags: D3D11_CPU_ACCESS_READ.0 as u32,
+            ..dst_desc
+        };
+        let mut staging: Option<ID3D11Texture2D> = None;
+        unsafe {
+            device
+                .CreateTexture2D(&staging_desc, None, Some(&mut staging))
+                .unwrap();
+        }
+        let staging = staging.unwrap();
+        let staging_res: ID3D11Resource = staging.cast().unwrap();
+        let mut mapped = D3D11_MAPPED_SUBRESOURCE::default();
+        let got = unsafe {
+            ctx.CopyResource(&staging_res, &dst_res);
+            ctx.Map(&staging_res, 0, D3D11_MAP_READ, 0, Some(&mut mapped))
+                .unwrap();
+            let slice = std::slice::from_raw_parts(mapped.pData as *const u8, 16);
+            let copy: [u8; 16] = slice.try_into().unwrap();
+            ctx.Unmap(&staging_res, 0);
+            copy
+        };
+
+        // BGRA byteordre i DXGI_FORMAT_B8G8R8A8_UNORM
+        let expected: [[u8; 4]; 4] = [
+            [168, 160, 148, 255],
+            [255, 255, 255, 255],
+            [28, 24, 24, 255],
+            [255, 255, 255, 255],
+        ];
+        for i in 0..4 {
+            let px = &got[i * 4..(i + 1) * 4];
+            assert_eq!(px[3], expected[i][3], "pixel {i} alpha");
+            for c in 0..3 {
+                let diff = (px[c] as i16 - expected[i][c] as i16).abs();
+                assert!(
+                    diff <= 1,
+                    "pixel {i} kanal {c}: fik {}, forventede {}",
+                    px[c],
+                    expected[i][c]
+                );
+            }
+        }
     }
 }
