@@ -26,7 +26,7 @@ use windows::{
                 Common::{
                     D2D1_BORDER_MODE_HARD, D2D1_FIGURE_BEGIN_FILLED, D2D1_FIGURE_END_CLOSED,
                 },
-                ID2D1Factory, ID2D1Geometry, D2D1_FACTORY_TYPE_SINGLE_THREADED,
+                ID2D1Factory, ID2D1Geometry, D2D1_FACTORY_TYPE_MULTI_THREADED,
                 D2D1_GAUSSIANBLUR_OPTIMIZATION_BALANCED,
             },
             Dwm::{
@@ -458,9 +458,27 @@ impl IGraphicsEffectD2D1Interop_Impl for D2dSaturationEffect_Impl {
     }
 }
 
+fn build_d2d_path_geometry(
+    factory: &ID2D1Factory,
+    pts: &[Vector2],
+) -> windows_core::Result<ID2D1Geometry> {
+    let path = unsafe { factory.CreatePathGeometry()? };
+    let sink = unsafe { path.Open()? };
+    unsafe {
+        sink.BeginFigure(pts[0], D2D1_FIGURE_BEGIN_FILLED);
+        for &pt in &pts[1..] {
+            sink.AddLine(pt);
+        }
+        sink.EndFigure(D2D1_FIGURE_END_CLOSED);
+        sink.Close()?;
+    }
+    path.cast()
+}
+
 #[implement(IGeometrySource2D, IGeometrySource2DInterop)]
 struct PathGeometrySource {
     geometry: ID2D1Geometry,
+    pts: Vec<Vector2>,
 }
 
 impl IGeometrySource2D_Impl for PathGeometrySource_Impl {}
@@ -472,8 +490,13 @@ impl IGeometrySource2DInterop_Impl for PathGeometrySource_Impl {
 
     fn TryGetGeometryUsingFactory(
         &self,
-        _factory: windows_core::Ref<ID2D1Factory>,
+        factory: windows_core::Ref<ID2D1Factory>,
     ) -> windows_core::Result<ID2D1Geometry> {
+        if let Some(fac) = factory.as_ref() {
+            if self.pts.len() >= 3 {
+                return build_d2d_path_geometry(fac, &self.pts);
+            }
+        }
         Err(windows_core::Error::from(E_NOTIMPL))
     }
 }
@@ -550,7 +573,7 @@ fn init_runtime() -> windows_core::Result<BackdropRuntime> {
 
     let compositor = Compositor::new()?;
     let d2d_factory: ID2D1Factory =
-        unsafe { D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, None)? };
+        unsafe { D2D1CreateFactory(D2D1_FACTORY_TYPE_MULTI_THREADED, None)? };
     ensure_class_registered()?;
 
     Ok(BackdropRuntime {
@@ -709,18 +732,12 @@ fn build_clip(
     if use_squircle && r_inset > 0.25 {
         let pts = build_squircle_points(x0, y0, w, h, r_inset);
         if pts.len() >= 3 {
-            let path = unsafe { d2d_factory.CreatePathGeometry()? };
-            let sink = unsafe { path.Open()? };
-            unsafe {
-                sink.BeginFigure(pts[0], D2D1_FIGURE_BEGIN_FILLED);
-                for &pt in &pts[1..] {
-                    sink.AddLine(pt);
-                }
-                sink.EndFigure(D2D1_FIGURE_END_CLOSED);
-                sink.Close()?;
+            let d2d_geom = build_d2d_path_geometry(d2d_factory, &pts)?;
+            let geom_source: IGeometrySource2D = PathGeometrySource {
+                geometry: d2d_geom,
+                pts,
             }
-            let d2d_geom: ID2D1Geometry = path.cast()?;
-            let geom_source: IGeometrySource2D = PathGeometrySource { geometry: d2d_geom }.into();
+            .into();
             let comp_path = CompositionPath::Create(&geom_source)?;
             let path_geom = compositor.CreatePathGeometryWithPath(&comp_path)?;
             let comp_geom: CompositionGeometry = path_geom.cast()?;
@@ -807,8 +824,8 @@ fn align_backdrop_to_widget(widget_hwnd: HWND, backdrop_hwnd: HWND, hidden_idle:
         } else {
             HWND_NOTOPMOST
         };
-        unsafe {
-            let _ = SetWindowPos(
+        if let Err(err) = unsafe {
+            SetWindowPos(
                 backdrop_hwnd,
                 Some(band),
                 0,
@@ -816,7 +833,9 @@ fn align_backdrop_to_widget(widget_hwnd: HWND, backdrop_hwnd: HWND, hidden_idle:
                 0,
                 0,
                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
-            );
+            )
+        } {
+            log::warn!("align_backdrop_to_widget SetWindowPos fejlede: {err}");
         }
     }
 
@@ -833,8 +852,8 @@ fn align_backdrop_to_widget(widget_hwnd: HWND, backdrop_hwnd: HWND, hidden_idle:
         flags |= SWP_NOZORDER;
     }
 
-    unsafe {
-        let _ = SetWindowPos(
+    if let Err(err) = unsafe {
+        SetWindowPos(
             backdrop_hwnd,
             Some(widget_hwnd),
             w_rect.left,
@@ -842,7 +861,9 @@ fn align_backdrop_to_widget(widget_hwnd: HWND, backdrop_hwnd: HWND, hidden_idle:
             w,
             h,
             flags,
-        );
+        )
+    } {
+        log::warn!("align_backdrop_to_widget SetWindowPos fejlede: {err}");
     }
 }
 
@@ -1075,7 +1096,15 @@ fn create_entry_for_mode(
 
             BACKDROP_MAP.lock().insert(key, backdrop_hwnd.0 as isize);
             align_backdrop_to_widget(widget_hwnd, backdrop_hwnd, false);
-            log::info!("Levende glas aktivt (CaptureD2d) for widget {key}");
+            if w_visible {
+                backdrop_capture::request_redraw(key);
+            }
+            log::info!(
+                "Levende glas aktivt (CaptureD2d) for widget {key} (backdrop={}, vis={w_visible}, rect={}x{})",
+                backdrop_hwnd.0 as isize,
+                phys_w,
+                phys_h
+            );
 
             Some(BackdropEntry {
                 backdrop_hwnd,
@@ -1288,11 +1317,13 @@ pub fn attach_capture_swapchain(
         match build_surface_brush(&rt.compositor, &swap_chain.0) {
             Ok(brush) => {
                 if let Err(err) = entry.visual.SetBrush(&brush) {
-                    log::debug!("Kunne ikke binde opdateret capture-brush: {err}");
+                    log::warn!("Kunne ikke binde opdateret capture-brush: {err}");
+                } else if entry.window_visible && !entry.hidden_idle {
+                    backdrop_capture::request_redraw(key);
                 }
             }
             Err(err) => {
-                log::debug!("Kunne ikke bygge capture SurfaceBrush: {err}");
+                log::warn!("Kunne ikke bygge capture SurfaceBrush: {err}");
             }
         }
     });

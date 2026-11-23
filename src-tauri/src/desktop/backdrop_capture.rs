@@ -17,16 +17,19 @@ use windows::{
         Foundation::{D2DERR_RECREATE_TARGET, E_ACCESSDENIED, HMODULE, HWND, RECT},
         Graphics::{
             Direct2D::{
-                CLSID_D2D1Border, CLSID_D2D1GaussianBlur, CLSID_D2D1Saturation,
+                CLSID_D2D1Border, CLSID_D2D1ColorMatrix, CLSID_D2D1GaussianBlur,
+                CLSID_D2D1Saturation,
                 Common::{
-                    D2D1_ALPHA_MODE_IGNORE, D2D1_BORDER_MODE_SOFT, D2D1_COMPOSITE_MODE_SOURCE_COPY,
+                    D2D1_ALPHA_MODE_IGNORE, D2D1_ALPHA_MODE_PREMULTIPLIED, D2D1_BORDER_MODE_SOFT,
+                    D2D1_COLORMATRIX_ALPHA_MODE_STRAIGHT, D2D1_COMPOSITE_MODE_SOURCE_OVER,
                     D2D1_PIXEL_FORMAT, D2D_RECT_F,
                 },
                 D2D1CreateFactory, ID2D1Bitmap1, ID2D1Device, ID2D1DeviceContext, ID2D1Effect,
                 ID2D1Factory1, D2D1_BITMAP_OPTIONS_CANNOT_DRAW, D2D1_BITMAP_OPTIONS_NONE,
                 D2D1_BITMAP_OPTIONS_TARGET, D2D1_BITMAP_PROPERTIES1,
                 D2D1_BORDER_EDGE_MODE_CLAMP, D2D1_BORDER_PROP_EDGE_MODE_X,
-                D2D1_BORDER_PROP_EDGE_MODE_Y, D2D1_DEVICE_CONTEXT_OPTIONS_NONE,
+                D2D1_BORDER_PROP_EDGE_MODE_Y, D2D1_COLORMATRIX_PROP_ALPHA_MODE,
+                D2D1_COLORMATRIX_PROP_COLOR_MATRIX, D2D1_DEVICE_CONTEXT_OPTIONS_NONE,
                 D2D1_FACTORY_TYPE_MULTI_THREADED, D2D1_GAUSSIANBLUR_OPTIMIZATION_BALANCED,
                 D2D1_GAUSSIANBLUR_PROP_BORDER_MODE, D2D1_GAUSSIANBLUR_PROP_OPTIMIZATION,
                 D2D1_GAUSSIANBLUR_PROP_STANDARD_DEVIATION, D2D1_INTERPOLATION_MODE_LINEAR,
@@ -39,7 +42,9 @@ use windows::{
                 D3D11_TEXTURE2D_DESC, D3D11_USAGE_DEFAULT,
             },
             Dxgi::{
-                Common::{DXGI_ALPHA_MODE_IGNORE, DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_SAMPLE_DESC},
+                Common::{
+                    DXGI_ALPHA_MODE_PREMULTIPLIED, DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_SAMPLE_DESC,
+                },
                 CreateDXGIFactory1, IDXGIAdapter, IDXGIAdapter1, IDXGIDevice, IDXGIFactory2,
                 IDXGIOutput1, IDXGIOutputDuplication, IDXGIResource, IDXGISurface,
                 IDXGISwapChain1, DXGI_ERROR_ACCESS_LOST, DXGI_ERROR_DEVICE_REMOVED,
@@ -105,11 +110,12 @@ struct TargetRuntime {
     needs_swapchain: bool,
     needs_redraw: bool,
     first_drawn: bool,
+    logged_first_present: bool,
+    last_draw_err: Option<(HRESULT, Instant)>,
     last_redraw_at: Option<Instant>,
     rect_changed_at: Instant,
     pending_reply: Option<SyncSender<Result<SendSwapChain, String>>>,
     swap_chain: Option<IDXGISwapChain1>,
-    target_bitmap: Option<ID2D1Bitmap1>,
 }
 
 struct WorkerSharedState {
@@ -348,11 +354,12 @@ pub fn register_sync(spec: CaptureTargetSpec) -> Result<Option<SendSwapChain>, S
                     needs_swapchain: true,
                     needs_redraw: true,
                     first_drawn: false,
+                    logged_first_present: false,
+                    last_draw_err: None,
                     last_redraw_at: None,
                     rect_changed_at: now,
                     pending_reply: Some(reply_tx),
                     swap_chain: None,
-                    target_bitmap: None,
                 },
             );
         }
@@ -416,11 +423,12 @@ pub fn update_nonblocking(spec: CaptureTargetSpec) {
                 needs_swapchain: true,
                 needs_redraw: true,
                 first_drawn: false,
+                logged_first_present: false,
+                last_draw_err: None,
                 last_redraw_at: None,
                 rect_changed_at: now,
                 pending_reply: None,
                 swap_chain: None,
-                target_bitmap: None,
             },
         );
         st.last_drag_at = Some(now);
@@ -490,6 +498,30 @@ pub fn set_paused(widget_hwnd: isize, paused: bool) {
             }
             ctrl.cv.notify_all();
         }
+    }
+}
+
+pub fn request_redraw(widget_hwnd: isize) {
+    if SHUTTING_DOWN.load(Ordering::Acquire) {
+        return;
+    }
+    let coord = COORDINATOR.lock();
+    let Some(&mon_key) = coord.widget_monitor.get(&widget_hwnd) else {
+        return;
+    };
+    let Some(ctrl) = coord.workers.get(&mon_key).cloned() else {
+        return;
+    };
+    drop(coord);
+
+    let now = Instant::now();
+    let mut st = ctrl.state.lock();
+    if let Some(t) = st.targets.get_mut(&widget_hwnd) {
+        t.needs_redraw = true;
+        t.first_drawn = false;
+        t.rect_changed_at = now;
+        st.last_drag_at = Some(now);
+        ctrl.cv.notify_all();
     }
 }
 
@@ -570,7 +602,8 @@ struct MonitorGpuPipeline {
     desktop_tex: ID3D11Texture2D,
     desktop_tex_desc: D3D11_TEXTURE2D_DESC,
     desktop_bitmap: ID2D1Bitmap1,
-    border_fx: ID2D1Effect,
+    color_matrix_fx: ID2D1Effect,
+    _border_fx: ID2D1Effect,
     blur_fx: ID2D1Effect,
     sat_fx: ID2D1Effect,
 }
@@ -723,6 +756,38 @@ impl MonitorGpuPipeline {
             DXGI_FORMAT_B8G8R8A8_UNORM,
         )?;
 
+        const FORCE_OPAQUE_ALPHA_MATRIX: [f32; 20] = [
+            1.0, 0.0, 0.0, 0.0,
+            0.0, 1.0, 0.0, 0.0,
+            0.0, 0.0, 1.0, 0.0,
+            0.0, 0.0, 0.0, 0.0,
+            0.0, 0.0, 0.0, 1.0,
+        ];
+        let mut matrix_bytes = [0u8; 80];
+        for (i, f) in FORCE_OPAQUE_ALPHA_MATRIX.iter().enumerate() {
+            matrix_bytes[i * 4..(i + 1) * 4].copy_from_slice(&f.to_ne_bytes());
+        }
+
+        let color_matrix_fx = unsafe { dc.CreateEffect(&CLSID_D2D1ColorMatrix) }
+            .map_err(|e| format!("CreateEffect(ColorMatrix): {e}"))?;
+        unsafe {
+            color_matrix_fx
+                .SetValue(
+                    D2D1_COLORMATRIX_PROP_COLOR_MATRIX.0 as u32,
+                    D2D1_PROPERTY_TYPE_UNKNOWN,
+                    &matrix_bytes,
+                )
+                .map_err(|e| format!("ColorMatrix matrix: {e}"))?;
+            color_matrix_fx
+                .SetValue(
+                    D2D1_COLORMATRIX_PROP_ALPHA_MODE.0 as u32,
+                    D2D1_PROPERTY_TYPE_UNKNOWN,
+                    &(D2D1_COLORMATRIX_ALPHA_MODE_STRAIGHT.0 as u32).to_ne_bytes(),
+                )
+                .map_err(|e| format!("ColorMatrix alpha mode: {e}"))?;
+            color_matrix_fx.SetInput(0, &desktop_bitmap, true);
+        }
+
         let border_fx = unsafe { dc.CreateEffect(&CLSID_D2D1Border) }
             .map_err(|e| format!("CreateEffect(Border): {e}"))?;
         let clamp = (D2D1_BORDER_EDGE_MODE_CLAMP.0 as u32).to_ne_bytes();
@@ -741,7 +806,10 @@ impl MonitorGpuPipeline {
                     &clamp,
                 )
                 .map_err(|e| format!("Border EDGE_MODE_Y: {e}"))?;
-            border_fx.SetInput(0, &desktop_bitmap, true);
+            let cm_out = color_matrix_fx
+                .GetOutput()
+                .map_err(|e| format!("ColorMatrix GetOutput: {e}"))?;
+            border_fx.SetInput(0, &cm_out, true);
         }
 
         let blur_fx = unsafe { dc.CreateEffect(&CLSID_D2D1GaussianBlur) }
@@ -786,7 +854,8 @@ impl MonitorGpuPipeline {
             desktop_tex,
             desktop_tex_desc,
             desktop_bitmap,
-            border_fx,
+            color_matrix_fx,
+            _border_fx: border_fx,
             blur_fx,
             sat_fx,
         })
@@ -810,7 +879,7 @@ impl MonitorGpuPipeline {
         self.desktop_tex_desc = desc;
         self.desktop_bitmap = bmp;
         unsafe {
-            self.border_fx.SetInput(0, &self.desktop_bitmap, true);
+            self.color_matrix_fx.SetInput(0, &self.desktop_bitmap, true);
         }
         Ok(())
     }
@@ -823,7 +892,7 @@ impl MonitorGpuPipeline {
         &self,
         phys_w: u32,
         phys_h: u32,
-    ) -> Result<(IDXGISwapChain1, ID2D1Bitmap1), windows_core::Error> {
+    ) -> Result<IDXGISwapChain1, windows_core::Error> {
         let desc = DXGI_SWAP_CHAIN_DESC1 {
             Width: phys_w.max(1),
             Height: phys_h.max(1),
@@ -837,27 +906,13 @@ impl MonitorGpuPipeline {
             BufferCount: 2,
             Scaling: DXGI_SCALING_STRETCH,
             SwapEffect: DXGI_SWAP_EFFECT_FLIP_DISCARD,
-            AlphaMode: DXGI_ALPHA_MODE_IGNORE,
+            AlphaMode: DXGI_ALPHA_MODE_PREMULTIPLIED,
             Flags: 0,
         };
-        let swap_chain = unsafe {
+        unsafe {
             self.dxgi_factory
-                .CreateSwapChainForComposition(&self.d3d_device, &desc, None)?
-        };
-        let back_surface: IDXGISurface = unsafe { swap_chain.GetBuffer(0)? };
-        let bmp_props = D2D1_BITMAP_PROPERTIES1 {
-            pixelFormat: D2D1_PIXEL_FORMAT {
-                format: DXGI_FORMAT_B8G8R8A8_UNORM,
-                alphaMode: D2D1_ALPHA_MODE_IGNORE,
-            },
-            dpiX: 96.0,
-            dpiY: 96.0,
-            bitmapOptions: D2D1_BITMAP_OPTIONS_TARGET | D2D1_BITMAP_OPTIONS_CANNOT_DRAW,
-            colorContext: ManuallyDrop::new(None),
-        };
-        let target_bitmap =
-            unsafe { self.dc.CreateBitmapFromDxgiSurface(&back_surface, Some(&bmp_props))? };
-        Ok((swap_chain, target_bitmap))
+                .CreateSwapChainForComposition(&self.d3d_device, &desc, None)
+        }
     }
 
     fn draw_target(
@@ -865,9 +920,23 @@ impl MonitorGpuPipeline {
         spec: &CaptureTargetSpec,
         phys_w: u32,
         phys_h: u32,
-        target_bitmap: &ID2D1Bitmap1,
         swap_chain: &IDXGISwapChain1,
     ) -> Result<(), HRESULT> {
+        let back_surface: IDXGISurface = unsafe { swap_chain.GetBuffer(0) }.map_err(|e| e.code())?;
+        let bmp_props = D2D1_BITMAP_PROPERTIES1 {
+            pixelFormat: D2D1_PIXEL_FORMAT {
+                format: DXGI_FORMAT_B8G8R8A8_UNORM,
+                alphaMode: D2D1_ALPHA_MODE_PREMULTIPLIED,
+            },
+            dpiX: 96.0,
+            dpiY: 96.0,
+            bitmapOptions: D2D1_BITMAP_OPTIONS_TARGET | D2D1_BITMAP_OPTIONS_CANNOT_DRAW,
+            colorContext: ManuallyDrop::new(None),
+        };
+        let target_bitmap =
+            unsafe { self.dc.CreateBitmapFromDxgiSurface(&back_surface, Some(&bmp_props)) }
+                .map_err(|e| e.code())?;
+
         let sigma = spec.sigma.clamp(0.0, 200.0);
         unsafe {
             self.blur_fx
@@ -905,14 +974,15 @@ impl MonitorGpuPipeline {
         let origin = Vector2::new(0.0, 0.0);
 
         unsafe {
-            self.dc.SetTarget(target_bitmap);
+            self.dc.SetTarget(&target_bitmap);
             self.dc.BeginDraw();
+            self.dc.Clear(None);
             self.dc.DrawImage(
                 &output_image,
                 Some(&origin),
                 Some(&src_rect),
                 D2D1_INTERPOLATION_MODE_LINEAR,
-                D2D1_COMPOSITE_MODE_SOURCE_COPY,
+                D2D1_COMPOSITE_MODE_SOURCE_OVER,
             );
             let end_res = self.dc.EndDraw(None, None);
             self.dc.SetTarget(None);
@@ -924,6 +994,20 @@ impl MonitorGpuPipeline {
         }
         Ok(())
     }
+}
+
+fn should_log_draw_error(last: &mut Option<(HRESULT, Instant)>, hr: HRESULT) -> bool {
+    let now = Instant::now();
+    let log_it = match *last {
+        None => true,
+        Some((prev_hr, at)) => {
+            prev_hr != hr || now.saturating_duration_since(at) > Duration::from_secs(5)
+        }
+    };
+    if log_it {
+        *last = Some((hr, now));
+    }
+    log_it
 }
 
 fn is_device_reset_hr(hr: HRESULT) -> bool {
@@ -974,6 +1058,36 @@ fn remove_worker_if_same(ctrl: &Arc<WorkerControl>) {
     }
 }
 
+fn target_min_interval(rect_changed_at: Instant, now: Instant) -> Duration {
+    if now.saturating_duration_since(rect_changed_at) < Duration::from_millis(120) {
+        Duration::from_millis(8)
+    } else {
+        Duration::from_millis(16)
+    }
+}
+
+fn redraw_wait_ms(
+    first_drawn: bool,
+    last_redraw_at: Option<Instant>,
+    min_interval: Duration,
+    now: Instant,
+) -> u32 {
+    if !first_drawn {
+        return 0;
+    }
+    let Some(last) = last_redraw_at else {
+        return 0;
+    };
+    let elapsed = now.saturating_duration_since(last);
+    if elapsed >= min_interval {
+        0
+    } else {
+        let rem = min_interval - elapsed;
+        let ceil_ms = (rem.as_nanos() + 999_999) / 1_000_000;
+        ceil_ms.clamp(1, 16) as u32
+    }
+}
+
 fn monitor_worker_loop(ctrl: Arc<WorkerControl>) {
     let _com = ComMtaGuard::init();
 
@@ -996,7 +1110,7 @@ fn monitor_worker_loop(ctrl: Arc<WorkerControl>) {
 
     'outer: loop {
         // 1. Check lifecycle, pause, and display changes.
-        let (need_rebuild, any_need_swapchain, all_paused, any_redraw_pending, drag_recent) = {
+        let (need_rebuild, any_need_swapchain, all_paused, min_redraw_wait_ms, drag_recent) = {
             let mut st = ctrl.state.lock();
             if st.shutdown || st.targets.is_empty() {
                 drop(st);
@@ -1004,7 +1118,7 @@ fn monitor_worker_loop(ctrl: Arc<WorkerControl>) {
             }
             if st.display_dirty {
                 st.display_dirty = false;
-                (true, false, false, false, false)
+                (true, false, false, None, false)
             } else {
                 let any_active = st.targets.values().any(|t| !t.spec.paused);
                 let any_sc = st.targets.values().any(|t| t.needs_swapchain);
@@ -1018,15 +1132,21 @@ fn monitor_worker_loop(ctrl: Arc<WorkerControl>) {
                     });
                     continue 'outer;
                 }
-                let any_redraw = st
+                let now = Instant::now();
+                let min_wait = st
                     .targets
                     .values()
-                    .any(|t| !t.spec.paused && t.needs_redraw && t.swap_chain.is_some());
+                    .filter(|t| !t.spec.paused && t.needs_redraw && t.swap_chain.is_some())
+                    .map(|t| {
+                        let min_int = target_min_interval(t.rect_changed_at, now);
+                        redraw_wait_ms(t.first_drawn, t.last_redraw_at, min_int, now)
+                    })
+                    .min();
                 let drag_recent = st
                     .last_drag_at
                     .map(|at| at.elapsed() < Duration::from_millis(450))
                     .unwrap_or(false);
-                (false, any_sc, !any_active && !any_sc, any_redraw, drag_recent)
+                (false, any_sc, !any_active && !any_sc, min_wait, drag_recent)
             }
         };
         let _ = all_paused;
@@ -1041,11 +1161,11 @@ fn monitor_worker_loop(ctrl: Arc<WorkerControl>) {
                     let mut st = ctrl.state.lock();
                     for (&hwnd, t) in st.targets.iter_mut() {
                         t.swap_chain = None;
-                        t.target_bitmap = None;
                         t.swapchain_gen = bump_generation(hwnd);
                         t.needs_swapchain = true;
                         t.needs_redraw = true;
                         t.first_drawn = false;
+                        t.logged_first_present = false;
                     }
                 }
                 Err(err) => {
@@ -1088,8 +1208,10 @@ fn monitor_worker_loop(ctrl: Arc<WorkerControl>) {
         // 3. Acquire a desktop frame before creating first swapchains if we don't have one yet.
         let timeout_ms = if !has_desktop_frame {
             150
-        } else if any_redraw_pending || any_need_swapchain {
+        } else if any_need_swapchain {
             0
+        } else if let Some(wait_ms) = min_redraw_wait_ms {
+            wait_ms
         } else if drag_recent || last_desktop_activity.elapsed() < Duration::from_millis(450) {
             16
         } else {
@@ -1162,18 +1284,23 @@ fn monitor_worker_loop(ctrl: Arc<WorkerControl>) {
                             if let Ok(tex) = res.cast::<ID3D11Texture2D>() {
                                 let mut desc = D3D11_TEXTURE2D_DESC::default();
                                 unsafe { tex.GetDesc(&mut desc) };
-                                if pipeline.ensure_desktop_format(&desc).is_ok() {
-                                    unsafe {
-                                        pipeline
-                                            .d3d_context
-                                            .CopyResource(&pipeline.desktop_tex, &tex);
-                                        pipeline
-                                            .border_fx
-                                            .SetInput(0, &pipeline.desktop_bitmap, true);
+                                match pipeline.ensure_desktop_format(&desc) {
+                                    Ok(()) => {
+                                        unsafe {
+                                            pipeline
+                                                .d3d_context
+                                                .CopyResource(&pipeline.desktop_tex, &tex);
+                                            pipeline
+                                                .color_matrix_fx
+                                                .SetInput(0, &pipeline.desktop_bitmap, true);
+                                        }
+                                        has_desktop_frame = true;
+                                        got_new_desktop = true;
+                                        last_desktop_activity = Instant::now();
                                     }
-                                    has_desktop_frame = true;
-                                    got_new_desktop = true;
-                                    last_desktop_activity = Instant::now();
+                                    Err(err) => {
+                                        log::warn!("Capture desktop-format opdatering fejlede: {err}");
+                                    }
                                 }
                             }
                         }
@@ -1244,7 +1371,7 @@ fn monitor_worker_loop(ctrl: Arc<WorkerControl>) {
                 continue;
             }
             match pipeline.create_widget_swapchain(pw, ph) {
-                Ok((sc, bmp)) => {
+                Ok(sc) => {
                     let spec_snapshot = {
                         let st = ctrl.state.lock();
                         st.targets.get(&hwnd).map(|t| t.spec)
@@ -1253,7 +1380,7 @@ fn monitor_worker_loop(ctrl: Arc<WorkerControl>) {
                     let mut draw_hr: Option<HRESULT> = None;
                     if let Some(spec) = spec_snapshot {
                         if has_desktop_frame {
-                            match pipeline.draw_target(&spec, pw, ph, &bmp, &sc) {
+                            match pipeline.draw_target(&spec, pw, ph, &sc) {
                                 Ok(()) => initial_drawn = true,
                                 Err(hr) => draw_hr = Some(hr),
                             }
@@ -1267,6 +1394,12 @@ fn monitor_worker_loop(ctrl: Arc<WorkerControl>) {
                             drop(st);
                             continue 'outer;
                         }
+                        let mut st = ctrl.state.lock();
+                        if let Some(t) = st.targets.get_mut(&hwnd) {
+                            if should_log_draw_error(&mut t.last_draw_err, hr) {
+                                log::warn!("CaptureD2d draw fejlede for widget {hwnd}: {hr:?}");
+                            }
+                        }
                     }
 
                     let reply_tx = {
@@ -1274,11 +1407,17 @@ fn monitor_worker_loop(ctrl: Arc<WorkerControl>) {
                         if let Some(t) = st.targets.get_mut(&hwnd) {
                             if t.swapchain_gen == gen_id {
                                 t.swap_chain = Some(sc.clone());
-                                t.target_bitmap = Some(bmp);
                                 if initial_drawn {
                                     t.needs_redraw = false;
                                     t.first_drawn = true;
+                                    t.last_draw_err = None;
                                     t.last_redraw_at = Some(Instant::now());
+                                    if !t.logged_first_present {
+                                        t.logged_first_present = true;
+                                        log::info!(
+                                            "CaptureD2d første frame tegnet ({pw}x{ph}) for widget {hwnd}"
+                                        );
+                                    }
                                 } else {
                                     t.needs_redraw = true;
                                 }
@@ -1323,15 +1462,7 @@ fn monitor_worker_loop(ctrl: Arc<WorkerControl>) {
         // 6. Render any active targets whose backdrop changed (throttled: 120fps drag, 60fps desktop).
         if has_desktop_frame {
             let now = Instant::now();
-            let draw_jobs: Vec<(
-                isize,
-                CaptureTargetSpec,
-                u32,
-                u32,
-                ID2D1Bitmap1,
-                IDXGISwapChain1,
-                u64,
-            )> = {
+            let draw_jobs: Vec<(isize, CaptureTargetSpec, u32, u32, IDXGISwapChain1, u64)> = {
                 let st = ctrl.state.lock();
                 st.targets
                     .iter()
@@ -1339,28 +1470,18 @@ fn monitor_worker_loop(ctrl: Arc<WorkerControl>) {
                         if t.spec.paused || !t.needs_redraw {
                             return None;
                         }
-                        let (Some(bmp), Some(sc)) = (t.target_bitmap.as_ref(), t.swap_chain.as_ref()) else {
+                        let Some(sc) = t.swap_chain.as_ref() else {
                             return None;
                         };
-                        let min_interval = if t.rect_changed_at.elapsed() < Duration::from_millis(120)
-                        {
-                            Duration::from_millis(8)
-                        } else {
-                            Duration::from_millis(16)
-                        };
-                        if t.first_drawn {
-                            if let Some(last) = t.last_redraw_at {
-                                if now.saturating_duration_since(last) < min_interval {
-                                    return None;
-                                }
-                            }
+                        let min_interval = target_min_interval(t.rect_changed_at, now);
+                        if redraw_wait_ms(t.first_drawn, t.last_redraw_at, min_interval, now) > 0 {
+                            return None;
                         }
                         Some((
                             hwnd,
                             t.spec,
                             t.phys_w,
                             t.phys_h,
-                            bmp.clone(),
                             sc.clone(),
                             t.swapchain_gen,
                         ))
@@ -1369,15 +1490,22 @@ fn monitor_worker_loop(ctrl: Arc<WorkerControl>) {
             };
 
             let mut need_device_reset = false;
-            for (hwnd, spec, pw, ph, bmp, sc, gen_id) in draw_jobs {
-                match pipeline.draw_target(&spec, pw, ph, &bmp, &sc) {
+            for (hwnd, spec, pw, ph, sc, gen_id) in draw_jobs {
+                match pipeline.draw_target(&spec, pw, ph, &sc) {
                     Ok(()) => {
                         let mut st = ctrl.state.lock();
                         if let Some(t) = st.targets.get_mut(&hwnd) {
                             if t.swapchain_gen == gen_id {
                                 t.needs_redraw = false;
                                 t.first_drawn = true;
+                                t.last_draw_err = None;
                                 t.last_redraw_at = Some(Instant::now());
+                                if !t.logged_first_present {
+                                    t.logged_first_present = true;
+                                    log::info!(
+                                        "CaptureD2d første frame tegnet ({pw}x{ph}) for widget {hwnd}"
+                                    );
+                                }
                             }
                         }
                     }
@@ -1386,7 +1514,12 @@ fn monitor_worker_loop(ctrl: Arc<WorkerControl>) {
                             need_device_reset = true;
                             break;
                         }
-                        log::debug!("Capture draw fejl for {hwnd}: {hr:?}");
+                        let mut st = ctrl.state.lock();
+                        if let Some(t) = st.targets.get_mut(&hwnd) {
+                            if should_log_draw_error(&mut t.last_draw_err, hr) {
+                                log::warn!("CaptureD2d draw fejlede for widget {hwnd}: {hr:?}");
+                            }
+                        }
                     }
                 }
             }
@@ -1444,5 +1577,30 @@ mod tests {
         // Outside all -> falls back to largest overlap (0) -> index 0
         assert_eq!(pick_monitor_index(&mons, r(-500, -500, -100, -100)), Some(0));
         assert_eq!(pick_monitor_index(&[], r(0, 0, 100, 100)), None);
+    }
+
+    #[test]
+    fn redraw_wait_ms_respects_drag_and_fps_throttles() {
+        let now = Instant::now();
+        let old_rect = now - Duration::from_secs(1);
+        let recent_rect = now - Duration::from_millis(40);
+        assert_eq!(target_min_interval(old_rect, now), Duration::from_millis(16));
+        assert_eq!(target_min_interval(recent_rect, now), Duration::from_millis(8));
+
+        let min_16 = Duration::from_millis(16);
+        assert_eq!(redraw_wait_ms(false, Some(now), min_16, now), 0);
+        assert_eq!(redraw_wait_ms(true, None, min_16, now), 0);
+        assert_eq!(
+            redraw_wait_ms(true, Some(now - Duration::from_millis(5)), min_16, now),
+            11
+        );
+        assert_eq!(
+            redraw_wait_ms(true, Some(now - Duration::from_micros(15_600)), min_16, now),
+            1
+        );
+        assert_eq!(
+            redraw_wait_ms(true, Some(now - Duration::from_millis(16)), min_16, now),
+            0
+        );
     }
 }
