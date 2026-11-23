@@ -2,8 +2,8 @@ use windows::Win32::{
     Foundation::{GetLastError, HWND, SetLastError, WIN32_ERROR},
     UI::WindowsAndMessaging::{
         GetWindowLongPtrW, SetWindowLongPtrW, SetWindowPos, GWL_EXSTYLE, SWP_FRAMECHANGED,
-        SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, WS_EX_APPWINDOW, WS_EX_NOACTIVATE,
-        WS_EX_TOOLWINDOW,
+        SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, WS_EX_APPWINDOW, WS_EX_LAYERED,
+        WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TRANSPARENT,
     },
 };
 
@@ -37,6 +37,31 @@ pub unsafe fn set_activatable(hwnd: HWND, yes: bool) -> windows::core::Result<()
         ex | WS_EX_NOACTIVATE.0
     };
     set_ex_style(hwnd, ex)
+}
+
+/// # Safety
+///
+/// `hwnd` skal være et gyldigt top-level Win32-vindueshandle ejet af den aktuelle proces.
+pub unsafe fn set_click_through(hwnd: HWND, yes: bool) -> windows::core::Result<()> {
+    let prev = GetWindowLongPtrW(hwnd, GWL_EXSTYLE) as u32;
+    let next = if yes {
+        prev | WS_EX_TRANSPARENT.0 | WS_EX_LAYERED.0
+    } else {
+        prev & !(WS_EX_TRANSPARENT.0 | WS_EX_LAYERED.0)
+    };
+    if next == prev {
+        return Ok(());
+    }
+    set_ex_style(hwnd, next)?;
+    SetWindowPos(
+        hwnd,
+        None,
+        0,
+        0,
+        0,
+        0,
+        SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE,
+    )
 }
 
 unsafe fn set_ex_style(hwnd: HWND, style: u32) -> windows::core::Result<()> {

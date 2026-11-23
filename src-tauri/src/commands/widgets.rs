@@ -421,6 +421,15 @@ pub fn widget_set_backdrop_visible(
 }
 
 #[tauri::command]
+pub fn widget_set_idle_hidden(app: AppHandle, id: String, hidden: bool) -> Result<(), AppError> {
+    let result = crate::windows::widget::set_idle_hidden(&app, &id, hidden);
+    if let Err(error) = &result {
+        log::error!(target: "cmd", "widget_set_idle_hidden fejlede for {id}: {error:?}");
+    }
+    result
+}
+
+#[tauri::command]
 pub fn widget_animate_backdrop_box(
     app: AppHandle,
     id: String,

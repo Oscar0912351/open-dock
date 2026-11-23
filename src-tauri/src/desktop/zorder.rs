@@ -13,11 +13,11 @@ use windows::Win32::{
     UI::{
         Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass},
         WindowsAndMessaging::{
-            BeginDeferWindowPos, DeferWindowPos, EndDeferWindowPos, SetForegroundWindow,
-            SetWindowPos, WINDOWPOS, HWND_BOTTOM, HWND_NOTOPMOST, HWND_TOPMOST, MA_NOACTIVATE,
-            SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SWP_SHOWWINDOW,
-            WM_MOUSEACTIVATE, WM_NCDESTROY, WM_SHOWWINDOW, WM_WINDOWPOSCHANGED,
-            WM_WINDOWPOSCHANGING,
+            BeginDeferWindowPos, DeferWindowPos, EndDeferWindowPos, GetWindowLongPtrW,
+            SetForegroundWindow, SetWindowPos, WINDOWPOS, GWL_EXSTYLE, HWND_BOTTOM,
+            HWND_NOTOPMOST, HWND_TOPMOST, MA_NOACTIVATE, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
+            SWP_NOZORDER, SWP_SHOWWINDOW, WM_MOUSEACTIVATE, WM_NCDESTROY, WM_SHOWWINDOW,
+            WM_WINDOWPOSCHANGED, WM_WINDOWPOSCHANGING, WS_EX_TOPMOST,
         },
     },
 };
@@ -27,7 +27,6 @@ pub use crate::config::schema::Layer;
 
 const SUBCLASS_ID: usize = 0xD61A55;
 static SHOW_DESKTOP: AtomicBool = AtomicBool::new(false);
-static GAME_OVERLAY: AtomicBool = AtomicBool::new(false);
 static REGISTRY: LazyLock<Mutex<HashMap<isize, Arc<HwndState>>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
@@ -36,6 +35,10 @@ struct HwndState {
     label: String,
     layer: AtomicU8,
     activatable: AtomicBool,
+    click_through: AtomicBool,
+    idle_hidden: AtomicBool,
+    overlay_active: AtomicBool,
+    fullscreen_hidden: AtomicBool,
 }
 
 impl HwndState {
@@ -45,6 +48,10 @@ impl HwndState {
             label,
             layer: AtomicU8::new(layer as u8),
             activatable: AtomicBool::new(false),
+            click_through: AtomicBool::new(false),
+            idle_hidden: AtomicBool::new(false),
+            overlay_active: AtomicBool::new(false),
+            fullscreen_hidden: AtomicBool::new(false),
         }
     }
 
@@ -86,7 +93,7 @@ unsafe extern "system" fn widget_proc(
             let pos = &mut *(lp.0 as *mut WINDOWPOS);
             if state.layer() == Layer::Desktop
                 && !SHOW_DESKTOP.load(Ordering::Acquire)
-                && !GAME_OVERLAY.load(Ordering::Acquire)
+                && !state.overlay_active.load(Ordering::Acquire)
                 && !pos.flags.contains(SWP_NOZORDER)
             {
                 pos.hwndInsertAfter = HWND_BOTTOM;
@@ -219,23 +226,63 @@ pub fn show_desktop() -> bool {
     SHOW_DESKTOP.load(Ordering::Acquire)
 }
 
-pub fn set_game_overlay(active: bool) -> bool {
-    let previous = GAME_OVERLAY.swap(active, Ordering::AcqRel);
-    if previous == active {
-        return false;
+pub fn set_click_through(hwnd: HWND, yes: bool) -> windows::core::Result<()> {
+    let Some(state) = state_for(hwnd) else {
+        return Err(windows::core::Error::from_thread());
+    };
+    state.click_through.store(yes, Ordering::Release);
+    unsafe { styles::set_click_through(hwnd, yes) }
+}
+
+pub fn set_idle_hidden(hwnd: HWND, hidden: bool) {
+    if let Some(state) = state_for(hwnd) {
+        state.idle_hidden.store(hidden, Ordering::Release);
     }
-    reapply_all();
-    true
+}
+
+pub fn is_idle_hidden(hwnd: HWND) -> bool {
+    state_for(hwnd)
+        .map(|s| s.idle_hidden.load(Ordering::Acquire))
+        .unwrap_or(false)
+}
+
+pub fn set_fullscreen_hidden(hwnd: HWND, hidden: bool) {
+    if let Some(state) = state_for(hwnd) {
+        state.fullscreen_hidden.store(hidden, Ordering::Release);
+    }
+}
+
+pub fn set_widget_game_overlay(hwnd: HWND, active: bool) -> bool {
+    let Some(state) = state_for(hwnd) else {
+        return false;
+    };
+    let previous = state.overlay_active.swap(active, Ordering::AcqRel);
+    if previous != active {
+        if let Err(error) = place(hwnd, state.layer()) {
+            log::error!(
+                "Kunne ikke opdatere spil-overlay z-orden på {}: {error}",
+                state.label
+            );
+        }
+        return true;
+    }
+    false
+}
+
+pub fn is_widget_game_overlay(hwnd: HWND) -> bool {
+    state_for(hwnd)
+        .map(|s| s.overlay_active.load(Ordering::Acquire))
+        .unwrap_or(false)
 }
 
 pub fn game_overlay() -> bool {
-    GAME_OVERLAY.load(Ordering::Acquire)
+    REGISTRY
+        .lock()
+        .values()
+        .any(|state| state.overlay_active.load(Ordering::Acquire))
 }
 
 pub fn reassert_game_overlay() {
-    if !GAME_OVERLAY.load(Ordering::Acquire) {
-        return;
-    }
     let visible = super::app_handle()
         .map(|app| {
             app.state::<crate::state::AppState>()
@@ -246,7 +293,12 @@ pub fn reassert_game_overlay() {
     if !visible {
         return;
     }
-    for (hwnd, _) in registry_snapshot() {
+    for (hwnd, state) in registry_snapshot() {
+        if !state.overlay_active.load(Ordering::Acquire)
+            || state.fullscreen_hidden.load(Ordering::Acquire)
+        {
+            continue;
+        }
         unsafe {
             let _ = SetWindowPos(
                 hwnd,
@@ -261,11 +313,11 @@ pub fn reassert_game_overlay() {
     }
 }
 
-pub fn top_widget_labels() -> Vec<String> {
+pub fn top_widgets() -> Vec<(HWND, String)> {
     registry_snapshot()
         .into_iter()
         .filter(|(_, state)| state.layer() == Layer::Top)
-        .map(|(_, state)| state.label.clone())
+        .map(|(hwnd, state)| (hwnd, state.label.clone()))
         .collect()
 }
 
@@ -297,16 +349,16 @@ fn registry_snapshot() -> Vec<(HWND, Arc<HwndState>)> {
 }
 
 fn place(hwnd: HWND, layer: Layer) -> windows::core::Result<()> {
-    // Tauri styrer også vinduets z-orden og ex-styles; synkronisér derfor i denne rækkefølge.
-    let overlay = game_overlay();
+    let state = state_for(hwnd);
+    let overlay = state
+        .as_ref()
+        .map(|s| s.overlay_active.load(Ordering::Acquire))
+        .unwrap_or(false);
+    let fullscreen_hidden = state
+        .as_ref()
+        .map(|s| s.fullscreen_hidden.load(Ordering::Acquire))
+        .unwrap_or(false);
     let always_on_top = overlay || layer == Layer::Top || (layer == Layer::Desktop && show_desktop());
-    if let (Some(app), Some(state)) = (super::app_handle(), state_for(hwnd)) {
-        if let Some(window) = app.get_webview_window(&state.label) {
-            if let Err(error) = window.set_always_on_top(always_on_top) {
-                log::error!("Kunne ikke opdatere Tauris lag for {}: {error}", state.label);
-            }
-        }
-    }
     let insert_after = if overlay {
         Some(HWND_TOPMOST)
     } else {
@@ -319,17 +371,33 @@ fn place(hwnd: HWND, layer: Layer) -> windows::core::Result<()> {
     };
     // A hidden widget (Bruger valgte "Skjul alle") must stay hidden when the
     // desktop layer is reapplied: only re-show it when widgets are meant visible.
-    let show = super::app_handle()
-        .map(|app| {
-            app.state::<crate::state::AppState>()
-                .widgets_visible
-                .load(Ordering::Acquire)
-        })
-        .unwrap_or(true);
+    let show = !fullscreen_hidden
+        && super::app_handle()
+            .map(|app| {
+                app.state::<crate::state::AppState>()
+                    .widgets_visible
+                    .load(Ordering::Acquire)
+            })
+            .unwrap_or(true);
     unsafe {
         styles::apply_widget_styles(hwnd)?;
-        if let Some(state) = state_for(hwnd) {
+        if let Some(ref state) = state {
             styles::set_activatable(hwnd, state.activatable.load(Ordering::Acquire))?;
+            styles::set_click_through(hwnd, state.click_through.load(Ordering::Acquire))?;
+        }
+        if !always_on_top && insert_after == Some(HWND_BOTTOM) {
+            let ex = GetWindowLongPtrW(hwnd, GWL_EXSTYLE) as u32;
+            if (ex & WS_EX_TOPMOST.0) != 0 {
+                SetWindowPos(
+                    hwnd,
+                    Some(HWND_NOTOPMOST),
+                    0,
+                    0,
+                    0,
+                    0,
+                    SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+                )?;
+            }
         }
         let mut flags = SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE;
         if show {

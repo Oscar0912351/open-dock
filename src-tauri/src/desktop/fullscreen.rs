@@ -9,9 +9,14 @@ use std::{
 use tauri::{AppHandle, Emitter, Manager};
 use tokio::sync::Notify;
 use windows::Win32::{
+    Foundation::{HWND, RECT},
+    Graphics::Gdi::{MonitorFromWindow, MONITOR_DEFAULTTONEAREST},
     System::Power::{GetSystemPowerStatus, SYSTEM_POWER_STATUS},
-    UI::Shell::{
-        SHQueryUserNotificationState, QUNS_PRESENTATION_MODE, QUNS_RUNNING_D3D_FULL_SCREEN,
+    UI::{
+        Shell::{
+            SHQueryUserNotificationState, QUNS_PRESENTATION_MODE, QUNS_RUNNING_D3D_FULL_SCREEN,
+        },
+        WindowsAndMessaging::{GetWindowRect, ShowWindow, SW_HIDE},
     },
 };
 
@@ -22,6 +27,36 @@ use crate::{
 };
 
 use super::{showdesktop, zorder};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FullscreenTarget {
+    pub monitor: isize,
+    pub rect: Option<(i32, i32, i32, i32)>,
+}
+
+fn rects_intersect(a: (i32, i32, i32, i32), b: (i32, i32, i32, i32)) -> bool {
+    a.0 < b.2 && a.2 > b.0 && a.1 < b.3 && a.3 > b.1
+}
+
+pub fn hwnd_covered_by_fullscreen(hwnd: HWND, target: Option<FullscreenTarget>) -> bool {
+    let Some(target) = target else {
+        return false;
+    };
+    let mon = unsafe { MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST) }.0 as isize;
+    if mon != 0 && mon == target.monitor {
+        return true;
+    }
+    if let Some(fg_rect) = target.rect {
+        let mut w_rect = RECT::default();
+        if unsafe { GetWindowRect(hwnd, &mut w_rect) }.is_ok() {
+            return rects_intersect(
+                fg_rect,
+                (w_rect.left, w_rect.top, w_rect.right, w_rect.bottom),
+            );
+        }
+    }
+    false
+}
 
 static CHECK_NOTIFY: LazyLock<Arc<Notify>> = LazyLock::new(|| Arc::new(Notify::new()));
 
@@ -34,10 +69,12 @@ pub fn start(app: AppHandle) {
         let notify = Arc::clone(&CHECK_NOTIFY);
         let mut last_auto: Option<PauseReason> = None;
         let mut last_fullscreen = false;
-        let mut last_overlay = false;
+        let mut last_target: Option<FullscreenTarget> = None;
+        let mut last_overlay_target: Option<FullscreenTarget> = None;
+        let mut last_hide_top_target: Option<FullscreenTarget> = None;
 
         loop {
-            let sleep_dur = if last_overlay {
+            let sleep_dur = if last_overlay_target.is_some() {
                 Duration::from_secs(2)
             } else {
                 Duration::from_secs(5)
@@ -65,6 +102,20 @@ pub fn start(app: AppHandle) {
                 false
             };
 
+            let current_target = if is_fullscreen {
+                showdesktop::foreground_monitor_and_rect().map(|(monitor, rect)| FullscreenTarget {
+                    monitor,
+                    rect: rect.map(|r| (r.left, r.top, r.right, r.bottom)),
+                })
+            } else {
+                None
+            };
+
+            if current_target != last_target {
+                last_target = current_target;
+                *state.fullscreen_target.write() = current_target;
+            }
+
             if is_fullscreen != last_fullscreen {
                 last_fullscreen = is_fullscreen;
                 state.fullscreen_active.store(is_fullscreen, Ordering::Release);
@@ -72,16 +123,29 @@ pub fn start(app: AppHandle) {
             }
 
             let next_overlay = general.game_overlay && is_fullscreen && !edit_mode;
-            if next_overlay != last_overlay {
-                last_overlay = next_overlay;
-                state.game_overlay_active.store(next_overlay, Ordering::Release);
-                widget::apply_game_overlay(&app, next_overlay);
-            } else if next_overlay {
+            let overlay_target = if next_overlay { current_target } else { None };
+            if overlay_target != last_overlay_target {
+                last_overlay_target = overlay_target;
+                state
+                    .game_overlay_active
+                    .store(overlay_target.is_some(), Ordering::Release);
+                widget::apply_game_overlay(&app, overlay_target);
+            } else if overlay_target.is_some() {
                 zorder::reassert_game_overlay();
             }
 
             let pause_for_fullscreen =
                 !general.game_overlay && general.pause_on_fullscreen && is_fullscreen;
+            let hide_top_target = if pause_for_fullscreen {
+                current_target
+            } else {
+                None
+            };
+            if hide_top_target != last_hide_top_target {
+                last_hide_top_target = hide_top_target;
+                sync_top_widgets(&app, hide_top_target);
+            }
+
             let battery = general.pause_on_battery && on_battery();
 
             let next_auto = if pause_for_fullscreen {
@@ -93,13 +157,8 @@ pub fn start(app: AppHandle) {
             };
 
             if next_auto != last_auto {
-                let was_fullscreen = last_auto == Some(PauseReason::Fullscreen);
-                let now_fullscreen = next_auto == Some(PauseReason::Fullscreen);
                 last_auto = next_auto.clone();
                 *state.auto_pause_reason.write() = next_auto;
-                if was_fullscreen != now_fullscreen {
-                    sync_top_widgets(&app, now_fullscreen);
-                }
                 recompute_pause(&app);
             }
         }
@@ -129,37 +188,26 @@ fn shell_reports_fullscreen() -> bool {
     }
 }
 
-fn sync_top_widgets(app: &AppHandle, fullscreen: bool) {
+fn sync_top_widgets(app: &AppHandle, target: Option<FullscreenTarget>) {
     let visible = app.state::<AppState>().widgets_visible.load(Ordering::Acquire);
-    for label in zorder::top_widget_labels() {
+    for (hwnd, label) in zorder::top_widgets() {
         let Some(window) = app.get_webview_window(&label) else {
             log::warn!("Top-widgetten {label} findes ikke længere");
             continue;
         };
-        if fullscreen || !visible {
+        let covered = hwnd_covered_by_fullscreen(hwnd, target);
+        zorder::set_fullscreen_hidden(hwnd, covered);
+        if covered || !visible {
             // Tauris `hide()` er en no-op på de subklassede widget-vinduer.
-            if let Ok(raw) = window.hwnd() {
-                let hwnd = windows::Win32::Foundation::HWND(raw.0 as _);
-                unsafe {
-                    let _ = windows::Win32::UI::WindowsAndMessaging::ShowWindow(
-                        hwnd,
-                        windows::Win32::UI::WindowsAndMessaging::SW_HIDE,
-                    );
-                }
+            unsafe {
+                let _ = ShowWindow(hwnd, SW_HIDE);
             }
             crate::windows::webview_opt::set_webview_suspended(&window, true);
             continue;
         }
         crate::windows::webview_opt::set_webview_suspended(&window, false);
-        match window.hwnd() {
-            Ok(raw) => {
-                if let Err(error) =
-                    zorder::show_without_activation(windows::Win32::Foundation::HWND(raw.0 as _))
-                {
-                    log::error!("Kunne ikke genanvende laget på {label}: {error}");
-                }
-            }
-            Err(error) => log::error!("Kunne ikke læse HWND for {label}: {error}"),
+        if let Err(error) = zorder::show_without_activation(hwnd) {
+            log::error!("Kunne ikke genanvende laget på {label}: {error}");
         }
     }
 }
@@ -208,5 +256,24 @@ pub fn recompute_pause(app: &AppHandle) {
         }
         crate::wallpaper::notify_pause_changed(app);
         crate::tray::sync(app);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rects_intersect_distinguishes_same_and_adjacent_monitors() {
+        let primary = (0, 0, 1920, 1080);
+        let widget_on_primary = (20, 20, 284, 340);
+        let widget_on_second = (1940, 20, 2204, 340);
+        let spanned = (0, 0, 3840, 1080);
+
+        assert!(rects_intersect(primary, widget_on_primary));
+        assert!(!rects_intersect(primary, widget_on_second));
+        assert!(rects_intersect(spanned, widget_on_second));
+        // Touching edge without overlap is not an intersection
+        assert!(!rects_intersect(primary, (1920, 0, 2184, 320)));
     }
 }

@@ -1,4 +1,3 @@
-import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Location } from "../shared/bindings/Location";
 import type { MonitorInfo } from "../shared/bindings/MonitorInfo";
@@ -42,7 +41,6 @@ export function WidgetApp({ id }: WidgetAppProps) {
   const [clusterFrame, setClusterFrame] = useState<ClusterFrameInfo | null>(null);
   const [selectedWidgetId, setSelectedWidgetId] = useState<string | null>(null);
   const [draggingWidgetId, setDraggingWidgetId] = useState<string | null>(null);
-  const [gameOverlayActive, setGameOverlayActive] = useState(false);
   const [placementState, setPlacementState] = useState<{
     monitor: string;
     wx: number;
@@ -98,7 +96,6 @@ export function WidgetApp({ id }: WidgetAppProps) {
         setBoot(nextBoot);
         setMonitor(nextBoot.monitor);
         setPaused(nextBoot.paused);
-        setGameOverlayActive(nextBoot.gameOverlayActive);
         if (nextBoot.placement) {
           const initial = {
             monitor: nextBoot.placement.monitor,
@@ -131,12 +128,13 @@ export function WidgetApp({ id }: WidgetAppProps) {
     };
   }, [id, setPaused]);
 
+  const prevIdleHiddenRef = useRef(false);
   useEffect(() => {
-    if (!instance || !boot) return;
-    const shouldIgnore =
-      (gameOverlayActive || hiddenIdle || instance.clickThrough) && !boot.editMode;
-    void getCurrentWindow().setIgnoreCursorEvents(shouldIgnore).catch(() => {});
-  }, [gameOverlayActive, hiddenIdle, instance, boot]);
+    if (!id || !boot) return;
+    if (prevIdleHiddenRef.current === hiddenIdle) return;
+    prevIdleHiddenRef.current = hiddenIdle;
+    void ipc.widgetSetIdleHidden(id, hiddenIdle).catch(() => {});
+  }, [id, hiddenIdle, boot]);
 
   useEffect(() => {
     if (!id) return;
@@ -307,16 +305,6 @@ export function WidgetApp({ id }: WidgetAppProps) {
       else dispose();
     }).catch((reason: unknown) => {
       void reportError(`edit://dragging: ${String(reason)}`);
-    });
-
-    on.gameOverlay((state) => {
-      if (!active) return;
-      setGameOverlayActive(state.active);
-    }).then((dispose) => {
-      if (active) unlisteners.push(dispose);
-      else dispose();
-    }).catch((reason: unknown) => {
-      void reportError(`app://game-overlay: ${String(reason)}`);
     });
 
     return () => {

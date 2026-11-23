@@ -119,6 +119,7 @@ pub fn spawn_one(app: &AppHandle, instance: &WidgetInstance) -> Result<(), AppEr
     let edit_mode = app.state::<AppState>().edit_mode.load(Ordering::Acquire);
     let label_for_ui = label.clone();
     let attach_id = id_str;
+    let click_through = instance.click_through;
     crate::desktop::run_on_ui_thread_sync(app, move || -> Result<(), AppError> {
         let hwnd = HWND(raw_hwnd as _);
         unsafe {
@@ -130,17 +131,11 @@ pub fn spawn_one(app: &AppHandle, instance: &WidgetInstance) -> Result<(), AppEr
                 log::warn!("Kunne ikke sætte redigerings-aktivering på {label_for_ui}: {error}");
             }
         }
+        if let Err(error) = zorder::set_click_through(hwnd, click_through && !edit_mode) {
+            log::warn!("Kunne ikke sætte click-through på {label_for_ui}: {error}");
+        }
         Ok(())
     })??;
-    let game_overlay = app
-        .state::<AppState>()
-        .game_overlay_active
-        .load(Ordering::Acquire);
-    if let Err(error) =
-        window.set_ignore_cursor_events((game_overlay || instance.click_through) && !edit_mode)
-    {
-        log::warn!("Kunne ikke sætte click-through på {label}: {error}");
-    }
 
     tauri::async_runtime::spawn(async move {
         tokio::time::sleep(std::time::Duration::from_secs(4)).await;
@@ -186,34 +181,62 @@ pub fn close_all(app: &AppHandle) {
     }
 }
 
+fn widget_game_overlay_active(app: &AppHandle, hwnd: HWND) -> bool {
+    let state = app.state::<AppState>();
+    if !state.game_overlay_active.load(Ordering::Acquire) {
+        return false;
+    }
+    let target = *state.fullscreen_target.read();
+    crate::desktop::fullscreen::hwnd_covered_by_fullscreen(hwnd, target)
+}
+
+fn sync_widget_click_through(
+    hwnd: HWND,
+    instance_click_through: bool,
+    edit_mode: bool,
+    label: &str,
+) {
+    let overlay = zorder::is_widget_game_overlay(hwnd);
+    let idle_hidden = zorder::is_idle_hidden(hwnd);
+    let ignore = (overlay || instance_click_through || idle_hidden) && !edit_mode;
+    if let Err(error) = zorder::set_click_through(hwnd, ignore) {
+        log::warn!("Kunne ikke opdatere click-through på {label}: {error}");
+    }
+}
+
 pub fn set_all_visible(app: &AppHandle, visible: bool) {
     let state = app.state::<AppState>();
     let config = state.config.get();
-    let fullscreen = *state.auto_pause_reason.read() == Some(PauseReason::Fullscreen);
+    let fullscreen_target = if *state.auto_pause_reason.read() == Some(PauseReason::Fullscreen) {
+        *state.fullscreen_target.read()
+    } else {
+        None
+    };
 
     for widget in &config.widgets {
         let label = widget.window_label();
         let Some(window) = app.get_webview_window(&label) else {
             continue;
         };
-        if !visible || (fullscreen && widget.layer == Layer::Top) {
+        let Ok(raw_hwnd) = window.hwnd() else {
+            continue;
+        };
+        let hwnd = HWND(raw_hwnd.0 as _);
+        let hidden_by_fs = widget.layer == Layer::Top
+            && crate::desktop::fullscreen::hwnd_covered_by_fullscreen(hwnd, fullscreen_target);
+        zorder::set_fullscreen_hidden(hwnd, hidden_by_fs);
+        if !visible || hidden_by_fs {
             // Tauris `hide()` er en no-op på de subklassede widget-vinduer;
             // skjul direkte på HWND'et i stedet.
-            if let Ok(raw) = window.hwnd() {
-                let hwnd = HWND(raw.0 as _);
-                unsafe {
-                    let _ = ShowWindow(hwnd, SW_HIDE);
-                }
+            unsafe {
+                let _ = ShowWindow(hwnd, SW_HIDE);
             }
             crate::windows::webview_opt::set_webview_suspended(&window, true);
             continue;
         }
         crate::windows::webview_opt::set_webview_suspended(&window, false);
-        if let Ok(raw_hwnd) = window.hwnd() {
-            let hwnd = HWND(raw_hwnd.0 as _);
-            if let Err(error) = zorder::set_layer(hwnd, widget.layer) {
-                log::warn!("Kunne ikke vise widget {label}: {error}");
-            }
+        if let Err(error) = zorder::set_layer(hwnd, widget.layer) {
+            log::warn!("Kunne ikke vise widget {label}: {error}");
         }
     }
 }
@@ -237,8 +260,11 @@ pub fn ready(app: &AppHandle, id: &str) -> Result<WidgetBoot, AppError> {
     let monitor_infos: Vec<MonitorInfo> = monitor_entries.iter().map(|e| e.info.clone()).collect();
     apply_window_geometry(app, &window, &instance, &monitor_infos)?;
 
+    let hwnd = HWND(window.hwnd()?.0 as _);
     let appearance = config.appearance;
-    let game_overlay = state.game_overlay_active.load(Ordering::Acquire);
+    let game_overlay = widget_game_overlay_active(app, hwnd);
+    zorder::set_widget_game_overlay(hwnd, game_overlay);
+
     let effective_engine = glass::effective_engine_in_context(
         appearance.glass_engine,
         instance.glass_override_engine,
@@ -256,13 +282,17 @@ pub fn ready(app: &AppHandle, id: &str) -> Result<WidgetBoot, AppError> {
     );
 
     let edit_mode = state.edit_mode.load(Ordering::Acquire);
-    if let Err(error) =
-        window.set_ignore_cursor_events((game_overlay || instance.click_through) && !edit_mode)
-    {
-        log::warn!("Kunne ikke opdatere click-through på {label}: {error}");
-    }
+    sync_widget_click_through(hwnd, instance.click_through, edit_mode, &label);
 
-    if state.widgets_visible.load(Ordering::Acquire) {
+    let hidden_by_fs = instance.layer == Layer::Top
+        && *state.auto_pause_reason.read() == Some(PauseReason::Fullscreen)
+        && crate::desktop::fullscreen::hwnd_covered_by_fullscreen(
+            hwnd,
+            *state.fullscreen_target.read(),
+        );
+    zorder::set_fullscreen_hidden(hwnd, hidden_by_fs);
+
+    if state.widgets_visible.load(Ordering::Acquire) && !hidden_by_fs {
         show_without_activation(&window)?;
     }
 
@@ -295,29 +325,39 @@ pub fn ready(app: &AppHandle, id: &str) -> Result<WidgetBoot, AppError> {
     })
 }
 
-pub fn apply_game_overlay(app: &AppHandle, active: bool) {
+pub fn apply_game_overlay(
+    app: &AppHandle,
+    target: Option<crate::desktop::fullscreen::FullscreenTarget>,
+) {
     let state = app.state::<AppState>();
     let config = state.config.get();
     let edit_mode = state.edit_mode.load(Ordering::Acquire);
-
-    zorder::set_game_overlay(active);
+    let mut any_active = false;
 
     for widget in &config.widgets {
         let label = widget.window_label();
-        if let Some(window) = app.get_webview_window(&label) {
-            let ignore_cursor = (active || widget.click_through) && !edit_mode;
-            if let Err(error) = window.set_ignore_cursor_events(ignore_cursor) {
-                log::warn!("Kunne ikke opdatere overlay click-through for {label}: {error}");
-            }
+        let Some(window) = app.get_webview_window(&label) else {
+            continue;
+        };
+        let Ok(raw_hwnd) = window.hwnd() else {
+            continue;
+        };
+        let hwnd = HWND(raw_hwnd.0 as _);
+        let active = crate::desktop::fullscreen::hwnd_covered_by_fullscreen(hwnd, target);
+        any_active |= active;
+        zorder::set_widget_game_overlay(hwnd, active);
+        sync_widget_click_through(hwnd, widget.click_through, edit_mode, &label);
+        if let Err(error) = app.emit_to(&label, "app://game-overlay", GameOverlayState { active }) {
+            log::warn!("Kunne ikke sende app://game-overlay til {label}: {error}");
         }
     }
 
     reapply_glass_all(app);
 
-    if let Err(error) = app.emit("app://game-overlay", GameOverlayState { active }) {
-        log::warn!("Kunne ikke sende app://game-overlay: {error}");
-    }
-    log::info!("Spil-overlay {}", if active { "aktiveret" } else { "deaktiveret" });
+    log::info!(
+        "Spil-overlay {}",
+        if any_active { "aktiveret" } else { "deaktiveret" }
+    );
 }
 
 pub fn apply_instance_live(app: &AppHandle, instance: &WidgetInstance) {
@@ -331,23 +371,32 @@ pub fn apply_instance_live(app: &AppHandle, instance: &WidgetInstance) {
     let monitor_entries = state.monitors.read().clone();
     let monitor_infos: Vec<MonitorInfo> = monitor_entries.iter().map(|e| e.info.clone()).collect();
 
-    if let Ok(raw_hwnd) = window.hwnd() {
-        let hwnd = HWND(raw_hwnd.0 as _);
-        if let Err(error) = zorder::set_layer(hwnd, instance.layer) {
-            log::warn!("Kunne ikke opdatere lag på {label}: {error}");
-        }
+    if let Err(error) = apply_window_geometry(app, &window, instance, &monitor_infos) {
+        log::warn!("Kunne ikke opdatere størrelse/placering på {label}: {error:?}");
     }
 
     let edit_mode = state.edit_mode.load(Ordering::Acquire);
-    let game_overlay = state.game_overlay_active.load(Ordering::Acquire);
-    if let Err(error) =
-        window.set_ignore_cursor_events((game_overlay || instance.click_through) && !edit_mode)
-    {
-        log::warn!("Kunne ikke opdatere click-through på {label}: {error}");
-    }
-
-    if let Err(error) = apply_window_geometry(app, &window, instance, &monitor_infos) {
-        log::warn!("Kunne ikke opdatere størrelse/placering på {label}: {error:?}");
+    let mut game_overlay = false;
+    if let Ok(raw_hwnd) = window.hwnd() {
+        let hwnd = HWND(raw_hwnd.0 as _);
+        let hidden_by_fs = instance.layer == Layer::Top
+            && *state.auto_pause_reason.read() == Some(PauseReason::Fullscreen)
+            && crate::desktop::fullscreen::hwnd_covered_by_fullscreen(
+                hwnd,
+                *state.fullscreen_target.read(),
+            );
+        zorder::set_fullscreen_hidden(hwnd, hidden_by_fs);
+        game_overlay = widget_game_overlay_active(app, hwnd);
+        zorder::set_widget_game_overlay(hwnd, game_overlay);
+        if let Err(error) = zorder::set_layer(hwnd, instance.layer) {
+            log::warn!("Kunne ikke opdatere lag på {label}: {error}");
+        }
+        if hidden_by_fs {
+            unsafe {
+                let _ = ShowWindow(hwnd, SW_HIDE);
+            }
+        }
+        sync_widget_click_through(hwnd, instance.click_through, edit_mode, &label);
     }
 
     let effective_engine = glass::effective_engine_in_context(
@@ -384,7 +433,6 @@ pub fn reapply_glass_all(app: &AppHandle) {
     let state = app.state::<AppState>();
     let config = state.config.get();
     let win11 = glass::is_windows_11();
-    let game_overlay = state.game_overlay_active.load(Ordering::Acquire);
     let monitor_infos: Vec<MonitorInfo> = state
         .monitors
         .read()
@@ -397,6 +445,11 @@ pub fn reapply_glass_all(app: &AppHandle) {
         let Some(window) = app.get_webview_window(&label) else {
             continue;
         };
+        let game_overlay = window
+            .hwnd()
+            .ok()
+            .map(|raw| widget_game_overlay_active(app, HWND(raw.0 as _)))
+            .unwrap_or(false);
         let effective_engine = glass::effective_engine_in_context(
             config.appearance.glass_engine,
             widget.glass_override_engine,
@@ -547,23 +600,41 @@ pub fn reposition_all(app: AppHandle) {
 pub fn apply_edit_mode(app: &AppHandle, on: bool) {
     let state = app.state::<AppState>();
     let config = state.config.get();
-    let game_overlay = state.game_overlay_active.load(Ordering::Acquire);
 
     for widget in &config.widgets {
         let label = widget.window_label();
         if let Some(window) = app.get_webview_window(&label) {
-            let ignore_cursor = (game_overlay || widget.click_through) && !on;
-            if let Err(error) = window.set_ignore_cursor_events(ignore_cursor) {
-                log::warn!("Kunne ikke opdatere redigerings-input for {label}: {error}");
-            }
             if let Ok(raw_hwnd) = window.hwnd() {
                 let hwnd = HWND(raw_hwnd.0 as _);
+                sync_widget_click_through(hwnd, widget.click_through, on, &label);
                 if let Err(error) = zorder::set_widget_activatable(hwnd, on, false) {
                     log::warn!("Kunne ikke opdatere activatable for {label}: {error}");
                 }
             }
         }
     }
+}
+
+pub fn set_idle_hidden(app: &AppHandle, id: &str, hidden: bool) -> Result<(), AppError> {
+    let uuid = Uuid::parse_str(id).map_err(|_| AppError::WidgetNotFound)?;
+    let state = app.state::<AppState>();
+    let click_through = state
+        .config
+        .get()
+        .widgets
+        .iter()
+        .find(|w| w.id == uuid)
+        .map(|w| w.click_through)
+        .unwrap_or(false);
+    let label = format!("w-{uuid}");
+    let Some(window) = app.get_webview_window(&label) else {
+        return Ok(());
+    };
+    let hwnd = HWND(window.hwnd()?.0 as _);
+    zorder::set_idle_hidden(hwnd, hidden);
+    let edit_mode = state.edit_mode.load(Ordering::Acquire);
+    sync_widget_click_through(hwnd, click_through, edit_mode, &label);
+    Ok(())
 }
 
 pub fn set_focusable(app: &AppHandle, id: &str, focusable: bool) -> Result<(), AppError> {

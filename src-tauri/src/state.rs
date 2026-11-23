@@ -122,6 +122,7 @@ pub struct AppState {
     pub widgets_visible: AtomicBool,
     pub manual_paused: AtomicBool,
     pub fullscreen_active: AtomicBool,
+    pub fullscreen_target: RwLock<Option<crate::desktop::fullscreen::FullscreenTarget>>,
     pub game_overlay_active: AtomicBool,
     pub auto_pause_reason: RwLock<Option<PauseReason>>,
     pub effective_pause: RwLock<AppPaused>,
@@ -147,6 +148,7 @@ impl AppState {
             widgets_visible: AtomicBool::new(true),
             manual_paused: AtomicBool::new(false),
             fullscreen_active: AtomicBool::new(false),
+            fullscreen_target: RwLock::new(None),
             game_overlay_active: AtomicBool::new(false),
             auto_pause_reason: RwLock::new(None),
             effective_pause: RwLock::new(AppPaused {

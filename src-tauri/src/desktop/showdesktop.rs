@@ -108,6 +108,35 @@ pub fn foreground_is_shell_or_own() -> bool {
     is_shell_or_system_window(hwnd)
 }
 
+pub fn foreground_monitor_and_rect() -> Option<(isize, Option<RECT>)> {
+    let hwnd = unsafe { GetForegroundWindow() };
+    if hwnd.0.is_null() {
+        return None;
+    }
+    let monitor = unsafe { MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST) };
+    let rect = window_bounds(hwnd);
+    Some((monitor.0 as isize, rect))
+}
+
+fn window_bounds(hwnd: HWND) -> Option<RECT> {
+    let mut rect = RECT::default();
+    let ok = unsafe {
+        DwmGetWindowAttribute(
+            hwnd,
+            DWMWA_EXTENDED_FRAME_BOUNDS,
+            &mut rect as *mut RECT as *mut _,
+            size_of::<RECT>() as u32,
+        )
+    }
+    .is_ok()
+        || unsafe { GetWindowRect(hwnd, &mut rect) }.is_ok();
+    if ok {
+        Some(rect)
+    } else {
+        None
+    }
+}
+
 pub fn foreground_is_borderless_fullscreen() -> bool {
     let hwnd = unsafe { GetForegroundWindow() };
     if hwnd.0.is_null() || is_desktop_host(hwnd) || is_shell_or_system_window(hwnd) {
@@ -145,20 +174,9 @@ pub fn foreground_is_borderless_fullscreen() -> bool {
     if unsafe { IsZoomed(hwnd).as_bool() } && (style & WS_CAPTION.0) == WS_CAPTION.0 {
         return false;
     }
-    let mut rect = RECT::default();
-    let got_rect = unsafe {
-        DwmGetWindowAttribute(
-            hwnd,
-            DWMWA_EXTENDED_FRAME_BOUNDS,
-            &mut rect as *mut RECT as *mut _,
-            size_of::<RECT>() as u32,
-        )
-    }
-    .is_ok()
-        || unsafe { GetWindowRect(hwnd, &mut rect) }.is_ok();
-    if !got_rect {
+    let Some(rect) = window_bounds(hwnd) else {
         return false;
-    }
+    };
     let monitor = unsafe { MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST) };
     let mut info = MONITORINFO {
         cbSize: size_of::<MONITORINFO>() as u32,

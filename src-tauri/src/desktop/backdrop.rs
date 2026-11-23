@@ -1184,7 +1184,6 @@ pub fn apply(widget_hwnd: HWND, requested_mode: LiveBackdropMode, spec: Backdrop
             )
             .or_else(|| {
                 if requested_mode == LiveBackdropMode::NativeHostBackdrop
-                    && spec.layer != Layer::Desktop
                     && glass::is_windows_10_2004_or_newer()
                 {
                     log::warn!("Native HostBackdrop fejlede; falder tilbage til CaptureD2d");

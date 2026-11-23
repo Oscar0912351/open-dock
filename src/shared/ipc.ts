@@ -73,6 +73,8 @@ export const ipc = {
   widgetContextMenu: (id: string) => invoke<void>("widget_context_menu", { id }),
   widgetSetBackdropVisible: (id: string, visible: boolean, durationMs: number) =>
     invoke<void>("widget_set_backdrop_visible", { id, visible, durationMs }),
+  widgetSetIdleHidden: (id: string, hidden: boolean) =>
+    invoke<void>("widget_set_idle_hidden", { id, hidden }),
   widgetAnimateBackdropBox: (
     id: string,
     fromHU: number,
