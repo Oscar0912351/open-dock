@@ -10,6 +10,7 @@ import {
   Plus,
   Robot,
   Sparkle,
+  Timer as TimerIcon,
   X,
   type Icon,
 } from "@phosphor-icons/react";
@@ -45,6 +46,7 @@ const CUSTOM_MODULE_CHOICES: ReadonlyArray<{
   { id: "discord", kinds: ["discord"], icon: Headset },
   { id: "note", kinds: ["note"], icon: NotePencil },
   { id: "agents", kinds: ["agents"], icon: Robot },
+  { id: "timer", kinds: ["timer"], icon: TimerIcon },
 ];
 
 const MAX_CUSTOM_MODULES = 7;
