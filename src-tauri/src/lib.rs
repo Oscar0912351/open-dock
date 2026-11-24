@@ -153,6 +153,15 @@ pub fn run() {
             commands::weather::weather_refresh,
             commands::note::note_load,
             commands::note::note_save,
+            commands::timer::timer_get,
+            commands::timer::timer_start,
+            commands::timer::timer_pause,
+            commands::timer::timer_resume,
+            commands::timer::timer_reset,
+            commands::timer::timer_dismiss,
+            commands::timer::timer_snooze,
+            commands::timer::timer_skip,
+            commands::timer::timer_preview_sound,
             commands::wallpaper::wallpaper_catalog,
             commands::wallpaper::wallpaper_apply,
             commands::wallpaper::wallpaper_update_assignment,
@@ -212,6 +221,7 @@ pub fn run() {
             let scheduler = providers::scheduler::Scheduler::new(app.handle().clone());
             scheduler.discord().configure(app.handle());
             app.manage(scheduler);
+            providers::timer::install(app.handle());
 
             desktop::install(app.handle())?;
             wallpaper::install(app.handle());

@@ -1,6 +1,7 @@
 import { ArrowDown, ArrowUp, CheckSquare, DotsSixVertical, Plus, Square, Trash, X } from "@phosphor-icons/react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { GeoResult } from "../../shared/bindings/GeoResult";
+import type { SystemCaps } from "../../shared/bindings/SystemCaps";
 import type { WidgetSize } from "../../shared/bindings/WidgetSize";
 import { t } from "../../shared/i18n";
 import { ipc } from "../../shared/ipc";
@@ -33,7 +34,7 @@ const METRICS_MAX_BY_SIZE: Record<WidgetSize, number> = {
   pill: 1,
   s: 2,
   m: 4,
-  l: 4,
+  l: 5,
 };
 
 const REGION_DA: Record<string, string> = {
@@ -107,6 +108,21 @@ export function SettingsForm({ kind, size, settings, onPatch }: SettingsFormProp
   const meta = WIDGET_REGISTRY[kind];
   const locations = useControlStore((s) => s.config?.weather.locations ?? []);
   const [drawerOpen, setDrawerOpen] = useState(false);
+  const [systemCaps, setSystemCaps] = useState<SystemCaps | null>(null);
+
+  useEffect(() => {
+    if (kind !== "system") return;
+    let active = true;
+    ipc
+      .systemCaps()
+      .then((caps) => {
+        if (active) setSystemCaps(caps);
+      })
+      .catch(() => {});
+    return () => {
+      active = false;
+    };
+  }, [kind]);
 
   return (
     <>
@@ -114,9 +130,11 @@ export function SettingsForm({ kind, size, settings, onPatch }: SettingsFormProp
         <SettingFieldControl
           key={field.key}
           field={field}
+          kind={kind}
           size={size}
           settings={settings}
           locations={locations}
+          systemCaps={systemCaps}
           onPatch={onPatch}
           onOpenPlaceDrawer={() => setDrawerOpen(true)}
         />
@@ -143,16 +161,20 @@ export function SettingsForm({ kind, size, settings, onPatch }: SettingsFormProp
 
 function SettingFieldControl({
   field,
+  kind,
   size,
   settings,
   locations,
+  systemCaps,
   onPatch,
   onOpenPlaceDrawer,
 }: {
   field: WidgetSettingField;
+  kind: FreeWidgetKind;
   size: WidgetSize;
   settings: Record<string, unknown>;
   locations: ReadonlyArray<{ id: string; name: string; admin: string | null; country: string }>;
+  systemCaps: SystemCaps | null;
   onPatch: (patch: Record<string, unknown>) => void;
   onOpenPlaceDrawer: () => void;
 }) {
@@ -162,17 +184,28 @@ function SettingFieldControl({
   switch (field.type) {
     case "switch": {
       const checked = Boolean(val);
+      const tempUnsupported =
+        kind === "system" &&
+        field.key === "showTemps" &&
+        systemCaps !== null &&
+        !systemCaps.cpuTemp &&
+        !systemCaps.gpuTemp;
       return (
         <div className="cc-insp-field">
           <div className="cc-insp-field-head">
             <span className="cc-field-label">{field.label}</span>
             <Switch
               checked={checked}
+              disabled={tempUnsupported}
               ariaLabel={field.label}
               onChange={(next) => onPatch({ [field.key]: next })}
             />
           </div>
-          {field.help && <span className="cc-field-help">{field.help}</span>}
+          {tempUnsupported ? (
+            <span className="cc-field-help">{t("form.noTemperatureSensor")}</span>
+          ) : (
+            field.help && <span className="cc-field-help">{field.help}</span>
+          )}
         </div>
       );
     }
@@ -353,6 +386,7 @@ function SettingFieldControl({
           label={field.label}
           selected={selected}
           maxCount={maxCount}
+          systemCaps={systemCaps}
           onChange={(next) => onPatch({ [field.key]: next })}
         />
       );
@@ -417,11 +451,13 @@ function MetricsMultiSort({
   label,
   selected,
   maxCount,
+  systemCaps,
   onChange,
 }: {
   label: string;
   selected: string[];
   maxCount: number;
+  systemCaps: SystemCaps | null;
   onChange: (next: string[]) => void;
 }) {
   const [dragIdx, setDragIdx] = useState<number | null>(null);
@@ -464,7 +500,13 @@ function MetricsMultiSort({
         {orderedIds.map((id, idx) => {
           const checked = activeSet.has(id);
           const metricLabel = ALL_METRICS.find((m) => m.id === id)?.label ?? id;
+          const unsupported =
+            systemCaps !== null &&
+            ((id === "gpu" && !systemCaps.gpu) ||
+              (id === "vram" && !systemCaps.vram) ||
+              (id === "disk" && !systemCaps.disk));
           const canCheck = checked ? selected.length > 1 : selected.length < maxCount;
+          const canToggle = unsupported ? checked : canCheck && !unsupported;
           return (
             <div
               key={id}
@@ -485,10 +527,11 @@ function MetricsMultiSort({
                 </span>
                 <button
                   type="button"
-                  disabled={!canCheck}
+                  disabled={!canToggle}
                   className="cc-iconbtn"
                   style={{ width: 24, height: 24 }}
                   aria-label={metricLabel}
+                  title={unsupported ? t("form.metricUnsupported") : undefined}
                   onClick={() => toggle(id)}
                 >
                   {checked ? (

@@ -3,6 +3,7 @@ import type { WidgetSize } from "../shared/bindings/WidgetSize";
 import { defaultAgentsSettings } from "./kinds/agents/Agents";
 import { defaultClockSettings } from "./kinds/clock/Clock";
 import { defaultNoteSettings } from "./kinds/note/Note";
+import { defaultTimerSettings } from "./kinds/timer/Timer";
 import { defaultNowPlayingSettings } from "./kinds/nowPlaying/NowPlaying";
 import { defaultSystemSettings } from "./kinds/system/System";
 import { defaultWeatherSettings } from "./kinds/weather/Weather";
@@ -186,6 +187,43 @@ export const WIDGET_REGISTRY: Record<FreeWidgetKind, WidgetMeta> = {
           { value: "l", label: "L" },
         ],
       },
+    ],
+  },
+  timer: {
+    kind: "timer",
+    name: "Timer",
+    description: "Nedtælling eller pomodoro med en lille note og en blid lyd når tiden er gået.",
+    allowedSizes: ["pill", "s", "m"],
+    defaultSize: "s",
+    defaultSettings: { ...defaultTimerSettings },
+    settingsSchema: [
+      {
+        key: "mode",
+        type: "segmented",
+        label: "Tilstand",
+        options: [
+          { value: "countdown", label: "Nedtælling" },
+          { value: "pomodoro", label: "Pomodoro" },
+        ],
+      },
+      { key: "durationMin", type: "slider", label: "Varighed", min: 1, max: 480, step: 1, unit: "min" },
+      { key: "focusMin", type: "slider", label: "Fokus", min: 5, max: 120, step: 5, unit: "min" },
+      { key: "breakMin", type: "slider", label: "Pause", min: 1, max: 30, step: 1, unit: "min" },
+      { key: "longBreakMin", type: "slider", label: "Lang pause", min: 5, max: 60, step: 5, unit: "min" },
+      { key: "rounds", type: "slider", label: "Runder", min: 2, max: 8, step: 1 },
+      {
+        key: "sound",
+        type: "segmented",
+        label: "Lyd",
+        options: [
+          { value: "chime", label: "Klokke" },
+          { value: "marimba", label: "Marimba" },
+          { value: "crystal", label: "Krystal" },
+        ],
+      },
+      { key: "volume", type: "slider", label: "Lydstyrke", min: 0, max: 100, step: 5, unit: "%" },
+      { key: "notify", type: "switch", label: "Notifikation" },
+      { key: "autoStartBreak", type: "switch", label: "Start pauser automatisk" },
     ],
   },
   discord: {

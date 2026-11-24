@@ -287,7 +287,10 @@ export function System({ size, theme, settings, onAriaChange }: SystemProps) {
         }
         const read = formatSpeed(sample.disk.readBps, false);
         const write = formatSpeed(sample.disk.writeBps, false);
-        const pct = Math.min(100, ((sample.disk.readBps + sample.disk.writeBps) / (500 * 1024 * 1024)) * 100);
+        const pct = sample.disk.activePct ?? Math.min(
+          100,
+          ((sample.disk.readBps + sample.disk.writeBps) / (500 * 1024 * 1024)) * 100,
+        );
         return {
           key: "disk",
           label: t("system.disk"),
@@ -525,7 +528,7 @@ function extractHistoryPct(sample: SystemSample, metric: SystemMetric): number {
     case "net":
       return sample.net.rxBps / 1024;
     case "disk":
-      return (sample.disk.readBps + sample.disk.writeBps) / 1024;
+      return sample.disk.activePct ?? (sample.disk.readBps + sample.disk.writeBps) / 1024;
   }
 }
 

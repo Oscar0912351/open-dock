@@ -17,6 +17,7 @@ import { Clock, resolveClockSettings } from "../../widget/kinds/clock/Clock";
 import { useClock } from "../../widget/kinds/clock/useClock";
 import { Discord } from "../../widget/kinds/discord/Discord";
 import { Note, resolveNoteSettings } from "../../widget/kinds/note/Note";
+import { Timer, resolveTimerSettings } from "../../widget/kinds/timer/Timer";
 import { NowPlaying, resolveNowPlayingSettings } from "../../widget/kinds/nowPlaying/NowPlaying";
 import { resolveSystemSettings, System } from "../../widget/kinds/system/System";
 import { resolveWeatherSettings, Weather } from "../../widget/kinds/weather/Weather";
@@ -275,6 +276,16 @@ export const WidgetPreview = memo(function WidgetPreview({
           <Note
             id={id}
             settings={resolveNoteSettings(settings)}
+            editMode={false}
+            preview
+          />
+        );
+      case "timer":
+        return (
+          <Timer
+            id={id}
+            settings={resolveTimerSettings(settings)}
+            size={size === "l" ? "m" : size}
             editMode={false}
             preview
           />

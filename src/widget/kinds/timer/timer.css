@@ -1,0 +1,207 @@
+/* Timer-widget — alle mål i calc(N * var(--u)), kun tokens fra plan/03. */
+
+.tm {
+  width: 100%;
+  height: 100%;
+  position: relative;
+  display: flex;
+  color: var(--ink-1);
+}
+
+.tm .trunc {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+/* ── Tid ─────────────────────────────────────────────────────────────── */
+.tm-time {
+  font-family: var(--font-display);
+  font-weight: var(--w-display);
+  letter-spacing: var(--track-display);
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+  color: var(--ink-1);
+}
+.tm-time.display-s { font-size: calc(22 * var(--u)); }
+.tm-time-s { font-size: calc(15 * var(--u)); letter-spacing: -0.03em; }
+.tm-time-m { font-size: calc(19 * var(--u)); letter-spacing: -0.035em; }
+.tm-time-s.is-long { font-size: calc(11.5 * var(--u)); }
+.tm-time-m.is-long { font-size: calc(14 * var(--u)); }
+.tm-time.is-overtime { color: var(--accent); }
+
+.tm-time-edit { display: inline-flex; align-items: baseline; }
+.tm-time-edit .tm-zone {
+  border-radius: calc(6 * var(--u));
+  padding: 0 calc(1 * var(--u));
+  cursor: ns-resize;
+  transition: background 140ms var(--e-soft);
+}
+.tm-time-edit .tm-zone:hover { background: var(--panel-2); }
+.tm-time-edit .tm-colon { opacity: 0.9; }
+
+/* ── Ring-knap ───────────────────────────────────────────────────────── */
+.tm-ringbtn {
+  appearance: none;
+  border: 0;
+  padding: 0;
+  margin: 0;
+  background: transparent;
+  color: var(--ink-1);
+  cursor: pointer;
+  border-radius: 50%;
+  display: flex;
+  flex: none;
+  transition: background 140ms var(--e-soft), transform 120ms var(--e-press);
+}
+.tm-ringbtn:hover { background: var(--panel); }
+.tm-ringbtn:active { transform: scale(0.94); }
+.tm-ringbtn:focus-visible {
+  outline: calc(2 * var(--u)) solid var(--ink-1);
+  outline-offset: calc(2 * var(--u));
+}
+.tm-ringbtn .ring-in {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--ink-1);
+}
+
+/* ── Chips ───────────────────────────────────────────────────────────── */
+.tm-chip {
+  appearance: none;
+  border: 0;
+  height: calc(19 * var(--u));
+  padding: 0 calc(9 * var(--u));
+  border-radius: calc(10 * var(--u));
+  background: var(--chip-bg);
+  color: var(--ink-1);
+  font-family: var(--font-ui);
+  font-size: calc(10.5 * var(--u));
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+  transition: background 140ms var(--e-soft), transform 120ms var(--e-press);
+}
+.tm-chip:hover { background: var(--panel-2); }
+.tm-chip:active { transform: scale(0.94); }
+.tm-chip.is-active { background: var(--panel-2); box-shadow: inset 0 0 0 1px var(--edge-top); }
+.tm-chip:focus-visible {
+  outline: calc(2 * var(--u)) solid var(--ink-1);
+  outline-offset: calc(2 * var(--u));
+}
+.tm-chip-mini { height: calc(17 * var(--u)); font-size: calc(9.5 * var(--u)); padding: 0 calc(7 * var(--u)); }
+.tm-chip.tm-snooze { flex: none; }
+
+.tm-chips { gap: calc(5 * var(--u)); align-items: center; }
+
+/* ── Note-input ──────────────────────────────────────────────────────── */
+.tm-note {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  color: var(--ink-1);
+  font-family: var(--font-ui);
+  font-size: calc(12.5 * var(--u));
+  font-weight: 450;
+  line-height: 1.28;
+  padding: calc(3 * var(--u)) calc(6 * var(--u));
+  margin: calc(-3 * var(--u)) calc(-6 * var(--u));
+  border-radius: calc(7 * var(--u));
+  width: 100%;
+  min-width: 0;
+  caret-color: var(--accent);
+  transition: background 140ms var(--e-soft);
+}
+.tm-note::placeholder { color: var(--ink-4); }
+.tm-note:focus { outline: none; }
+.tm-note.is-focused { background: var(--panel); }
+.tm-note[readonly] { cursor: text; }
+.tm-note-compact { font-size: calc(11 * var(--u)); }
+
+/* ── Runde-prikker ───────────────────────────────────────────────────── */
+.tm-rounds { display: inline-flex; gap: calc(5 * var(--u)); align-items: center; }
+.tm-dot {
+  width: calc(6 * var(--u));
+  height: calc(6 * var(--u));
+  border-radius: 50%;
+  background: var(--track);
+}
+.tm-dot.is-active { box-shadow: inset 0 0 0 calc(1.5 * var(--u)) var(--accent); background: transparent; }
+.tm-dot.is-done { background: var(--accent); }
+
+/* ── Kapsel ──────────────────────────────────────────────────────────── */
+.tm-pill { align-items: center; gap: calc(10 * var(--u)); padding-left: calc(2 * var(--u)); }
+.tm-pill-mid { display: flex; align-items: center; flex: none; }
+.tm-pill-meta {
+  margin-left: auto;
+  align-items: flex-end;
+  gap: calc(2 * var(--u));
+  min-width: 0;
+  max-width: calc(88 * var(--u));
+}
+.tm-pill-meta .title-s { font-size: calc(11.5 * var(--u)); max-width: 100%; }
+
+/* ── Lille ───────────────────────────────────────────────────────────── */
+.tm-s { flex-direction: column; }
+.tm-head { align-items: center; gap: calc(6 * var(--u)); min-height: calc(16 * var(--u)); }
+.tm-head .tm-note { flex: 1; }
+.tm-center { display: flex; align-items: center; justify-content: center; }
+.tm-s .tm-controls { margin-top: calc(2 * var(--u)); }
+.tm-s .tm-rounds { position: absolute; right: 0; top: calc(20 * var(--u)); }
+.tm-footnote { text-align: center; margin-top: calc(-2 * var(--u)); margin-bottom: calc(1 * var(--u)); }
+
+/* ── Mellem ──────────────────────────────────────────────────────────── */
+.tm-m { flex-direction: row; gap: calc(12 * var(--u)); }
+.tm-m-left {
+  flex: none;
+  width: calc(96 * var(--u));
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.tm-m-idle-ring { position: relative; display: flex; align-items: center; justify-content: center; }
+.tm-m-idle-time {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+}
+.tm-m-idle-time .tm-time-edit { pointer-events: auto; }
+.tm-m-right { flex: 1; min-width: 0; gap: calc(3 * var(--u)); padding: calc(2 * var(--u)) 0; }
+.tm-m-right .tm-controls { justify-content: flex-start; }
+
+/* ── Finished-puls ───────────────────────────────────────────────────── */
+@keyframes od-timer-pulse {
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(1.03); }
+}
+.tm.is-finished .tm-ringbtn {
+  animation: od-timer-pulse 1.6s var(--e-soft) infinite;
+}
+
+/* Pause: ingen sær styling ud over at ring-animationen ikke kører (statisk). */
+
+/* ── Klynge-modul ─────────────────────────────────────────────────── */
+.tm-ringbtn.is-static { cursor: default; pointer-events: none; }
+.tm-time-xs { font-size: calc(10 * var(--u)); font-weight: var(--w-value); font-family: var(--font-value); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.tm-overtime-ink { color: var(--warn); }
+.tm-bell { color: var(--warn); flex: none; }
+.tm-note-inline {
+  flex: 1; min-width: 0; height: calc(22 * var(--u));
+  border: 0; border-radius: calc(6 * var(--u));
+  background: var(--panel); color: var(--ink-1);
+  font-size: calc(11 * var(--u)); padding: 0 calc(8 * var(--u));
+}
+.tm-note-inline::placeholder { color: var(--ink-3); }
+.tm-cluster-exp { height: 100%; align-items: center; }
+.c-mod-timer.tm-is-finished .tm-ring-prog, .tm-ring-prog.is-done { stroke: var(--warn); }
+
+/* Klynge-ring (rå SVG i compact/expanded-moduler) */
+.tm-ringbtn { position: relative; align-items: center; justify-content: center; }
+.tm-ringbtn > svg { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+.tm-ring-track, .tm-ring-prog { fill: none; }
+.tm-ring-track { stroke: var(--track); }
+.tm-ring-prog { stroke: var(--ink-1); transition: stroke-dashoffset 1s linear; }

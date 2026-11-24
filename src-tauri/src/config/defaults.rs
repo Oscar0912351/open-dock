@@ -53,6 +53,18 @@ pub fn default_settings(kind: WidgetKind) -> serde_json::Value {
         WidgetKind::Discord => json!({}),
         WidgetKind::Cluster => json!({}),
         WidgetKind::Agents => json!({ "recentWindowMin": "15" }),
+        WidgetKind::Timer => json!({
+            "mode": "countdown",
+            "sound": "chime",
+            "volume": 80,
+            "notify": true,
+            "durationMin": 25,
+            "focusMin": 25,
+            "breakMin": 5,
+            "longBreakMin": 15,
+            "rounds": 4,
+            "autoStartBreak": true
+        }),
     }
 }
 

@@ -36,6 +36,7 @@ import type { WallpaperEngineSettingsPatch } from "./bindings/WallpaperEngineSet
 import type { WallpaperEngineStatus } from "./bindings/WallpaperEngineStatus";
 import type { WallpaperFit } from "./bindings/WallpaperFit";
 import type { WallpaperItem } from "./bindings/WallpaperItem";
+import type { TimerSnapshot } from "./bindings/TimerSnapshot";
 import type { WeatherSnapshot } from "./bindings/WeatherSnapshot";
 import type { WidgetBoot } from "./bindings/WidgetBoot";
 import type { WidgetGlassState } from "./bindings/WidgetGlassState";
@@ -114,8 +115,20 @@ export const ipc = {
   weatherLocationRemove: (id: string) => invoke<Config>("weather_location_remove", { id }),
   weatherRefresh: (locationId: string) => invoke<void>("weather_refresh", { locationId }),
   mediaSelectSource: (source: string | null) => invoke<void>("media_select_source", { source }),
+  timerGet: (id: string) => invoke<TimerSnapshot>("timer_get", { id }),
+  timerStart: (id: string, durationMs?: number) =>
+    invoke<void>("timer_start", { id, durationMs: durationMs ?? null }),
+  timerPause: (id: string) => invoke<void>("timer_pause", { id }),
+  timerResume: (id: string) => invoke<void>("timer_resume", { id }),
+  timerReset: (id: string) => invoke<void>("timer_reset", { id }),
+  timerDismiss: (id: string) => invoke<void>("timer_dismiss", { id }),
+  timerSnooze: (id: string, minutes: number) => invoke<void>("timer_snooze", { id, minutes }),
+  timerSkip: (id: string) => invoke<void>("timer_skip", { id }),
+  timerPreviewSound: (sound: string, volume: number) =>
+    invoke<void>("timer_preview_sound", { sound, volume }),
   noteLoad: (id: string) => invoke<string>("note_load", { id }),
   noteSave: (id: string, text: string) => invoke<void>("note_save", { id, text }),
+
   appOpenControl: (route?: string | null) =>
     invoke<void>("app_open_control", { route: route ?? null }),
   appToggleDevtools: () => invoke<void>("app_toggle_devtools"),
@@ -205,6 +218,8 @@ export const on = {
     listen<DiscordSnapshot>("provider://discord", (event) => callback(event.payload)),
   discordRpcStatus: (callback: (status: DiscordRpcStatus) => void) =>
     listen<DiscordRpcStatus>("discord://rpc-status", (event) => callback(event.payload)),
+  timerState: (callback: (snapshot: TimerSnapshot) => void) =>
+    listen<TimerSnapshot>("timer://state", (event) => callback(event.payload)),
   agents: (callback: (snapshot: AgentsSnapshot) => void) =>
     listen<AgentsSnapshot>("provider://agents", (event) => callback(event.payload)),
   wallpaperStatus: (callback: (status: WallpaperEngineStatus) => void) =>

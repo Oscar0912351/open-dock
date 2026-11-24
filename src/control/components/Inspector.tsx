@@ -11,6 +11,7 @@ import {
   MusicNote,
   NotePencil,
   Robot,
+  Timer as TimerIcon,
   Trash,
   type Icon,
 } from "@phosphor-icons/react";
@@ -53,6 +54,7 @@ const CLUSTER_MODULE_CHOICES: ReadonlyArray<{
   { id: "discord", kinds: ["discord"], icon: Headset },
   { id: "note", kinds: ["note"], icon: NotePencil },
   { id: "agents", kinds: ["agents"], icon: Robot },
+  { id: "timer", kinds: ["timer"], icon: TimerIcon },
 ];
 
 function defaultAutoRule(kind: FreeWidgetKind, shape: ClusterShape): AutoRule {
@@ -106,6 +108,7 @@ function autoRulesForKind(kind: FreeWidgetKind): SelectOption<AutoRule>[] {
     case "weather":
     case "note":
     case "clock":
+    case "timer":
       return [
         ...common,
         { value: "fillRemainingSpace", label: t("desktop.ruleFillRemainingSpace") },

@@ -13,6 +13,9 @@ import {
   Shuffle,
   SkipBack,
   SkipForward,
+  Bell,
+  Hourglass,
+  ArrowCounterClockwise,
   SpeakerSlash,
   Square,
 } from "@phosphor-icons/react";
@@ -85,6 +88,9 @@ import { Equalizer } from "../kinds/nowPlaying/Equalizer";
 import { resolveNowPlayingSettings } from "../kinds/nowPlaying/NowPlaying";
 import { formatTrackTime, Progress } from "../kinds/nowPlaying/Progress";
 import { useLiveMediaPosition } from "../kinds/nowPlaying/useLiveMediaPosition";
+import { formatCountdown, formatOvertime } from "../kinds/timer/formatDuration";
+import { useTimer } from "../kinds/timer/useTimer";
+import "../kinds/timer/timer.css";
 import { Sparkline } from "../kinds/system/Sparkline";
 import { resolveSystemSettings } from "../kinds/system/System";
 import { WaveChart } from "../kinds/weather/WaveChart";
@@ -124,6 +130,228 @@ function viewTransitionStyle(id: string, preview?: boolean): CSSProperties | und
   if (preview) return undefined;
   return { viewTransitionName: `odmod-${id.replace(/[^a-zA-Z0-9_-]/g, "")}` };
 }
+
+
+const TimerClusterMod = memo(function TimerClusterMod({
+  mod,
+  mode,
+  preview,
+  onToggleExpand,
+}: {
+  mod: ClusterModule;
+  mode: "compact" | "expanded";
+  preview?: boolean;
+  onToggleExpand: (id: string) => void;
+}) {
+  const onClick = (e: MouseEvent<HTMLDivElement>) => {
+    if (!shouldIgnoreExpand(e)) onToggleExpand(mod.id);
+  };
+  const { snapshot, nowMs } = useTimer(mod.id, !preview);
+  const [note, setNote] = useState("");
+  const noteLoaded = useRef(false);
+
+  useEffect(() => {
+    if (preview || noteLoaded.current) return;
+    noteLoaded.current = true;
+    void ipc
+      .noteLoad(mod.id)
+      .then((content) => setNote(content))
+      .catch(() => {});
+  }, [mod.id, preview]);
+
+  const saveNote = (text: string) => {
+    setNote(text);
+    if (!preview) void ipc.noteSave(mod.id, text).catch(() => {});
+  };
+
+  const status = snapshot?.status ?? "idle";
+  const remaining = snapshot
+    ? status === "running" && snapshot.endsAt
+      ? Math.max(0, Number(snapshot.endsAt) - nowMs)
+      : Number(snapshot.remainingMs)
+    : 0;
+  const total = snapshot ? Math.max(1, Number(snapshot.totalMs)) : 1;
+  const overtime =
+    status === "finished" && snapshot?.finishedAt ? nowMs - Number(snapshot.finishedAt) : 0;
+  const progress = status === "running" ? Math.min(1, Math.max(0, 1 - remaining / total)) : status === "finished" ? 1 : 0;
+  const timeText =
+    status === "finished" ? formatOvertime(overtime) : formatCountdown(remaining);
+
+  const ringSize = mode === "expanded" ? 52 : 20;
+  const stroke = mode === "expanded" ? 4.5 : 2.2;
+  const r = (ringSize - stroke) / 2;
+  const c = 2 * Math.PI * r;
+
+  const ringEl = (
+    <span
+      className="tm-ringbtn is-static"
+      style={{ width: `calc(${ringSize} * var(--u))`, height: `calc(${ringSize} * var(--u))` }}
+      aria-hidden="true"
+    >
+      <svg viewBox={`0 0 ${ringSize} ${ringSize}`}>
+        <circle className="tm-ring-track" cx={ringSize / 2} cy={ringSize / 2} r={r} strokeWidth={stroke} />
+        <circle
+          className={`tm-ring-prog${status === "finished" ? " is-done" : ""}`}
+          cx={ringSize / 2}
+          cy={ringSize / 2}
+          r={r}
+          strokeWidth={stroke}
+          strokeDasharray={c}
+          strokeDashoffset={c * (1 - progress)}
+          transform={`rotate(-90 ${ringSize / 2} ${ringSize / 2})`}
+        />
+      </svg>
+      {mode === "expanded" && (
+        <span className={`tm-time tm-time-xs${status === "finished" ? " is-overtime" : ""}`}>{timeText}</span>
+      )}
+    </span>
+  );
+
+  if (mode === "compact") {
+    return (
+      <div
+        className={`c-mod is-compact c-mod-timer${status === "finished" ? " tm-is-finished" : ""}`}
+        style={viewTransitionStyle(mod.id, preview)}
+        onClick={onClick}
+      >
+        <div className="row between">
+          <div className="row g8">
+            {status === "idle" ? (
+              <Hourglass size="calc(15 * var(--u))" aria-hidden="true" />
+            ) : (
+              ringEl
+            )}
+            {status === "idle" ? (
+              <span className="label">{t("timer.name")}</span>
+            ) : (
+              <span className={`value tabular${status === "finished" ? " tm-overtime-ink" : ""}`}>
+                {timeText}
+              </span>
+            )}
+            {status === "paused" && <span className="micro">{t("timer.paused")}</span>}
+            {snapshot?.segment === "break" || snapshot?.segment === "longBreak" ? (
+              <span className="micro">
+                {snapshot.segment === "break" ? t("timer.break") : t("timer.longBreak")}
+              </span>
+            ) : null}
+            {note && status !== "idle" ? <span className="micro trunc">{note}</span> : null}
+          </div>
+          <HintBadge label={t("cluster.more")} />
+        </div>
+      </div>
+    );
+  }
+
+  // Expanded (76px): ring til venstre, note + knapper til højre.
+  return (
+    <div
+      className={`c-mod is-exp c-mod-timer-exp${status === "finished" ? " tm-is-finished" : ""}`}
+      style={viewTransitionStyle(mod.id, preview)}
+      onClick={onClick}
+    >
+      <div className="row g10 tm-cluster-exp">
+        {ringEl}
+        <div className="col g4 grow">
+          {status === "idle" ? (
+            <div className="row g6">
+              <span className="label grow">{t("timer.name")}</span>
+              <button
+                type="button"
+                className="od-btn primary"
+                aria-label={t("timer.start")}
+                disabled={preview}
+                onClick={() => void ipc.timerStart(mod.id).catch(() => {})}
+              >
+                <Play size="calc(13 * var(--u))" weight="fill" aria-hidden="true" />
+              </button>
+            </div>
+          ) : (
+            <div className="row g6" data-no-expand>
+              {status === "finished" ? (
+                <>
+                  <Bell size="calc(13 * var(--u))" className="tm-bell" aria-hidden="true" />
+                  <button
+                    type="button"
+                    className="od-chip tm-chip-mini"
+                    disabled={preview}
+                    onClick={() => void ipc.timerSnooze(mod.id, 5).catch(() => {})}
+                  >
+                    {t("timer.snooze")}
+                  </button>
+                  <button
+                    type="button"
+                    className="od-btn"
+                    aria-label={t("timer.stop")}
+                    disabled={preview}
+                    onClick={() => void ipc.timerDismiss(mod.id).catch(() => {})}
+                  >
+                    <Square size="calc(11 * var(--u))" weight="fill" aria-hidden="true" />
+                  </button>
+                </>
+              ) : (
+                <>
+                  {status === "running" ? (
+                    <button
+                      type="button"
+                      className="od-btn"
+                      aria-label={t("timer.pause")}
+                      disabled={preview}
+                      onClick={() => void ipc.timerPause(mod.id).catch(() => {})}
+                    >
+                      <Pause size="calc(12 * var(--u))" weight="fill" aria-hidden="true" />
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      className="od-btn primary"
+                      aria-label={t("timer.resume")}
+                      disabled={preview}
+                      onClick={() => void ipc.timerResume(mod.id).catch(() => {})}
+                    >
+                      <Play size="calc(12 * var(--u))" weight="fill" aria-hidden="true" />
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    className="od-btn"
+                    aria-label={t("timer.reset")}
+                    disabled={preview}
+                    onClick={() => void ipc.timerReset(mod.id).catch(() => {})}
+                  >
+                    <ArrowCounterClockwise size="calc(12 * var(--u))" aria-hidden="true" />
+                  </button>
+                  {(snapshot?.segment === "focus" || snapshot?.segment === "break") && (
+                    <button
+                      type="button"
+                      className="od-btn"
+                      aria-label={t("timer.skip")}
+                      disabled={preview}
+                      onClick={() => void ipc.timerSkip(mod.id).catch(() => {})}
+                    >
+                      <SkipForward size="calc(12 * var(--u))" weight="fill" aria-hidden="true" />
+                    </button>
+                  )}
+                </>
+              )}
+            </div>
+          )}
+          <input
+            className="tm-note tm-note-inline"
+            type="text"
+            value={note}
+            placeholder={t("timer.notePlaceholder")}
+            maxLength={120}
+            disabled={preview}
+            data-no-expand
+            onChange={(e) => saveNote(e.target.value)}
+            onClick={(e) => e.stopPropagation()}
+          />
+        </div>
+      </div>
+    </div>
+  );
+});
+
 
 function HintBadge({ label }: { label: string }) {
   return (
@@ -206,6 +434,15 @@ export function ClusterModuleView({ mod, mode, shared, onToggleExpand }: ModuleC
           mode={mode}
           data={shared.agents.data}
           nowMs={shared.agentsNowMs}
+          preview={shared.preview}
+          onToggleExpand={onToggleExpand}
+        />
+      );
+    case "timer":
+      return (
+        <TimerClusterMod
+          mod={mod}
+          mode={mode}
           preview={shared.preview}
           onToggleExpand={onToggleExpand}
         />

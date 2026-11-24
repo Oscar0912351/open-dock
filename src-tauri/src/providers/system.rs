@@ -63,6 +63,7 @@ pub struct NetSample {
 pub struct DiskSample {
     pub read_bps: f64,
     pub write_bps: f64,
+    pub active_pct: Option<f32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
@@ -160,9 +161,10 @@ impl SystemProvider {
                     (avg > 0).then_some(avg)
                 }
             };
-            let core_count = std::thread::available_parallelism()
-                .map(|n| n.get() as u32)
-                .unwrap_or_else(|_| sys.cpus().len() as u32);
+            // Antallet af logiske CPU'er er hardwaren, ikke processens affinity-maske.
+            // available_parallelism() kan underrapportere på maskiner med processorgrupper
+            // eller begrænset affinity, og det er ikke det tal Jobliste viser.
+            let core_count = sys.cpus().len().max(1) as u32;
 
             let mut hw = HardwareSampler::new();
             *caps_cache.lock() = Some(hw.caps.clone());
@@ -218,7 +220,10 @@ impl SystemProvider {
                     continue;
                 };
 
-                let freq_mhz = compute_effective_freq_mhz(base_freq_mhz, hw_data.cpu_perf_pct);
+                let freq_mhz = compute_effective_freq_mhz(
+                    hw_data.cpu_base_mhz.or(base_freq_mhz),
+                    hw_data.cpu_perf_pct,
+                );
 
                 let (mut rx_bytes, mut tx_bytes) = (0u64, 0u64);
                 if let Some(ref net_list) = nets {
@@ -254,7 +259,7 @@ impl SystemProvider {
                     cpu: CpuSample {
                         usage: cpu_usage,
                         core_count,
-                        per_core: Vec::new(),
+                        per_core: hw_data.cpu_per_core.clone(),
                         freq_mhz,
                         temp_c: cpu_temp_c,
                     },
@@ -270,6 +275,7 @@ impl SystemProvider {
                     disk: DiskSample {
                         read_bps: hw_data.disk_read_bps,
                         write_bps: hw_data.disk_write_bps,
+                        active_pct: hw_data.disk_active_pct.map(|v| v as f32),
                     },
                 };
 

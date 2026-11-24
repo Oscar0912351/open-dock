@@ -10,6 +10,7 @@ import {
   Robot,
   SlidersHorizontal,
   SquaresFour,
+  Timer as TimerIcon,
   X,
 } from "@phosphor-icons/react";
 import type { WidgetInstance } from "../../shared/bindings/WidgetInstance";
@@ -30,6 +31,7 @@ const KIND_ICONS: Record<WidgetKind, typeof Clock> = {
   discord: Headset,
   cluster: SquaresFour,
   agents: Robot,
+  timer: TimerIcon,
 };
 
 function formatWidgetSummary(

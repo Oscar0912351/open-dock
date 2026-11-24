@@ -129,12 +129,27 @@ pub fn remove_widget_by_id(app: &AppHandle, id: Uuid) -> Result<WidgetInstance, 
     state.cluster_sizes.write().remove(&removed.id);
 
     let mut note_ids: Vec<Uuid> = Vec::new();
+    let mut timer_ids: Vec<Uuid> = Vec::new();
     if removed.kind == WidgetKind::Note {
         note_ids.push(removed.id);
-    } else if let Some(cluster) = &removed.cluster {
+    }
+    if removed.kind == WidgetKind::Timer {
+        timer_ids.push(removed.id);
+    }
+    if let Some(cluster) = &removed.cluster {
         for module in &cluster.modules {
             if module.kind == WidgetKind::Note {
                 note_ids.push(module.id);
+            }
+            if module.kind == WidgetKind::Timer {
+                timer_ids.push(module.id);
+            }
+        }
+    }
+    if !timer_ids.is_empty() {
+        if let Some(timers) = app.try_state::<crate::providers::timer::TimerManager>() {
+            for timer_id in timer_ids {
+                timers.remove(timer_id);
             }
         }
     }

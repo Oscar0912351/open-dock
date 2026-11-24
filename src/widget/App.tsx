@@ -21,6 +21,7 @@ import { Clock, resolveClockSettings } from "./kinds/clock/Clock";
 import { useClock } from "./kinds/clock/useClock";
 import { Discord } from "./kinds/discord/Discord";
 import { Note, resolveNoteSettings } from "./kinds/note/Note";
+import { Timer, resolveTimerSettings } from "./kinds/timer/Timer";
 import { NowPlaying, resolveNowPlayingSettings } from "./kinds/nowPlaying/NowPlaying";
 import { resolveSystemSettings, System } from "./kinds/system/System";
 import { resolveWeatherSettings, Weather } from "./kinds/weather/Weather";
@@ -540,6 +541,14 @@ export function WidgetApp({ id }: WidgetAppProps) {
             size={size}
             theme={theme}
             settings={resolveAgentsSettings(instance.settings)}
+            onAriaChange={setAriaLabel}
+          />
+        ) : kind === "timer" ? (
+          <Timer
+            id={instance.id}
+            settings={resolveTimerSettings(instance.settings)}
+            size={size === "l" ? "m" : size}
+            editMode={boot?.editMode ?? false}
             onAriaChange={setAriaLabel}
           />
         ) : kind === "note" ? (

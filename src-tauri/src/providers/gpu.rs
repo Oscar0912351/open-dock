@@ -16,7 +16,11 @@ use windows::{
                 PDH_FMT_COUNTERVALUE, PDH_FMT_COUNTERVALUE_ITEM_W, PDH_FMT_DOUBLE, PDH_HCOUNTER,
                 PDH_HQUERY, PDH_MORE_DATA,
             },
-            Power::{GetSystemPowerStatus, SYSTEM_POWER_STATUS},
+            Power::{
+                CallNtPowerInformation, GetSystemPowerStatus, ProcessorInformation,
+                PROCESSOR_POWER_INFORMATION, SYSTEM_POWER_STATUS,
+            },
+            Registry::{RegGetValueW, HKEY_LOCAL_MACHINE, RRF_RT_REG_DWORD, RRF_RT_REG_SZ},
         },
     },
 };
@@ -50,7 +54,9 @@ pub struct GpuTickData {
     pub name: Option<String>,
     pub disk_read_bps: f64,
     pub disk_write_bps: f64,
+    pub disk_active_pct: Option<f64>,
     pub cpu_perf_pct: Option<f64>,
+    pub cpu_base_mhz: Option<u32>,
 }
 
 pub struct HardwareSampler {
@@ -58,16 +64,21 @@ pub struct HardwareSampler {
     c_cpu_utility: Option<PDH_HCOUNTER>,
     c_cpu_total: Option<PDH_HCOUNTER>,
     c_cpu_fallback: Option<PDH_HCOUNTER>,
+    c_cpu_per_core: Option<PDH_HCOUNTER>,
     cpu_utility_health: CpuUtilityHealth,
+    tm_time_based: bool,
     c_gpu_engine: Option<PDH_HCOUNTER>,
     c_vram: Option<PDH_HCOUNTER>,
     c_disk_read: Option<PDH_HCOUNTER>,
     c_disk_write: Option<PDH_HCOUNTER>,
+    c_disk_active: Option<PDH_HCOUNTER>,
     c_cpu_perf: Option<PDH_HCOUNTER>,
+    c_cpu_freq_base: Option<PDH_HCOUNTER>,
     baseline_collected: bool,
     gpu_name: Option<String>,
     gpu_luid: Option<String>,
     vram_total_bytes: Option<u64>,
+    cpu_nominal_mhz: Option<u32>,
     #[cfg(feature = "nvidia")]
     nvml: Option<Nvml>,
     pub caps: SystemCaps,
@@ -148,11 +159,14 @@ impl HardwareSampler {
             c_cpu_utility,
             c_cpu_total,
             c_cpu_fallback,
+            c_cpu_per_core,
             c_gpu_engine,
             c_vram,
             c_disk_read,
             c_disk_write,
+            c_disk_active,
             c_cpu_perf,
+            c_cpu_freq_base,
             baseline_collected,
         ) = if open_status == ERROR_SUCCESS.0 {
             let c_cpu_utility = add_counter(
@@ -174,25 +188,24 @@ impl HardwareSampler {
             } else {
                 None
             };
-            // Når NVML er tilgængelig bruger vi direkte NVML i stedet for PDH's tunge 1000-instans GPU wildcard.
-            let c_gpu_engine = if !has_nvml {
-                add_counter(
-                    query,
-                    w!("\\GPU Engine(*)\\Utilization Percentage"),
-                    "GPU Engine",
-                )
-            } else {
-                None
-            };
-            let c_vram = if !has_nvml {
-                add_counter(
-                    query,
-                    w!("\\GPU Adapter Memory(*)\\Dedicated Usage"),
-                    "GPU VRAM",
-                )
-            } else {
-                None
-            };
+            let c_cpu_per_core = add_counter(
+                query,
+                w!("\\Processor Information(*)\\% Processor Time"),
+                "CPU per-kerne",
+            );
+            // PDH/VidSch er samme datakilde som Jobliste på tværs af NVIDIA, AMD og Intel.
+            // NVML bruges kun som fallback og til temperatur, fordi NVML's utilization ikke
+            // inkluderer fx video-/copy-engines på samme måde som Jobliste.
+            let c_gpu_engine = add_counter(
+                query,
+                w!("\\GPU Engine(*)\\Utilization Percentage"),
+                "GPU Engine",
+            );
+            let c_vram = add_counter(
+                query,
+                w!("\\GPU Adapter Memory(*)\\Dedicated Usage"),
+                "GPU VRAM",
+            );
             let c_disk_read = add_counter(
                 query,
                 w!("\\PhysicalDisk(_Total)\\Disk Read Bytes/sec"),
@@ -203,10 +216,21 @@ impl HardwareSampler {
                 w!("\\PhysicalDisk(_Total)\\Disk Write Bytes/sec"),
                 "Disk write",
             );
+            // Joblistens diskprocent er aktiv tid, ikke en vilkårlig hastighedsgrænse.
+            let c_disk_active = add_counter(
+                query,
+                w!("\\PhysicalDisk(_Total)\\% Disk Time"),
+                "Disk aktiv tid",
+            );
             let c_cpu_perf = add_counter(
                 query,
                 w!("\\Processor Information(_Total)\\% Processor Performance"),
                 "CPU Perf",
+            );
+            let c_cpu_freq_base = add_counter(
+                query,
+                w!("\\Processor Information(_Total)\\Processor Frequency"),
+                "CPU basefrekvens",
             );
 
             let baseline_collected = unsafe { PdhCollectQueryData(query) } == ERROR_SUCCESS.0;
@@ -216,16 +240,19 @@ impl HardwareSampler {
                 c_cpu_utility,
                 c_cpu_total,
                 c_cpu_fallback,
+                c_cpu_per_core,
                 c_gpu_engine,
                 c_vram,
                 c_disk_read,
                 c_disk_write,
+                c_disk_active,
                 c_cpu_perf,
+                c_cpu_freq_base,
                 baseline_collected,
             )
         } else {
             log::warn!(target: "provider:system", "PdhOpenQueryW fejlede med kode 0x{open_status:08x}");
-            (None, None, None, None, None, None, None, None, None, false)
+            (None, None, None, None, None, None, None, None, None, None, None, None, false)
         };
 
         let caps = SystemCaps {
@@ -243,24 +270,25 @@ impl HardwareSampler {
             c_cpu_utility,
             c_cpu_total,
             cpu_utility_health: CpuUtilityHealth::default(),
+            tm_time_based: task_manager_uses_time_based_cpu(),
             c_cpu_fallback,
+            c_cpu_per_core,
             c_gpu_engine,
             c_vram,
             c_disk_read,
             c_disk_write,
+            c_disk_active,
             c_cpu_perf,
+            c_cpu_freq_base,
             baseline_collected,
             gpu_name,
             gpu_luid,
             vram_total_bytes,
+            cpu_nominal_mhz: processor_nominal_frequency_mhz(),
             #[cfg(feature = "nvidia")]
             nvml,
             caps,
-            array_buf: if has_nvml {
-                Vec::new()
-            } else {
-                Vec::with_capacity(4 * 1024)
-            },
+            array_buf: Vec::with_capacity(4 * 1024),
         }
     }
 
@@ -283,6 +311,16 @@ impl HardwareSampler {
                         .filter(|v| v.is_finite() && *v > 1.0 && *v < 500.0);
                     out.cpu_perf_pct = cpu_perf;
 
+                    // MaxMhz fra power-API'et er nominel frekvens. PDH's Processor Frequency
+                    // er kun fallback, fordi Microsoft dokumenterer at den kan være unøjagtig
+                    // på CPU'er hvor frekvensen styres uden om Windows.
+                    out.cpu_base_mhz = self.cpu_nominal_mhz.or_else(|| {
+                        self.c_cpu_freq_base
+                            .and_then(sample_scalar_counter)
+                            .filter(|v| v.is_finite() && *v > 0.0 && *v < 20_000.0)
+                            .map(|v| v.round() as u32)
+                    });
+
                     let cpu_utility = self.c_cpu_utility.and_then(sample_scalar_counter);
                     let cpu_time = self.c_cpu_total.and_then(sample_scalar_counter);
                     let cpu_fallback = self.c_cpu_fallback.and_then(sample_scalar_counter);
@@ -291,20 +329,29 @@ impl HardwareSampler {
                         cpu_time,
                         cpu_perf,
                         cpu_fallback,
+                        self.tm_time_based,
                     );
+
+                    if let Some(counter) = self.c_cpu_per_core {
+                        if let Some(raw_items) =
+                            read_counter_array_items(counter, &mut self.array_buf, false)
+                        {
+                            let (_global, per_core) = parse_processor_info_samples(&raw_items);
+                            out.cpu_per_core = per_core;
+                        }
+                    }
 
                     if let Some(counter) = self.c_gpu_engine {
                         if let Some(raw_items) =
-                            read_counter_array_items(counter, &mut self.array_buf, true)
+                            read_counter_array_items(counter, &mut self.array_buf, false)
                         {
                             out.usage =
-                                aggregate_gpu_engine_usage(&raw_items, self.gpu_luid.as_deref())
-                                    .or(Some(0.0));
+                                aggregate_gpu_engine_usage(&raw_items, self.gpu_luid.as_deref());
                         }
                     }
                     if let Some(counter) = self.c_vram {
                         if let Some(raw_items) =
-                            read_counter_array_items(counter, &mut self.array_buf, true)
+                            read_counter_array_items(counter, &mut self.array_buf, false)
                         {
                             out.vram_used_bytes =
                                 aggregate_vram_used(&raw_items, self.gpu_luid.as_deref());
@@ -315,6 +362,11 @@ impl HardwareSampler {
                     }
                     if let Some(counter) = self.c_disk_write {
                         out.disk_write_bps = sample_scalar_counter(counter).unwrap_or(0.0).max(0.0);
+                    }
+                    if let Some(counter) = self.c_disk_active {
+                        out.disk_active_pct = sample_scalar_counter(counter)
+                            .filter(|v| v.is_finite() && *v >= 0.0)
+                            .map(|v| v.min(100.0));
                     }
                 }
             }
@@ -362,12 +414,17 @@ impl CpuUtilityHealth {
         time: Option<f64>,
         perf: Option<f64>,
         fallback: Option<f64>,
+        prefer_time: bool,
     ) -> Option<f32> {
         let valid = |v: Option<f64>| v.filter(|x| x.is_finite() && *x >= 0.0);
         let u = valid(utility);
         let t = valid(time);
         let p = valid(perf).filter(|x| *x > 10.0);
         let f = valid(fallback);
+
+        if prefer_time {
+            return t.or(f).or(u).map(|v| (v as f32).clamp(0.0, 100.0));
+        }
 
         let pinned_now = match (u, t, p) {
             (Some(u), Some(t), Some(p)) => {
@@ -410,6 +467,96 @@ impl CpuUtilityHealth {
         };
         chosen.map(|v| (v as f32).clamp(0.0, 100.0))
     }
+}
+
+fn registry_dword(value: &str) -> Option<u32> {
+    use std::os::windows::ffi::OsStrExt;
+    let wide: Vec<u16> = std::ffi::OsStr::new(value)
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
+    let mut data = 0u32;
+    let mut size = std::mem::size_of::<u32>() as u32;
+    let status = unsafe {
+        RegGetValueW(
+            HKEY_LOCAL_MACHINE,
+            w!("SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion"),
+            PCWSTR::from_raw(wide.as_ptr()),
+            RRF_RT_REG_DWORD,
+            None,
+            Some(&mut data as *mut u32 as *mut core::ffi::c_void),
+            Some(&mut size),
+        )
+    };
+    (status == ERROR_SUCCESS).then_some(data)
+}
+
+fn registry_string(value: &str) -> Option<String> {
+    use std::os::windows::ffi::OsStrExt;
+    let wide: Vec<u16> = std::ffi::OsStr::new(value)
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
+    let mut buf = [0u16; 32];
+    let mut size = (buf.len() * 2) as u32;
+    let status = unsafe {
+        RegGetValueW(
+            HKEY_LOCAL_MACHINE,
+            w!("SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion"),
+            PCWSTR::from_raw(wide.as_ptr()),
+            RRF_RT_REG_SZ,
+            None,
+            Some(buf.as_mut_ptr() as *mut core::ffi::c_void),
+            Some(&mut size),
+        )
+    };
+    if status != ERROR_SUCCESS || size < 2 {
+        return None;
+    }
+    let len = ((size as usize) / 2).saturating_sub(1).min(buf.len());
+    Some(String::from_utf16_lossy(&buf[..len]))
+}
+
+fn task_manager_time_based_for_build(build: u32, ubr: u32) -> bool {
+    build > 26100 || (build == 26100 && ubr >= 4061)
+}
+
+fn task_manager_uses_time_based_cpu() -> bool {
+    let build = registry_string("CurrentBuildNumber").and_then(|s| s.parse::<u32>().ok());
+    let ubr = registry_dword("UBR").unwrap_or(0);
+    match build {
+        Some(build) => task_manager_time_based_for_build(build, ubr),
+        // Ukendt build på en Windows-version vi ikke kan identificere: brug moderne,
+        // kerneforbrugsbaseret semantik fremfor legacy Utility-tallet.
+        None => true,
+    }
+}
+
+fn processor_nominal_frequency_mhz() -> Option<u32> {
+    let count = std::thread::available_parallelism().ok()?.get();
+    let mut infos = vec![PROCESSOR_POWER_INFORMATION::default(); count];
+    let size = (count * std::mem::size_of::<PROCESSOR_POWER_INFORMATION>()) as u32;
+    let status = unsafe {
+        CallNtPowerInformation(
+            ProcessorInformation,
+            None,
+            0,
+            Some(infos.as_mut_ptr() as *mut core::ffi::c_void),
+            size,
+        )
+    };
+    if !status.is_ok() {
+        return None;
+    }
+    let values: Vec<u32> = infos
+        .iter()
+        .map(|info| info.MaxMhz)
+        .filter(|mhz| *mhz > 0)
+        .collect();
+    if values.is_empty() {
+        return None;
+    }
+    Some((values.iter().map(|v| u64::from(*v)).sum::<u64>() / values.len() as u64) as u32)
 }
 
 fn add_counter(query: PDH_HQUERY, path: PCWSTR, label: &str) -> Option<PDH_HCOUNTER> {
@@ -850,17 +997,17 @@ mod tests {
         let mut normal = super::CpuUtilityHealth::default();
         // Normal PC (C-states ON): Utility tracks actual work (48%) even when Time under-reports (18%)
         assert_eq!(
-            normal.select(Some(48.0), Some(18.0), Some(120.0), None),
+            normal.select(Some(48.0), Some(18.0), Some(120.0), None, false),
             Some(48.0)
         );
         // Turbo-boosted heavy load (Utility 117%, Perf 180%, Time 65%): not pinned, clamped to 100
         assert_eq!(
-            normal.select(Some(117.0), Some(65.0), Some(180.0), None),
+            normal.select(Some(117.0), Some(65.0), Some(180.0), None, false),
             Some(100.0)
         );
         // Genuine 100% all-core load (Time 99.5%, Utility == Perf 118%): not flagged as pinned
         assert_eq!(
-            normal.select(Some(118.0), Some(99.5), Some(118.0), None),
+            normal.select(Some(118.0), Some(99.5), Some(118.0), None, false),
             Some(100.0)
         );
         assert!(!normal.pinned);
@@ -868,18 +1015,33 @@ mod tests {
         // C-states disabled PC (like Ryzen with C1=C2=C3=0): Utility == Perf (113.8%) while Time is 22.6%
         let mut no_cstates = super::CpuUtilityHealth::default();
         assert_eq!(
-            no_cstates.select(Some(113.8), Some(22.6), Some(113.8), None),
+            no_cstates.select(Some(113.8), Some(22.6), Some(113.8), None, false),
             Some(22.6)
         );
         assert_eq!(
-            no_cstates.select(Some(113.4), Some(26.8), Some(113.4), None),
+            no_cstates.select(Some(113.4), Some(26.8), Some(113.4), None, false),
             Some(26.8)
         );
         assert!(no_cstates.pinned);
         // Stays on Time even when real load rises to 95%
         assert_eq!(
-            no_cstates.select(Some(110.0), Some(95.0), Some(110.0), None),
+            no_cstates.select(Some(110.0), Some(95.0), Some(110.0), None, false),
             Some(95.0)
         );
+    }
+
+    #[test]
+    fn newer_windows_always_prefers_time_based_task_manager_cpu() {
+        let mut modern = super::CpuUtilityHealth::default();
+        assert_eq!(
+            modern.select(Some(112.0), Some(39.0), Some(112.0), None, true),
+            Some(39.0)
+        );
+        assert!(!modern.pinned);
+        assert!(super::task_manager_time_based_for_build(26100, 4061));
+        assert!(super::task_manager_time_based_for_build(26200, 0));
+        assert!(!super::task_manager_time_based_for_build(26100, 4060));
+        assert!(!super::task_manager_time_based_for_build(22631, 5335));
+        assert!(!super::task_manager_time_based_for_build(19045, 6000));
     }
 }

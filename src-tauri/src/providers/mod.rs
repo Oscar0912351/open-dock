@@ -4,5 +4,7 @@ pub mod discord;
 pub mod gpu;
 pub mod media;
 pub mod scheduler;
+pub mod sound;
 pub mod system;
+pub mod timer;
 pub mod weather;
