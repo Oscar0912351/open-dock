@@ -112,12 +112,22 @@ pub struct SourceCache {
     db_entries: HashMap<PathBuf, CachedSource>,
     missing_dirs: HashMap<PathBuf, i64>,
     file_entries: HashMap<PathBuf, CachedFileSession>,
+    devin_sessions: HashMap<String, CachedDevinMsg>,
 }
 
 struct CachedSource {
     fingerprint: (i64, u64),
     sessions: Vec<AgentSession>,
 }
+
+/// Rå message_nodes-række for en Devin-session, nøglet på
+/// (max row_id, last_activity_at) — genbruges når nøglen er uændret.
+struct CachedDevinMsg {
+    key: (i64, i64),
+    msg_row: Option<DevinMsgRow>,
+}
+
+type DevinMsgRow = (i64, String, i64, Option<String>, i64);
 
 #[derive(Clone)]
 struct CachedFileSession {
@@ -261,7 +271,7 @@ pub fn scan_all_sessions(
             {
                 sessions.extend(cached);
             } else {
-                let devin = scan_devin(devin_db, procs, now);
+                let devin = scan_devin_cached(devin_db, procs, now, cache.as_deref_mut());
                 if let Some(c) = cache.as_deref_mut() {
                     c.store_db(devin_db, Some(fp), &devin);
                 }
@@ -583,7 +593,18 @@ struct DevinSessionRow {
     last_activity_at: i64,
 }
 
+#[cfg(test)]
+#[allow(dead_code)]
 pub fn scan_devin(db_path: &Path, procs: &ProcessIndex, now: i64) -> Vec<AgentSession> {
+    scan_devin_cached(db_path, procs, now, None)
+}
+
+pub fn scan_devin_cached(
+    db_path: &Path,
+    procs: &ProcessIndex,
+    now: i64,
+    mut cache: Option<&mut SourceCache>,
+) -> Vec<AgentSession> {
     let Some(conn) = open_readonly(db_path) else {
         return Vec::new();
     };
@@ -616,49 +637,84 @@ pub fn scan_devin(db_path: &Path, procs: &ProcessIndex, now: i64) -> Vec<AgentSe
     let devin_running = procs.has_any(&["devin"]);
     let devin_pid = procs.first_pid(&["devin"]);
     let mut out = Vec::new();
+    let mut seen_ids: HashSet<String> = HashSet::new();
 
     for row in rows_iter.flatten() {
         if row.id.is_empty() {
             continue;
         }
+        seen_ids.insert(row.id.clone());
         let last_active_ms = normalize_epoch_ms(row.last_activity_at);
         if last_active_ms <= 0 || now - last_active_ms > MAX_RECENT_MS {
             continue;
         }
 
-        let msg_row: Option<(i64, String, i64, Option<String>, i64)> = conn
+        // Billig nøgle via idx_message_nodes_session — den tunge json_extract
+        // forespørgsel køres kun når sessionen reelt har ændret sig.
+        let max_row_id: i64 = conn
             .query_row(
-                "SELECT row_id, \
-                        COALESCE(json_extract(chat_message, '$.role'), ''), \
-                        COALESCE(json_array_length(chat_message, '$.tool_calls'), 0), \
-                        json_extract(chat_message, '$.tool_calls[0].name'), \
-                        CASE WHEN length(COALESCE(json_extract(chat_message, '$.content'), '')) > 0 THEN 1 ELSE 0 END \
-                 FROM message_nodes \
-                 WHERE session_id = ?1 \
-                   AND ( \
-                     json_extract(chat_message, '$.role') = 'tool' \
-                     OR ( \
-                       json_extract(chat_message, '$.role') = 'assistant' \
-                       AND COALESCE(substr(ltrim(json_extract(chat_message, '$.content')), 1, 9), '') != '<summary>' \
-                     ) \
-                     OR ( \
-                       json_extract(chat_message, '$.role') = 'user' \
-                       AND ( \
-                         json_extract(chat_message, '$.metadata.is_user_input') = 1 \
-                         OR ( \
-                           json_extract(chat_message, '$.metadata.is_user_input') IS NULL \
-                           AND COALESCE(json_extract(chat_message, '$.content'), '') NOT LIKE '%Conversation to summarize%' \
-                           AND COALESCE(json_extract(chat_message, '$.content'), '') NOT LIKE 'Now summarize%' \
-                         ) \
-                       ) \
-                     ) \
-                   ) \
-                 ORDER BY row_id DESC \
-                 LIMIT 1",
+                "SELECT MAX(row_id) FROM message_nodes WHERE session_id = ?1",
                 [&row.id],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+                |r| r.get::<_, Option<i64>>(0),
             )
-            .ok();
+            .ok()
+            .flatten()
+            .unwrap_or(0);
+        let key = (max_row_id, row.last_activity_at);
+        let cached_msg = cache
+            .as_deref()
+            .and_then(|c| c.devin_sessions.get(&row.id))
+            .filter(|e| e.key == key)
+            .map(|e| e.msg_row.clone());
+
+        let msg_row: Option<DevinMsgRow> = match cached_msg {
+            Some(m) => m,
+            None => {
+                let m: Option<DevinMsgRow> = conn
+                    .query_row(
+                        "SELECT row_id, \
+                                COALESCE(json_extract(chat_message, '$.role'), ''), \
+                                COALESCE(json_array_length(chat_message, '$.tool_calls'), 0), \
+                                json_extract(chat_message, '$.tool_calls[0].name'), \
+                                CASE WHEN length(COALESCE(json_extract(chat_message, '$.content'), '')) > 0 THEN 1 ELSE 0 END \
+                         FROM message_nodes \
+                         WHERE session_id = ?1 \
+                           AND ( \
+                             json_extract(chat_message, '$.role') = 'tool' \
+                             OR ( \
+                               json_extract(chat_message, '$.role') = 'assistant' \
+                               AND COALESCE(substr(ltrim(json_extract(chat_message, '$.content')), 1, 9), '') != '<summary>' \
+                             ) \
+                             OR ( \
+                               json_extract(chat_message, '$.role') = 'user' \
+                               AND ( \
+                                 json_extract(chat_message, '$.metadata.is_user_input') = 1 \
+                                 OR ( \
+                                   json_extract(chat_message, '$.metadata.is_user_input') IS NULL \
+                                   AND COALESCE(json_extract(chat_message, '$.content'), '') NOT LIKE '%Conversation to summarize%' \
+                                   AND COALESCE(json_extract(chat_message, '$.content'), '') NOT LIKE 'Now summarize%' \
+                                 ) \
+                               ) \
+                             ) \
+                           ) \
+                         ORDER BY row_id DESC \
+                         LIMIT 1",
+                        [&row.id],
+                        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+                    )
+                    .ok();
+                if let Some(c) = cache.as_deref_mut() {
+                    c.devin_sessions.insert(
+                        row.id.clone(),
+                        CachedDevinMsg {
+                            key,
+                            msg_row: m.clone(),
+                        },
+                    );
+                }
+                m
+            }
+        };
 
         let tc_row: Option<(Option<String>, String)> = conn
             .query_row(
@@ -732,6 +788,11 @@ pub fn scan_devin(db_path: &Path, procs: &ProcessIndex, now: i64) -> Vec<AgentSe
             pid: devin_pid,
             process_running: devin_running,
         });
+    }
+
+    if let Some(c) = cache.as_deref_mut() {
+        c.devin_sessions
+            .retain(|id, _| seen_ids.contains(id));
     }
 
     out

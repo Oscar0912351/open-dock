@@ -34,6 +34,8 @@ pub fn open_readonly(path: &Path) -> Option<Connection> {
 }
 
 /// Fingeraftryk af DB + evt. `-wal` fil: `(max_mtime_ms, samlet_bytes)`.
+/// `-shm` tages ikke med: read-only læsere skriver read-marks i shared-memory
+/// filen, så vores egen scan ville ellers invalidere cachen hver gang.
 pub fn db_fingerprint(path: &Path) -> Option<(i64, u64)> {
     let meta = fs::metadata(path).ok()?;
     let mut max_mtime = meta
@@ -44,7 +46,7 @@ pub fn db_fingerprint(path: &Path) -> Option<(i64, u64)> {
         .unwrap_or(0);
     let mut total_len = meta.len();
 
-    for suffix in ["-wal", "-shm"] {
+    for suffix in ["-wal"] {
         let sidecar = sidecar_path(path, suffix);
         if let Ok(sm) = fs::metadata(&sidecar) {
             total_len = total_len.saturating_add(sm.len());

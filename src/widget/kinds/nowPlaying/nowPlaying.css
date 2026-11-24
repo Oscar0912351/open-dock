@@ -12,7 +12,7 @@
   background: var(--accent);
   transform-origin: bottom;
   transform: scaleY(var(--h, 0.35));
-  animation: od-eq var(--d) ease-in-out infinite;
+  animation: var(--eqn) var(--d) step-end infinite;
   animation-delay: var(--dl);
 }
 .theme-laerk .eq i {

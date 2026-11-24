@@ -585,6 +585,106 @@ mod tests {
     }
 
     #[test]
+    fn db_fingerprint_ignores_shm_read_marks() {
+        let td = TestDir::new("wal_fp");
+        let db = td.home().join("wal.db");
+        fs::create_dir_all(db.parent().unwrap()).unwrap();
+        let writer = Connection::open(&db).unwrap();
+        writer
+            .execute_batch(
+                "PRAGMA journal_mode=WAL; CREATE TABLE t(v TEXT); INSERT INTO t VALUES('a');",
+            )
+            .unwrap();
+
+        let fp1 = sqlite::db_fingerprint(&db).unwrap();
+        {
+            let ro = sqlite::open_readonly(&db).unwrap();
+            let v: String = ro
+                .query_row("SELECT v FROM t LIMIT 1", [], |r| r.get(0))
+                .unwrap();
+            assert_eq!(v, "a");
+        }
+        std::thread::sleep(Duration::from_millis(30));
+        let fp2 = sqlite::db_fingerprint(&db).unwrap();
+        assert_eq!(fp1, fp2, "read-only scan må ikke invalidere DB-cachen");
+
+        writer.execute("INSERT INTO t VALUES('b')", []).unwrap();
+        let fp3 = sqlite::db_fingerprint(&db).unwrap();
+        assert_ne!(fp2, fp3);
+    }
+
+    #[test]
+    fn devin_msg_cache_reuses_rows_until_session_changes() {
+        let td = TestDir::new("devin_memo");
+        let paths = td.paths();
+        let db = paths.devin_db.as_ref().unwrap();
+        fs::create_dir_all(db.parent().unwrap()).unwrap();
+        let conn = Connection::open(db).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE sessions (
+                id TEXT PRIMARY KEY,
+                working_directory TEXT NOT NULL,
+                backend_type TEXT NOT NULL,
+                model TEXT NOT NULL,
+                agent_mode TEXT NOT NULL,
+                created_at INTEGER NOT NULL,
+                last_activity_at INTEGER NOT NULL,
+                title TEXT,
+                hidden INTEGER NOT NULL DEFAULT 0
+            );
+            CREATE TABLE message_nodes (
+                row_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT NOT NULL,
+                node_id INTEGER NOT NULL,
+                chat_message TEXT NOT NULL,
+                created_at INTEGER NOT NULL
+            );
+            CREATE TABLE tool_call_state (
+                session_id TEXT NOT NULL,
+                tool_call_id TEXT NOT NULL,
+                tool_call_json TEXT,
+                tool_call_update_json TEXT,
+                PRIMARY KEY (session_id, tool_call_id)
+            );",
+        )
+        .unwrap();
+
+        let now_sec: i64 = 1_795_305_000;
+        let now_ms = now_sec * 1000;
+        conn.execute(
+            "INSERT INTO sessions VALUES ('s1', 'C:\\Users\\oscar\\proj', 'acp', 'm', 'a', ?1, ?1, 'T1', 0)",
+            [now_sec - 5],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO message_nodes (session_id, node_id, chat_message, created_at) VALUES ('s1', 1, ?1, ?2)",
+            (
+                r#"{"role":"user","content":"Start","metadata":{"is_user_input":1}}"#,
+                now_sec - 5,
+            ),
+        )
+        .unwrap();
+
+        let procs = ProcessIndex::from_exes(&["devin.exe"]);
+        let mut cache = SourceCache::default();
+        let r1 = sources::scan_devin_cached(db, &procs, now_ms, Some(&mut cache));
+        let r2 = sources::scan_devin_cached(db, &procs, now_ms, Some(&mut cache));
+        assert_eq!(r1, r2, "Anden scan med varm cache skal give samme resultat");
+        assert_eq!(r1.len(), 1);
+        assert_eq!(r1[0].status, AgentStatus::Working);
+
+        // Ny besked-ralje => cachenøglen rammer forbi og status genberegnes.
+        conn.execute(
+            "INSERT INTO message_nodes (session_id, node_id, chat_message, created_at) VALUES ('s1', 2, ?1, ?2)",
+            (r#"{"role":"assistant","content":"Færdig!","tool_calls":[]}"#, now_sec - 3),
+        )
+        .unwrap();
+        let r3 = sources::scan_devin_cached(db, &procs, now_ms, Some(&mut cache));
+        assert_eq!(r3[0].status, AgentStatus::Ready);
+        assert_eq!(r3[0].detail.as_deref(), Some("Klar til svar"));
+    }
+
+    #[test]
     fn claude_code_fixes_inverted_semantics_and_reads_todos() {
         let td = TestDir::new("claude");
         let paths = td.paths();

@@ -61,6 +61,7 @@ use windows::{
                 D3D11_CULL_NONE, D3D11_FILL_SOLID, D3D11_MAPPED_SUBRESOURCE,
                 D3D11_MAP_WRITE_DISCARD, D3D11_RASTERIZER_DESC, D3D11_SDK_VERSION,
                 D3D11_TEXTURE2D_DESC, D3D11_USAGE_DEFAULT, D3D11_USAGE_DYNAMIC, D3D11_VIEWPORT,
+                D3D11_BOX,
             },
             Dxgi::{
                 Common::{
@@ -196,6 +197,43 @@ fn rect_dims(r: RECT) -> (u32, u32) {
 
 pub fn rects_intersect(a: RECT, b: RECT) -> bool {
     a.left < b.right && a.right > b.left && a.top < b.bottom && a.bottom > b.top
+}
+
+const MAX_REGION_COPIES: usize = 64;
+
+fn clip_rect_to_tex(r: RECT, width: u32, height: u32) -> Option<RECT> {
+    let w = width as i32;
+    let h = height as i32;
+    let c = RECT {
+        left: r.left.clamp(0, w),
+        top: r.top.clamp(0, h),
+        right: r.right.clamp(0, w),
+        bottom: r.bottom.clamp(0, h),
+    };
+    if c.right > c.left && c.bottom > c.top {
+        Some(c)
+    } else {
+        None
+    }
+}
+
+fn regions_to_copy(dirty: &[RECT], width: u32, height: u32) -> Vec<RECT> {
+    let mut out: Vec<RECT> = dirty
+        .iter()
+        .filter_map(|&r| clip_rect_to_tex(r, width, height))
+        .collect();
+    if out.len() > MAX_REGION_COPIES {
+        let mut bb = out[0];
+        for r in &out[1..] {
+            bb.left = bb.left.min(r.left);
+            bb.top = bb.top.min(r.top);
+            bb.right = bb.right.max(r.right);
+            bb.bottom = bb.bottom.max(r.bottom);
+        }
+        out.truncate(0);
+        out.push(bb);
+    }
+    out
 }
 
 pub fn influence_rect(widget_rect: RECT, mon_rect: RECT, sigma: f32) -> RECT {
@@ -1026,6 +1064,8 @@ struct MonitorGpuPipeline {
     hdr_input: Option<HdrInputCache>,
     last_frame_was_hdr: bool,
     logged_format: Option<DXGI_FORMAT>,
+    content_dirty: bool,
+    last_ingest_format: Option<DXGI_FORMAT>,
     color_matrix_fx: ID2D1Effect,
     _border_fx: ID2D1Effect,
     blur_fx: ID2D1Effect,
@@ -1298,6 +1338,8 @@ impl MonitorGpuPipeline {
             hdr_input: None,
             last_frame_was_hdr: false,
             logged_format: None,
+            content_dirty: false,
+            last_ingest_format: None,
             color_matrix_fx,
             _border_fx: border_fx,
             blur_fx,
@@ -1343,12 +1385,62 @@ impl MonitorGpuPipeline {
         }
     }
 
+    fn copy_frame_regions(
+        &self,
+        dst: &ID3D11Texture2D,
+        src: &ID3D11Texture2D,
+        dirty_rects: &[RECT],
+        force_full: bool,
+    ) -> bool {
+        if force_full {
+            unsafe {
+                self.d3d_context.CopyResource(dst, src);
+            }
+            return true;
+        }
+        let mut copied = false;
+        for r in regions_to_copy(
+            dirty_rects,
+            self.desktop_tex_desc.Width,
+            self.desktop_tex_desc.Height,
+        ) {
+            let src_box = D3D11_BOX {
+                left: r.left as u32,
+                top: r.top as u32,
+                front: 0,
+                right: r.right as u32,
+                bottom: r.bottom as u32,
+                back: 1,
+            };
+            unsafe {
+                self.d3d_context.CopySubresourceRegion(
+                    dst,
+                    0,
+                    r.left as u32,
+                    r.top as u32,
+                    0,
+                    src,
+                    0,
+                    Some(&src_box as *const D3D11_BOX),
+                );
+            }
+            copied = true;
+        }
+        copied
+    }
+
     fn ingest_desktop_frame(
         &mut self,
         tex: &ID3D11Texture2D,
         desc: &D3D11_TEXTURE2D_DESC,
+        dirty_rects: &[RECT],
+        force_full: bool,
     ) -> Result<(), String> {
+        let dims_changed = desc.Width != self.desktop_tex_desc.Width
+            || desc.Height != self.desktop_tex_desc.Height;
         self.ensure_desktop_dims(desc.Width, desc.Height)?;
+        let format_changed = self.last_ingest_format != Some(desc.Format);
+        let full = force_full || dims_changed || format_changed;
 
         if self.logged_format != Some(desc.Format) {
             self.logged_format = Some(desc.Format);
@@ -1361,67 +1453,75 @@ impl MonitorGpuPipeline {
             );
         }
 
-        if desc.Format == DXGI_FORMAT_R16G16B16A16_FLOAT {
+        let copied = if desc.Format == DXGI_FORMAT_R16G16B16A16_FLOAT {
             if self.hdr_converter.is_none() {
                 self.hdr_converter = Some(HdrToSdrConverter::new(&self.d3d_device)?);
             }
-            let input_cache = ensure_hdr_input_cache(
+            let cache_fresh = self
+                .hdr_input
+                .as_ref()
+                .map(|c| {
+                    c.width == desc.Width && c.height == desc.Height && c.format == desc.Format
+                })
+                .unwrap_or(false);
+            let input_tex = ensure_hdr_input_cache(
                 &self.d3d_device,
                 &mut self.hdr_input,
                 desc.Width,
                 desc.Height,
                 desc.Format,
-            )?;
-            unsafe {
-                self.d3d_context.CopyResource(&input_cache.tex, tex);
-            }
-            let inv_scale = 1.0 / self.color_info.sdr_white_scale.max(1.0);
-            if let Some(ref conv) = self.hdr_converter {
-                conv.convert(
-                    &self.d3d_context,
-                    &input_cache.srv,
-                    &self.desktop_rtv,
-                    desc.Width,
-                    desc.Height,
-                    inv_scale,
-                )?;
-            }
+            )?
+            .tex
+            .clone();
             self.last_frame_was_hdr = true;
-            unsafe {
-                self.color_matrix_fx.SetInput(0, &self.desktop_bitmap, true);
-            }
-            Ok(())
+            self.copy_frame_regions(&input_tex, tex, dirty_rects, full || !cache_fresh)
         } else if desc.Format == DXGI_FORMAT_B8G8R8A8_UNORM {
-            unsafe {
-                self.d3d_context.CopyResource(&self.desktop_tex, tex);
-                self.color_matrix_fx.SetInput(0, &self.desktop_bitmap, true);
-            }
             self.last_frame_was_hdr = false;
-            Ok(())
+            self.copy_frame_regions(&self.desktop_tex, tex, dirty_rects, full)
         } else {
-            Err(format!("Ikke-understøttet capture-format: {:?}", desc.Format))
+            return Err(format!("Ikke-understøttet capture-format: {:?}", desc.Format));
+        };
+
+        self.last_ingest_format = Some(desc.Format);
+        if copied {
+            self.content_dirty = true;
+        }
+        Ok(())
+    }
+
+    // Før hver draw: konverter HDR-cache -> desktop_tex (fuld frame) og
+    // invalider D2D-grafens input — kun når nyt indhold er ankommet.
+    fn prepare_for_draw(&mut self) {
+        if !self.content_dirty {
+            return;
+        }
+        if self.last_frame_was_hdr {
+            if let (Some(ref conv), Some(ref cache)) = (&self.hdr_converter, &self.hdr_input) {
+                let inv_scale = 1.0 / self.color_info.sdr_white_scale.max(1.0);
+                if let Err(err) = conv.convert(
+                    &self.d3d_context,
+                    &cache.srv,
+                    &self.desktop_rtv,
+                    cache.width,
+                    cache.height,
+                    inv_scale,
+                ) {
+                    log::warn!("CaptureD2d HDR-konvertering før tegning fejlede: {err}");
+                    return;
+                }
+            }
+        }
+        self.content_dirty = false;
+        unsafe {
+            self.color_matrix_fx.SetInput(0, &self.desktop_bitmap, true);
         }
     }
 
     fn reconvert_cached_hdr(&mut self) -> Result<bool, String> {
-        if !self.last_frame_was_hdr {
+        if !self.last_frame_was_hdr || self.hdr_input.is_none() {
             return Ok(false);
         }
-        let (Some(ref conv), Some(ref cache)) = (&self.hdr_converter, &self.hdr_input) else {
-            return Ok(false);
-        };
-        let inv_scale = 1.0 / self.color_info.sdr_white_scale.max(1.0);
-        conv.convert(
-            &self.d3d_context,
-            &cache.srv,
-            &self.desktop_rtv,
-            cache.width,
-            cache.height,
-            inv_scale,
-        )?;
-        unsafe {
-            self.color_matrix_fx.SetInput(0, &self.desktop_bitmap, true);
-        }
+        self.content_dirty = true;
         Ok(true)
     }
 
@@ -1603,6 +1703,20 @@ fn target_min_interval(rect_changed_at: Instant, now: Instant) -> Duration {
     }
 }
 
+fn acquire_min_interval(
+    drag_recent: bool,
+    last_rect_change: Option<Instant>,
+    now: Instant,
+) -> Duration {
+    if drag_recent {
+        return Duration::from_millis(8);
+    }
+    match last_rect_change {
+        Some(at) => target_min_interval(at, now),
+        None => Duration::from_millis(16),
+    }
+}
+
 fn redraw_wait_ms(
     first_drawn: bool,
     last_redraw_at: Option<Instant>,
@@ -1645,6 +1759,7 @@ fn monitor_worker_loop(ctrl: Arc<WorkerControl>) {
     let mut last_desktop_activity = Instant::now() - Duration::from_secs(10);
     let mut last_color_poll = Instant::now();
     let mut initial_acquire_attempted = false;
+    let mut last_acquire_at: Option<Instant> = None;
 
     'outer: loop {
         // 1. Check lifecycle, pause, and display/color changes.
@@ -1655,6 +1770,7 @@ fn monitor_worker_loop(ctrl: Arc<WorkerControl>) {
             all_paused,
             min_redraw_wait_ms,
             drag_recent,
+            latest_rect_change,
         ) = {
             let mut st = ctrl.state.lock();
             if st.shutdown || st.targets.is_empty() {
@@ -1664,7 +1780,7 @@ fn monitor_worker_loop(ctrl: Arc<WorkerControl>) {
             if st.display_dirty {
                 st.display_dirty = false;
                 st.color_dirty = false;
-                (true, false, false, false, None, false)
+                (true, false, false, false, None, false, None)
             } else {
                 let any_active = st.targets.values().any(|t| !t.spec.paused);
                 let any_sc = st.targets.values().any(|t| t.needs_swapchain);
@@ -1694,6 +1810,12 @@ fn monitor_worker_loop(ctrl: Arc<WorkerControl>) {
                     .last_drag_at
                     .map(|at| at.elapsed() < Duration::from_millis(450))
                     .unwrap_or(false);
+                let latest_rect_change = st
+                    .targets
+                    .values()
+                    .filter(|t| !t.spec.paused)
+                    .map(|t| t.rect_changed_at)
+                    .max();
                 (
                     false,
                     color_dirty,
@@ -1701,6 +1823,7 @@ fn monitor_worker_loop(ctrl: Arc<WorkerControl>) {
                     !any_active && !any_sc,
                     min_wait,
                     drag_recent,
+                    latest_rect_change,
                 )
             }
         };
@@ -1824,12 +1947,28 @@ fn monitor_worker_loop(ctrl: Arc<WorkerControl>) {
         let mut all_dirty_mon: Vec<RECT> = Vec::new();
         let mut dirty_full_monitor = false;
 
+        // DXGI akkumulerer dirty-rects paa tvaers af u-afhentede frames, saa
+        // at begraense afhentningshastigheden mister ikke noget indhold.
+        if has_desktop_frame && !any_need_swapchain {
+            let min_int = acquire_min_interval(drag_recent, latest_rect_change, Instant::now());
+            if let Some(last) = last_acquire_at {
+                let rem = min_int.saturating_sub(last.elapsed());
+                if !rem.is_zero() {
+                    let mut st = ctrl.state.lock();
+                    let _ = ctrl.cv.wait_for(&mut st, rem);
+                    drop(st);
+                    continue 'outer;
+                }
+            }
+        }
+
         if let Some(ref dup) = duplication {
             let mut frame_info = DXGI_OUTDUPL_FRAME_INFO::default();
             let mut desktop_res: Option<IDXGIResource> = None;
             match unsafe { dup.AcquireNextFrame(timeout_ms, &mut frame_info, &mut desktop_res) } {
                 Ok(()) => {
                     initial_acquire_attempted = true;
+                    last_acquire_at = Some(Instant::now());
                     let has_update = frame_info.LastPresentTime != 0 || !has_desktop_frame;
                     if has_update {
                         if frame_info.TotalMetadataBufferSize > 0 {
@@ -1885,7 +2024,12 @@ fn monitor_worker_loop(ctrl: Arc<WorkerControl>) {
                             if let Ok(tex) = res.cast::<ID3D11Texture2D>() {
                                 let mut desc = D3D11_TEXTURE2D_DESC::default();
                                 unsafe { tex.GetDesc(&mut desc) };
-                                match pipeline.ingest_desktop_frame(&tex, &desc) {
+                                match pipeline.ingest_desktop_frame(
+                                    &tex,
+                                    &desc,
+                                    &all_dirty_mon,
+                                    dirty_full_monitor || !has_desktop_frame,
+                                ) {
                                     Ok(()) => {
                                         has_desktop_frame = true;
                                         got_new_desktop = true;
@@ -1973,6 +2117,7 @@ fn monitor_worker_loop(ctrl: Arc<WorkerControl>) {
                     let mut draw_hr: Option<HRESULT> = None;
                     if let Some(spec) = spec_snapshot {
                         if has_desktop_frame {
+                            pipeline.prepare_for_draw();
                             match pipeline.draw_target(&spec, pw, ph, &sc) {
                                 Ok(()) => initial_drawn = true,
                                 Err(hr) => draw_hr = Some(hr),
@@ -2083,6 +2228,9 @@ fn monitor_worker_loop(ctrl: Arc<WorkerControl>) {
             };
 
             let mut need_device_reset = false;
+            if !draw_jobs.is_empty() {
+                pipeline.prepare_for_draw();
+            }
             for (hwnd, spec, pw, ph, sc, gen_id) in draw_jobs {
                 match pipeline.draw_target(&spec, pw, ph, &sc) {
                     Ok(()) => {
@@ -2195,6 +2343,60 @@ mod tests {
             redraw_wait_ms(true, Some(now - Duration::from_millis(16)), min_16, now),
             0
         );
+    }
+
+    #[test]
+    fn acquire_min_interval_uses_drag_and_rect_change() {
+        let now = Instant::now();
+        assert_eq!(
+            acquire_min_interval(true, None, now),
+            Duration::from_millis(8)
+        );
+        assert_eq!(
+            acquire_min_interval(false, None, now),
+            Duration::from_millis(16)
+        );
+        assert_eq!(
+            acquire_min_interval(false, Some(now - Duration::from_millis(40)), now),
+            Duration::from_millis(8)
+        );
+        assert_eq!(
+            acquire_min_interval(false, Some(now - Duration::from_millis(500)), now),
+            Duration::from_millis(16)
+        );
+        // Drag vinder altid over gammel rect-aendring
+        assert_eq!(
+            acquire_min_interval(true, Some(now - Duration::from_secs(2)), now),
+            Duration::from_millis(8)
+        );
+    }
+
+    #[test]
+    fn regions_to_copy_clips_and_merges() {
+        let w = 1920;
+        let h = 1080;
+        // Tom/out-of-bounds udelades, gyldige klippes til teksturkanter.
+        let dirty = [
+            r(-10, -5, 40, 30),
+            r(3000, 0, 3100, 20),
+            r(50, 2000, 60, 2100),
+            r(1900, 1060, 1940, 1100),
+            r(0, 0, 0, 0),
+        ];
+        let regs = regions_to_copy(&dirty, w, h);
+        assert_eq!(regs.len(), 2);
+        assert_eq!(regs[0], r(0, 0, 40, 30));
+        assert_eq!(regs[1], r(1900, 1060, 1920, 1080));
+        // >64 rects -> en enkelt bounding box
+        let mut many = Vec::new();
+        for i in 0..80 {
+            many.push(r(i * 2, i, i * 2 + 4, i + 4));
+        }
+        let regs = regions_to_copy(&many, w, h);
+        assert_eq!(regs.len(), 1);
+        assert_eq!(regs[0], r(0, 0, 162, 83));
+        // Ingen rects -> intet kopieres
+        assert!(regions_to_copy(&[r(0, 0, 0, 0)], w, h).is_empty());
     }
 
     #[test]
