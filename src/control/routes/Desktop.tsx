@@ -18,7 +18,6 @@ import { t } from "../../shared/i18n";
 import { ipc } from "../../shared/ipc";
 import { Button } from "../components/Button";
 import { Inspector } from "../components/Inspector";
-import { Kbd } from "../components/Kbd";
 import { formatWidgetTitle, useControlStore } from "../store";
 import { Themes } from "./Themes";
 
@@ -104,7 +103,6 @@ export function Desktop() {
             <span>
               {editMode ? t("desktop.stopEditing") : t("desktop.editOnDesktop")}
             </span>
-            {!editMode && <Kbd keys={config.general.hotkeys.editMode} />}
           </Button>
 
           <Button variant="primary" onClick={() => setRoute("gallery")}>

@@ -250,9 +250,6 @@ pub async fn layout_import(app: AppHandle, path: String) -> Result<Config, AppEr
     })?;
     state.config.flush()?;
 
-    if let Err(error) = crate::shortcuts::rebind(&app, &next.general.hotkeys) {
-        log::warn!(target: "cmd", "Kunne ikke gendanne genveje efter import: {error:?}");
-    }
     crate::commands::config::sync_autostart(&app, next.general.autostart);
     crate::tray::sync(&app);
 
@@ -311,9 +308,6 @@ pub async fn app_reset(app: AppHandle) -> Result<Config, AppError> {
         Ok(cfg.clone())
     })?;
     state.config.flush()?;
-    if let Err(error) = crate::shortcuts::rebind(&app, &next.general.hotkeys) {
-        log::warn!(target: "cmd", "Kunne ikke nulstille genveje: {error:?}");
-    }
     crate::commands::config::sync_autostart(&app, next.general.autostart);
     fullscreen::recompute_pause(&app);
     crate::tray::sync(&app);

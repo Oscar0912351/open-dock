@@ -23,8 +23,6 @@ const MAX_REMOVED_HISTORY: usize = 5;
 #[serde(rename_all = "camelCase")]
 #[ts(export, export_to = "../../src/shared/bindings/")]
 pub enum PauseReason {
-    Fullscreen,
-    Battery,
     User,
 }
 
@@ -124,7 +122,6 @@ pub struct AppState {
     pub fullscreen_active: AtomicBool,
     pub fullscreen_target: RwLock<Option<crate::desktop::fullscreen::FullscreenTarget>>,
     pub game_overlay_active: AtomicBool,
-    pub auto_pause_reason: RwLock<Option<PauseReason>>,
     pub effective_pause: RwLock<AppPaused>,
     pub tray_notice_shown: AtomicBool,
     pub quitting: AtomicBool,
@@ -150,7 +147,6 @@ impl AppState {
             fullscreen_active: AtomicBool::new(false),
             fullscreen_target: RwLock::new(None),
             game_overlay_active: AtomicBool::new(false),
-            auto_pause_reason: RwLock::new(None),
             effective_pause: RwLock::new(AppPaused {
                 paused: false,
                 reason: None,
@@ -201,7 +197,7 @@ mod tests {
     use crate::{
         config::schema::{
             AppearancePatch, AutoRule, ClusterConfig, ClusterModule, Config, ControlTheme,
-            CustomWallpaper, General, GeneralPatch, Hotkeys, Language, Layer, Location,
+            CustomWallpaper, General, GeneralPatch, Language, Layer, Location,
             ModuleMode, MonitorKey, MonitorWallpaper, MonitorWallpaperPatch, MotionPreset,
             Placement, PointF, RadiusPreset, RectF, RectI, ResizeBehavior, SizeF, ThemeId,
             VerticalAnchor, WallpaperConfig, WallpaperEngineSettings, WallpaperEngineSettingsPatch,
@@ -234,7 +230,6 @@ mod tests {
         let config = ts_rs::Config::default();
         Language::export_all(&config).unwrap();
         ControlTheme::export_all(&config).unwrap();
-        Hotkeys::export_all(&config).unwrap();
         General::export_all(&config).unwrap();
         GeneralPatch::export_all(&config).unwrap();
         ThemeId::export_all(&config).unwrap();

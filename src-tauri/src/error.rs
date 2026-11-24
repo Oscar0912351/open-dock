@@ -8,8 +8,6 @@ pub enum AppError {
     WidgetNotFound,
     #[error("Størrelsen er ikke tilladt for denne widget")]
     SizeNotAllowed,
-    #[error("Genvejen bruges allerede af et andet program")]
-    ShortcutTaken,
     #[error("Netværksfejl")]
     Network(#[source] reqwest::Error),
     #[error("Windows-fejl: {0}")]
@@ -26,7 +24,6 @@ impl AppError {
             Self::ConfigWrite(_) => "config_write",
             Self::WidgetNotFound => "widget_not_found",
             Self::SizeNotAllowed => "size_not_allowed",
-            Self::ShortcutTaken => "shortcut_taken",
             Self::Network(_) => "network",
             Self::Win(_) => "win",
             Self::Tauri(_) => "tauri",

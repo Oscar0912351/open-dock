@@ -1,4 +1,4 @@
-import { AppWindow, Desktop, Moon, PushPin, Sun } from "@phosphor-icons/react";
+import { Desktop, Moon, PushPin, Sun } from "@phosphor-icons/react";
 import { useEffect, useState } from "react";
 import type { ControlTheme } from "../../shared/bindings/ControlTheme";
 import type { CpuSensorStatus } from "../../shared/bindings/CpuSensorStatus";
@@ -17,7 +17,6 @@ import { ConfirmDialog } from "../components/Drawer";
 import { Input } from "../components/Input";
 import { Segmented } from "../components/Segmented";
 import { Select } from "../components/Select";
-import { ShortcutInput } from "../components/ShortcutInput";
 import { Switch } from "../components/Switch";
 import { useControlStore } from "../store";
 
@@ -48,7 +47,6 @@ export function Settings() {
   const LAYER_HELP: Record<Layer, string> = {
     desktop: t("layer.desktopHelp"),
     top: t("layer.topHelp"),
-    normal: t("layer.normalHelp"),
   };
 
   const [resetConfirmOpen, setResetConfirmOpen] = useState(false);
@@ -470,14 +468,6 @@ export function Settings() {
             </div>
           </SettingRow>
 
-          <SettingRow title={t("settings.gridSnap")} help={t("settings.gridSnapHelp")}>
-            <Switch
-              checked={general.gridSnap}
-              ariaLabel={t("settings.gridSnap")}
-              onChange={(gridSnap) => void ipc.generalPatch({ gridSnap })}
-            />
-          </SettingRow>
-
           {widgetLayer !== null && (
             <SettingRow
               title={t("settings.widgetLayer")}
@@ -503,11 +493,6 @@ export function Settings() {
                     label: t("layer.top"),
                     icon: <PushPin size={13} aria-hidden="true" />,
                   },
-                  {
-                    value: "normal",
-                    label: t("layer.normal"),
-                    icon: <AppWindow size={13} aria-hidden="true" />,
-                  },
                 ]}
                 onChange={(layer) => {
                   for (const w of widgets) {
@@ -517,44 +502,6 @@ export function Settings() {
               />
             </SettingRow>
           )}
-        </Card>
-      </section>
-
-      {/* Ydelse */}
-      <section className="cc-section">
-        <span className="cc-section-label">{t("settings.performance")}</span>
-        <Card compact>
-          <SettingRow title={t("settings.gameOverlay")} help={t("settings.gameOverlayHelp")}>
-            <Switch
-              checked={general.gameOverlay}
-              ariaLabel={t("settings.gameOverlay")}
-              onChange={(gameOverlay) => void ipc.generalPatch({ gameOverlay })}
-            />
-          </SettingRow>
-
-          <SettingRow
-            title={t("settings.pauseFullscreen")}
-            help={
-              general.gameOverlay
-                ? t("settings.pauseFullscreenOverlayNote")
-                : t("settings.pauseFullscreenHelp")
-            }
-          >
-            <Switch
-              checked={general.pauseOnFullscreen}
-              disabled={general.gameOverlay}
-              ariaLabel={t("settings.pauseFullscreen")}
-              onChange={(pauseOnFullscreen) => void ipc.generalPatch({ pauseOnFullscreen })}
-            />
-          </SettingRow>
-
-          <SettingRow title={t("settings.pauseBattery")} help={t("settings.pauseBatteryHelp")}>
-            <Switch
-              checked={general.pauseOnBattery}
-              ariaLabel={t("settings.pauseBattery")}
-              onChange={(pauseOnBattery) => void ipc.generalPatch({ pauseOnBattery })}
-            />
-          </SettingRow>
         </Card>
       </section>
 
@@ -808,42 +755,6 @@ export function Settings() {
               {discordError || discordStatus?.lastError}
             </div>
           )}
-        </Card>
-      </section>
-
-      {/* Genveje */}
-      <section className="cc-section">
-        <span className="cc-section-label">{t("settings.shortcuts")}</span>
-        <Card compact>
-          <SettingRow title={t("settings.shortcutEdit")}>
-            <ShortcutInput
-              value={general.hotkeys.editMode}
-              conflictWith={general.hotkeys.toggleVisible}
-              ariaLabel={t("settings.shortcutEdit")}
-              onChange={(editMode) =>
-                ipc
-                  .generalPatch({
-                    hotkeys: { ...general.hotkeys, editMode },
-                  })
-                  .then(() => undefined)
-              }
-            />
-          </SettingRow>
-
-          <SettingRow title={t("settings.shortcutToggle")}>
-            <ShortcutInput
-              value={general.hotkeys.toggleVisible}
-              conflictWith={general.hotkeys.editMode}
-              ariaLabel={t("settings.shortcutToggle")}
-              onChange={(toggleVisible) =>
-                ipc
-                  .generalPatch({
-                    hotkeys: { ...general.hotkeys, toggleVisible },
-                  })
-                  .then(() => undefined)
-              }
-            />
-          </SettingRow>
         </Card>
       </section>
 

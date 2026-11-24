@@ -15,8 +15,9 @@ pub fn migrate(value: serde_json::Value) -> Result<Config, String> {
 
     let mut value = value;
     strip_legacy_focus(&mut value);
+    map_legacy_layers(&mut value);
     let mut config = match version {
-        1 | 2 => serde_json::from_value::<Config>(value).map_err(|error| error.to_string())?,
+        1 | 2 | 3 => serde_json::from_value::<Config>(value).map_err(|error| error.to_string())?,
         other => return Err(format!("Ukendt config-version: {other}")),
     };
 
@@ -101,16 +102,26 @@ fn strip_legacy_focus(value: &mut serde_json::Value) {
     });
 }
 
+/// `normal`-laget er fjernet i v3 – widgets kan nu kun ligge på skrivebordet
+/// eller altid øverst. Gamle `normal`-widgets mappes til skrivebordslaget.
+fn map_legacy_layers(value: &mut serde_json::Value) {
+    let Some(widgets) = value
+        .get_mut("widgets")
+        .and_then(|w| w.as_array_mut())
+    else {
+        return;
+    };
+    for widget in widgets.iter_mut() {
+        if widget.get("layer").and_then(|l| l.as_str()) == Some("normal") {
+            widget["layer"] = serde_json::json!("desktop");
+        }
+    }
+}
+
 pub fn sanitize(config: &mut Config) {
     config.version = CONFIG_VERSION;
     config.general.system_interval_ms =
         normalize_system_interval(config.general.system_interval_ms);
-    if config.general.hotkeys.edit_mode.trim().is_empty() {
-        config.general.hotkeys.edit_mode = "Ctrl+Alt+E".into();
-    }
-    if config.general.hotkeys.toggle_visible.trim().is_empty() {
-        config.general.hotkeys.toggle_visible = "Ctrl+Alt+H".into();
-    }
     config.appearance.glass_strength = clamp_glass_strength(config.appearance.glass_strength);
     config.wallpaper.engine.fps_cap = normalize_wallpaper_fps(config.wallpaper.engine.fps_cap);
     for assignment in config.wallpaper.assignments.values_mut() {

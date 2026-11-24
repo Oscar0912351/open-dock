@@ -27,8 +27,6 @@ const SUPERSAMPLE: u32 = 4;
 #[derive(Clone, PartialEq, Eq)]
 struct TraySyncKey {
     language: Language,
-    edit_hotkey: String,
-    visible_hotkey: String,
     edit_mode: bool,
     visible: bool,
     paused: bool,
@@ -210,8 +208,6 @@ fn current_key(app: &AppHandle) -> TraySyncKey {
     let cfg = state.config.get();
     TraySyncKey {
         language: cfg.general.language,
-        edit_hotkey: cfg.general.hotkeys.edit_mode,
-        visible_hotkey: cfg.general.hotkeys.toggle_visible,
         edit_mode: state.edit_mode.load(Ordering::Acquire),
         visible: state.widgets_visible.load(Ordering::Acquire),
         paused: state.paused.load(Ordering::Acquire),
@@ -304,25 +300,13 @@ fn build_menu(app: &AppHandle, key: &TraySyncKey) -> Result<Menu<Wry>, AppError>
     let copy = copy_for(key.language);
 
     let open_item = MenuItemBuilder::with_id("tray:open", copy.open).build(app)?;
-    let edit_item = build_check_item(
-        app,
-        "tray:edit",
-        copy.edit,
-        key.edit_mode,
-        Some(&key.edit_hotkey),
-    )?;
+    let edit_item = build_check_item(app, "tray:edit", copy.edit, key.edit_mode, None)?;
     let (visible_text, visible_checked) = if key.visible {
         (copy.hide_widgets, false)
     } else {
         (copy.show_widgets, true)
     };
-    let visible_item = build_check_item(
-        app,
-        "tray:visible",
-        visible_text,
-        visible_checked,
-        Some(&key.visible_hotkey),
-    )?;
+    let visible_item = build_check_item(app, "tray:visible", visible_text, visible_checked, None)?;
     let pause_item = build_check_item(app, "tray:pause", copy.pause, key.paused, None)?;
 
     let add_clock = MenuItemBuilder::with_id("tray:add:clock", copy.clock).build(app)?;

@@ -313,14 +313,6 @@ pub fn reassert_game_overlay() {
     }
 }
 
-pub fn top_widgets() -> Vec<(HWND, String)> {
-    registry_snapshot()
-        .into_iter()
-        .filter(|(_, state)| state.layer() == Layer::Top)
-        .map(|(hwnd, state)| (hwnd, state.label.clone()))
-        .collect()
-}
-
 pub fn widget_labels() -> Vec<(String, String)> {
     registry_snapshot()
         .into_iter()
@@ -366,7 +358,6 @@ fn place(hwnd: HWND, layer: Layer) -> windows::core::Result<()> {
             Layer::Desktop if show_desktop() => Some(HWND_TOPMOST),
             Layer::Desktop => Some(HWND_BOTTOM),
             Layer::Top => Some(HWND_TOPMOST),
-            Layer::Normal => Some(HWND_NOTOPMOST),
         }
     };
     // A hidden widget (Bruger valgte "Skjul alle") must stay hidden when the

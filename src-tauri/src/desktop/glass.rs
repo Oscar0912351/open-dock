@@ -288,15 +288,11 @@ mod tests {
             LiveBackdropMode::NativeHostBackdrop
         );
         assert_eq!(
-            resolve_live_backdrop_mode(GlassEngine::Wallpaper, Layer::Normal, true, true, true),
-            LiveBackdropMode::NativeHostBackdrop
-        );
-        assert_eq!(
             resolve_live_backdrop_mode(GlassEngine::Wallpaper, Layer::Top, true, true, false),
             LiveBackdropMode::CaptureD2d
         );
         assert_eq!(
-            resolve_live_backdrop_mode(GlassEngine::Wallpaper, Layer::Normal, false, true, true),
+            resolve_live_backdrop_mode(GlassEngine::Wallpaper, Layer::Top, false, true, true),
             LiveBackdropMode::CaptureD2d
         );
         assert_eq!(

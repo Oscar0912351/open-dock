@@ -6,7 +6,7 @@ use uuid::Uuid;
 
 use crate::error::AppError;
 
-pub const CONFIG_VERSION: u32 = 2;
+pub const CONFIG_VERSION: u32 = 3;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum PatchValue<T> {
@@ -156,35 +156,12 @@ pub enum ControlTheme {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export, export_to = "../../src/shared/bindings/")]
-pub struct Hotkeys {
-    pub edit_mode: String,
-    pub toggle_visible: String,
-}
-
-impl Default for Hotkeys {
-    fn default() -> Self {
-        Self {
-            edit_mode: "Ctrl+Alt+E".into(),
-            toggle_visible: "Ctrl+Alt+H".into(),
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../src/shared/bindings/")]
 pub struct General {
     pub language: Language,
     #[serde(default)]
     pub control_theme: ControlTheme,
     pub autostart: bool,
-    pub pause_on_fullscreen: bool,
-    #[serde(default)]
-    pub game_overlay: bool,
-    pub pause_on_battery: bool,
     pub system_interval_ms: u32,
-    pub grid_snap: bool,
-    pub hotkeys: Hotkeys,
 }
 
 impl Default for General {
@@ -193,12 +170,7 @@ impl Default for General {
             language: Language::Da,
             control_theme: ControlTheme::Dark,
             autostart: true,
-            pause_on_fullscreen: true,
-            game_overlay: false,
-            pause_on_battery: false,
             system_interval_ms: 1000,
-            grid_snap: true,
-            hotkeys: Hotkeys::default(),
         }
     }
 }
@@ -210,12 +182,7 @@ pub struct GeneralPatch {
     pub language: Option<Language>,
     pub control_theme: Option<ControlTheme>,
     pub autostart: Option<bool>,
-    pub pause_on_fullscreen: Option<bool>,
-    pub game_overlay: Option<bool>,
-    pub pause_on_battery: Option<bool>,
     pub system_interval_ms: Option<u32>,
-    pub grid_snap: Option<bool>,
-    pub hotkeys: Option<Hotkeys>,
 }
 
 impl General {
@@ -229,28 +196,8 @@ impl General {
         if let Some(autostart) = patch.autostart {
             self.autostart = autostart;
         }
-        if let Some(pause_on_fullscreen) = patch.pause_on_fullscreen {
-            self.pause_on_fullscreen = pause_on_fullscreen;
-        }
-        if let Some(game_overlay) = patch.game_overlay {
-            self.game_overlay = game_overlay;
-        }
-        if let Some(pause_on_battery) = patch.pause_on_battery {
-            self.pause_on_battery = pause_on_battery;
-        }
         if let Some(interval_ms) = patch.system_interval_ms {
             self.system_interval_ms = normalize_system_interval(interval_ms);
-        }
-        if let Some(grid_snap) = patch.grid_snap {
-            self.grid_snap = grid_snap;
-        }
-        if let Some(hotkeys) = patch.hotkeys {
-            if !hotkeys.edit_mode.trim().is_empty() {
-                self.hotkeys.edit_mode = hotkeys.edit_mode;
-            }
-            if !hotkeys.toggle_visible.trim().is_empty() {
-                self.hotkeys.toggle_visible = hotkeys.toggle_visible;
-            }
         }
     }
 }
@@ -298,14 +245,12 @@ pub enum MotionPreset {
 pub enum Layer {
     Desktop = 0,
     Top = 1,
-    Normal = 2,
 }
 
 impl Layer {
     pub fn from_u8(value: u8) -> Self {
         match value {
             1 => Self::Top,
-            2 => Self::Normal,
             _ => Self::Desktop,
         }
     }

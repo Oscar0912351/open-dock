@@ -40,12 +40,7 @@ export function Sidebar() {
     statusWarn = true;
   } else if (paused.paused) {
     statusWarn = true;
-    statusText =
-      paused.reason === "fullscreen"
-        ? t("status.pausedFullscreen")
-        : paused.reason === "battery"
-          ? t("status.pausedBattery")
-          : t("status.pausedUser");
+    statusText = t("status.pausedUser");
   } else {
     statusText =
       widgetCount === 1

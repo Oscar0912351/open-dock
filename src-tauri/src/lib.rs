@@ -5,7 +5,6 @@ pub mod elevation;
 pub mod error;
 mod paths;
 pub mod providers;
-mod shortcuts;
 mod state;
 mod tray;
 pub mod update;
@@ -97,7 +96,6 @@ pub fn run() {
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
-        .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .invoke_handler(tauri::generate_handler![
             commands::app::provider_subscribe,
             commands::app::provider_unsubscribe,
@@ -218,7 +216,6 @@ pub fn run() {
             desktop::install(app.handle())?;
             wallpaper::install(app.handle());
             tray::install(app.handle())?;
-            shortcuts::install(app.handle());
             windows::widget::spawn_all(app.handle())?;
             update::install_background_check(app.handle());
 

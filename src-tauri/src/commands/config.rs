@@ -2,7 +2,7 @@ use tauri::{AppHandle, Manager};
 use tauri_plugin_autostart::ManagerExt;
 
 use crate::{
-    config::schema::{Appearance, AppearancePatch, Config, GeneralPatch, Hotkeys},
+    config::schema::{Appearance, AppearancePatch, Config, GeneralPatch},
     error::AppError,
     state::AppState,
     windows::widget,
@@ -53,31 +53,10 @@ pub fn sync_autostart(app: &AppHandle, enabled: bool) {
 }
 
 #[tauri::command]
-pub fn general_patch(app: AppHandle, mut patch: GeneralPatch) -> Result<Config, AppError> {
+pub fn general_patch(app: AppHandle, patch: GeneralPatch) -> Result<Config, AppError> {
     let autostart_change = patch.autostart;
     let control_theme_change = patch.control_theme;
-    let fullscreen_policy_change = patch.pause_on_fullscreen.is_some()
-        || patch.pause_on_battery.is_some()
-        || patch.game_overlay.is_some();
     let state = app.state::<AppState>();
-
-    if let Some(ref incoming) = patch.hotkeys {
-        let current = state.config.get().general.hotkeys;
-        let target_hotkeys = Hotkeys {
-            edit_mode: if incoming.edit_mode.trim().is_empty() {
-                current.edit_mode
-            } else {
-                incoming.edit_mode.trim().to_string()
-            },
-            toggle_visible: if incoming.toggle_visible.trim().is_empty() {
-                current.toggle_visible
-            } else {
-                incoming.toggle_visible.trim().to_string()
-            },
-        };
-        crate::shortcuts::rebind(&app, &target_hotkeys)?;
-        patch.hotkeys = Some(target_hotkeys);
-    }
 
     let config = state.config.mutate(|cfg| {
         cfg.general.apply_patch(patch);
@@ -95,10 +74,6 @@ pub fn general_patch(app: AppHandle, mut patch: GeneralPatch) -> Result<Config, 
                 crate::windows::control::apply_theme(&control, theme);
             }
         });
-    }
-
-    if fullscreen_policy_change {
-        crate::desktop::fullscreen::trigger_check();
     }
 
     Ok(config)

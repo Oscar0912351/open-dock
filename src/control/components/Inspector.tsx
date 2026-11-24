@@ -220,7 +220,6 @@ function WidgetEditorDrawer({
   const layerOptions: SelectOption<Layer>[] = [
     { value: "desktop", label: t("layer.desktop"), help: t("layer.desktopHelp") },
     { value: "top", label: t("layer.top"), help: t("layer.topHelp") },
-    { value: "normal", label: t("layer.normal"), help: t("layer.normalHelp") },
   ];
 
   const monitorOptions: SelectOption<string>[] = monitors.map((m, idx) => ({

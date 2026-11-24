@@ -452,15 +452,15 @@ mod tests {
         fs::write(dir.join(CONFIG_FILE), make_cluster_json(1)).unwrap();
         let migrated = ConfigStore::load_from_dir(dir.clone(), None, None);
         let cfg = migrated.get();
-        assert_eq!(cfg.version, 2);
+        assert_eq!(cfg.version, 3);
         let disc = &cfg.widgets[0].cluster.as_ref().unwrap().modules[1];
         assert_eq!(disc.default_mode, ModuleMode::Hidden);
         assert_eq!(disc.auto_rule, AutoRule::ExpandWhenInCall);
 
-        // Bekræft at version 2 blev skrevet til disken.
+        // Bekræft at den migrerede version blev skrevet til disken.
         let disk_raw = fs::read_to_string(dir.join(CONFIG_FILE)).unwrap();
         let disk_val: serde_json::Value = serde_json::from_str(&disk_raw).unwrap();
-        assert_eq!(disk_val.get("version").and_then(|v| v.as_u64()), Some(2));
+        assert_eq!(disk_val.get("version").and_then(|v| v.as_u64()), Some(3));
 
         // En eksplicit v2-konfiguration må bevare brugerens valg (`compact` + `none`).
         fs::write(dir.join(CONFIG_FILE), make_cluster_json(2)).unwrap();

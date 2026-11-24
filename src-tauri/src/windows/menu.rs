@@ -23,7 +23,6 @@ struct MenuCopy {
     layer: &'static str,
     desktop: &'static str,
     top: &'static str,
-    normal: &'static str,
     settings: &'static str,
     remove: &'static str,
     devtools: &'static str,
@@ -40,7 +39,6 @@ fn copy_for(lang: Language) -> MenuCopy {
             layer: "Lag",
             desktop: "På skrivebordet",
             top: "Altid øverst",
-            normal: "Normalt vindue",
             settings: "Indstillinger for widget…",
             remove: "Fjern widget",
             devtools: "Åbn DevTools",
@@ -54,7 +52,6 @@ fn copy_for(lang: Language) -> MenuCopy {
             layer: "Layer",
             desktop: "On the desktop",
             top: "Always on top",
-            normal: "Normal window",
             settings: "Widget settings…",
             remove: "Remove widget",
             devtools: "Open DevTools",
@@ -120,11 +117,6 @@ pub fn show_widget_context_menu(app: &AppHandle, id: &str) -> Result<(), AppErro
         .item(
             &CheckMenuItemBuilder::with_id(format!("ctx:{uuid}:layer:top"), copy.top)
                 .checked(instance.layer == Layer::Top)
-                .build(app)?,
-        )
-        .item(
-            &CheckMenuItemBuilder::with_id(format!("ctx:{uuid}:layer:normal"), copy.normal)
-                .checked(instance.layer == Layer::Normal)
                 .build(app)?,
         )
         .build()?;
@@ -295,7 +287,6 @@ fn parse_layer(raw: &str) -> Option<Layer> {
     match raw {
         "desktop" => Some(Layer::Desktop),
         "top" => Some(Layer::Top),
-        "normal" => Some(Layer::Normal),
         _ => None,
     }
 }

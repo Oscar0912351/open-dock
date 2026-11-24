@@ -191,7 +191,6 @@ pub fn begin_drag(app: &AppHandle, id: Uuid) -> Result<(), AppError> {
     let base_size = widget::effective_base_size(app, &instance);
     let target_log_w = base_size.0 * instance.scale as f64;
     let target_log_h = base_size.1 * instance.scale as f64;
-    let grid_snap = config.general.grid_snap;
 
     // Forudberegn logiske rektangler (relativt til hver skærms work area) for alle andre widgets
     let others_pool: Vec<DragOtherItem> = config
@@ -238,7 +237,6 @@ pub fn begin_drag(app: &AppHandle, id: Uuid) -> Result<(), AppError> {
                 start_cursor,
                 target_log_w,
                 target_log_h,
-                grid_snap,
                 monitor_entries,
                 others_pool,
             });
@@ -269,7 +267,6 @@ struct DragSession {
     start_cursor: POINT,
     target_log_w: f64,
     target_log_h: f64,
-    grid_snap: bool,
     monitor_entries: Vec<MonitorEntry>,
     others_pool: Vec<DragOtherItem>,
 }
@@ -403,7 +400,7 @@ fn run_drag_loop(session: DragSession) {
             })
             .collect();
 
-        let ctx = SnapCtx::standard(work_log, others, session.grid_snap, !alt_down);
+        let ctx = SnapCtx::standard(work_log, others, true, !alt_down);
         let (snapped_pt, guides) = snap::resolve(cand_rect, &ctx);
         last_log_pt = snapped_pt;
         last_log_h = cur_log_h;

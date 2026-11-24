@@ -18,7 +18,6 @@ export function TitleBar({
   useControlStore((s) => s.locale);
   const route = useControlStore((s) => s.route);
   const editMode = useControlStore((s) => s.editMode);
-  const appVersion = useControlStore((s) => s.appVersion);
   const setRoute = useControlStore((s) => s.setRoute);
 
   const [update, setUpdate] = useState<UpdateStatus | null>(null);
@@ -81,11 +80,6 @@ export function TitleBar({
           <DockLogo size={18} />
           <span data-tauri-drag-region>{t("app.name")}</span>
         </div>
-        {!showOnboarding && (
-          <span className="cc-titlebar-version" data-tauri-drag-region>
-            v{appVersion}
-          </span>
-        )}
       </div>
 
       <div className="cc-titlebar-main">

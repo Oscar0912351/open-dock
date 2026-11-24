@@ -19,7 +19,7 @@ use crate::{
         styles, zorder,
     },
     error::AppError,
-    state::{AppState, GameOverlayState, PauseReason, WidgetBoot, WidgetGlassState},
+    state::{AppState, GameOverlayState, WidgetBoot, WidgetGlassState},
 };
 
 pub fn spawn_all(app: &AppHandle) -> Result<(), AppError> {
@@ -181,11 +181,20 @@ pub fn close_all(app: &AppHandle) {
     }
 }
 
-fn widget_game_overlay_active(app: &AppHandle, hwnd: HWND) -> bool {
+fn widget_game_overlay_active(app: &AppHandle, hwnd: HWND, layer: Layer) -> bool {
     let state = app.state::<AppState>();
-    if !state.game_overlay_active.load(Ordering::Acquire) {
+    if layer != Layer::Top || !state.game_overlay_active.load(Ordering::Acquire) {
         return false;
     }
+    let target = *state.fullscreen_target.read();
+    crate::desktop::fullscreen::hwnd_covered_by_fullscreen(hwnd, target)
+}
+
+fn widget_hidden_by_fullscreen(app: &AppHandle, hwnd: HWND, layer: Layer) -> bool {
+    if layer != Layer::Desktop {
+        return false;
+    }
+    let state = app.state::<AppState>();
     let target = *state.fullscreen_target.read();
     crate::desktop::fullscreen::hwnd_covered_by_fullscreen(hwnd, target)
 }
@@ -207,11 +216,6 @@ fn sync_widget_click_through(
 pub fn set_all_visible(app: &AppHandle, visible: bool) {
     let state = app.state::<AppState>();
     let config = state.config.get();
-    let fullscreen_target = if *state.auto_pause_reason.read() == Some(PauseReason::Fullscreen) {
-        *state.fullscreen_target.read()
-    } else {
-        None
-    };
 
     for widget in &config.widgets {
         let label = widget.window_label();
@@ -222,8 +226,7 @@ pub fn set_all_visible(app: &AppHandle, visible: bool) {
             continue;
         };
         let hwnd = HWND(raw_hwnd.0 as _);
-        let hidden_by_fs = widget.layer == Layer::Top
-            && crate::desktop::fullscreen::hwnd_covered_by_fullscreen(hwnd, fullscreen_target);
+        let hidden_by_fs = widget_hidden_by_fullscreen(app, hwnd, widget.layer);
         zorder::set_fullscreen_hidden(hwnd, hidden_by_fs);
         if !visible || hidden_by_fs {
             // Tauris `hide()` er en no-op på de subklassede widget-vinduer;
@@ -262,7 +265,7 @@ pub fn ready(app: &AppHandle, id: &str) -> Result<WidgetBoot, AppError> {
 
     let hwnd = HWND(window.hwnd()?.0 as _);
     let appearance = config.appearance;
-    let game_overlay = widget_game_overlay_active(app, hwnd);
+    let game_overlay = widget_game_overlay_active(app, hwnd, instance.layer);
     zorder::set_widget_game_overlay(hwnd, game_overlay);
 
     let effective_engine = glass::effective_engine_in_context(
@@ -284,12 +287,7 @@ pub fn ready(app: &AppHandle, id: &str) -> Result<WidgetBoot, AppError> {
     let edit_mode = state.edit_mode.load(Ordering::Acquire);
     sync_widget_click_through(hwnd, instance.click_through, edit_mode, &label);
 
-    let hidden_by_fs = instance.layer == Layer::Top
-        && *state.auto_pause_reason.read() == Some(PauseReason::Fullscreen)
-        && crate::desktop::fullscreen::hwnd_covered_by_fullscreen(
-            hwnd,
-            *state.fullscreen_target.read(),
-        );
+    let hidden_by_fs = widget_hidden_by_fullscreen(app, hwnd, instance.layer);
     zorder::set_fullscreen_hidden(hwnd, hidden_by_fs);
 
     if state.widgets_visible.load(Ordering::Acquire) && !hidden_by_fs {
@@ -325,13 +323,17 @@ pub fn ready(app: &AppHandle, id: &str) -> Result<WidgetBoot, AppError> {
     })
 }
 
-pub fn apply_game_overlay(
+/// Synkroniserer widgets mod et aktivt fuldskærmsvindue. `top`-widgets på den
+/// berørte skærm holdes som klik-igennem overlay øverst; `desktop`-widgets
+/// suspenderes mens de er dækket. Widgets på andre skærme røres ikke.
+pub fn sync_fullscreen_widgets(
     app: &AppHandle,
     target: Option<crate::desktop::fullscreen::FullscreenTarget>,
 ) {
     let state = app.state::<AppState>();
     let config = state.config.get();
     let edit_mode = state.edit_mode.load(Ordering::Acquire);
+    let visible = state.widgets_visible.load(Ordering::Acquire);
     let mut any_active = false;
 
     for widget in &config.widgets {
@@ -343,11 +345,27 @@ pub fn apply_game_overlay(
             continue;
         };
         let hwnd = HWND(raw_hwnd.0 as _);
-        let active = crate::desktop::fullscreen::hwnd_covered_by_fullscreen(hwnd, target);
-        any_active |= active;
-        zorder::set_widget_game_overlay(hwnd, active);
+        let covered = crate::desktop::fullscreen::hwnd_covered_by_fullscreen(hwnd, target);
+        let overlay = covered && widget.layer == Layer::Top && !edit_mode;
+        let hidden = covered && widget.layer == Layer::Desktop;
+        any_active |= overlay;
+        zorder::set_widget_game_overlay(hwnd, overlay);
+        zorder::set_fullscreen_hidden(hwnd, hidden);
+        if hidden || !visible {
+            // Tauris `hide()` er en no-op på de subklassede widget-vinduer.
+            unsafe {
+                let _ = ShowWindow(hwnd, SW_HIDE);
+            }
+        } else if let Err(error) = zorder::show_without_activation(hwnd) {
+            log::error!("Kunne ikke vise widget {label} igen: {error}");
+        }
+        crate::windows::webview_opt::set_webview_suspended(&window, hidden || !visible);
         sync_widget_click_through(hwnd, widget.click_through, edit_mode, &label);
-        if let Err(error) = app.emit_to(&label, "app://game-overlay", GameOverlayState { active }) {
+        if let Err(error) = app.emit_to(
+            &label,
+            "app://game-overlay",
+            GameOverlayState { active: overlay },
+        ) {
             log::warn!("Kunne ikke sende app://game-overlay til {label}: {error}");
         }
     }
@@ -379,14 +397,9 @@ pub fn apply_instance_live(app: &AppHandle, instance: &WidgetInstance) {
     let mut game_overlay = false;
     if let Ok(raw_hwnd) = window.hwnd() {
         let hwnd = HWND(raw_hwnd.0 as _);
-        let hidden_by_fs = instance.layer == Layer::Top
-            && *state.auto_pause_reason.read() == Some(PauseReason::Fullscreen)
-            && crate::desktop::fullscreen::hwnd_covered_by_fullscreen(
-                hwnd,
-                *state.fullscreen_target.read(),
-            );
+        let hidden_by_fs = widget_hidden_by_fullscreen(app, hwnd, instance.layer);
         zorder::set_fullscreen_hidden(hwnd, hidden_by_fs);
-        game_overlay = widget_game_overlay_active(app, hwnd);
+        game_overlay = widget_game_overlay_active(app, hwnd, instance.layer);
         zorder::set_widget_game_overlay(hwnd, game_overlay);
         if let Err(error) = zorder::set_layer(hwnd, instance.layer) {
             log::warn!("Kunne ikke opdatere lag på {label}: {error}");
@@ -448,7 +461,7 @@ pub fn reapply_glass_all(app: &AppHandle) {
         let game_overlay = window
             .hwnd()
             .ok()
-            .map(|raw| widget_game_overlay_active(app, HWND(raw.0 as _)))
+            .map(|raw| widget_game_overlay_active(app, HWND(raw.0 as _), widget.layer))
             .unwrap_or(false);
         let effective_engine = glass::effective_engine_in_context(
             config.appearance.glass_engine,

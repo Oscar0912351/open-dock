@@ -962,15 +962,8 @@ fn compute_effective_pause(
     if locked {
         return Some(EngineRunState::PausedLocked);
     }
-    match global_pause {
-        Some(PauseReason::User) => return Some(EngineRunState::PausedManual),
-        Some(PauseReason::Fullscreen) if cfg.pause_on_fullscreen => {
-            return Some(EngineRunState::PausedFullscreen);
-        }
-        Some(PauseReason::Battery) if cfg.pause_on_battery => {
-            return Some(EngineRunState::PausedBattery);
-        }
-        _ => {}
+    if matches!(global_pause, Some(PauseReason::User)) {
+        return Some(EngineRunState::PausedManual);
     }
     if fullscreen_active && cfg.pause_on_fullscreen {
         return Some(EngineRunState::PausedFullscreen);

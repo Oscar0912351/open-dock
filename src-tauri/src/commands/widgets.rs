@@ -328,7 +328,7 @@ pub fn widget_move(
                 width: work_w,
                 height: work_h,
             };
-            let ctx = SnapCtx::standard(work, others, cfg.general.grid_snap, true);
+            let ctx = SnapCtx::standard(work, others, true, true);
             let (snapped, _) = snap::resolve(
                 RectF {
                     x,

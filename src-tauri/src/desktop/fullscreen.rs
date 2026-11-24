@@ -11,16 +11,16 @@ use tokio::sync::Notify;
 use windows::Win32::{
     Foundation::{HWND, RECT},
     Graphics::Gdi::{MonitorFromWindow, MONITOR_DEFAULTTONEAREST},
-    System::Power::{GetSystemPowerStatus, SYSTEM_POWER_STATUS},
     UI::{
         Shell::{
             SHQueryUserNotificationState, QUNS_PRESENTATION_MODE, QUNS_RUNNING_D3D_FULL_SCREEN,
         },
-        WindowsAndMessaging::{GetWindowRect, ShowWindow, SW_HIDE},
+        WindowsAndMessaging::GetWindowRect,
     },
 };
 
 use crate::{
+    config::schema::Layer,
     providers::scheduler::Scheduler,
     state::{AppPaused, AppState, PauseReason},
     windows::widget,
@@ -67,14 +67,12 @@ pub fn trigger_check() {
 pub fn start(app: AppHandle) {
     tauri::async_runtime::spawn(async move {
         let notify = Arc::clone(&CHECK_NOTIFY);
-        let mut last_auto: Option<PauseReason> = None;
         let mut last_fullscreen = false;
         let mut last_target: Option<FullscreenTarget> = None;
-        let mut last_overlay_target: Option<FullscreenTarget> = None;
-        let mut last_hide_top_target: Option<FullscreenTarget> = None;
+        let mut last_sync_key: Option<(Option<FullscreenTarget>, bool)> = None;
 
         loop {
-            let sleep_dur = if last_overlay_target.is_some() {
+            let sleep_dur = if last_sync_key.map(|k| k.1).unwrap_or(false) {
                 Duration::from_secs(2)
             } else {
                 Duration::from_secs(5)
@@ -87,11 +85,11 @@ pub fn start(app: AppHandle) {
             }
 
             let state = app.state::<AppState>();
-            let general = state.config.get().general;
+            let config = state.config.get();
             let edit_mode = state.edit_mode.load(Ordering::Acquire);
             let has_live_wallpaper = state.wallpaper_status.read().active_surfaces > 0;
-            let need_fullscreen_check =
-                general.game_overlay || general.pause_on_fullscreen || has_live_wallpaper;
+            let has_top_widgets = config.widgets.iter().any(|w| w.layer == Layer::Top);
+            let need_fullscreen_check = !config.widgets.is_empty() || has_live_wallpaper;
 
             let is_fullscreen = if need_fullscreen_check {
                 !showdesktop::foreground_is_desktop()
@@ -122,53 +120,22 @@ pub fn start(app: AppHandle) {
                 crate::wallpaper::notify_pause_changed(&app);
             }
 
-            let next_overlay = general.game_overlay && is_fullscreen && !edit_mode;
-            let overlay_target = if next_overlay { current_target } else { None };
-            if overlay_target != last_overlay_target {
-                last_overlay_target = overlay_target;
+            // "Altid øverst"-widgets bliver liggende over fuldskærmsapps (spil-overlay),
+            // mens skrivebordswidgets suspenderes når de er dækket. Alt pr. skærm –
+            // et spil på én skærm påvirker ikke widgets på de øvrige.
+            let overlay_on = is_fullscreen && has_top_widgets && !edit_mode;
+            let sync_key = (current_target, overlay_on);
+            if last_sync_key != Some(sync_key) {
+                last_sync_key = Some(sync_key);
                 state
                     .game_overlay_active
-                    .store(overlay_target.is_some(), Ordering::Release);
-                widget::apply_game_overlay(&app, overlay_target);
-            } else if overlay_target.is_some() {
+                    .store(overlay_on, Ordering::Release);
+                widget::sync_fullscreen_widgets(&app, current_target);
+            } else if overlay_on {
                 zorder::reassert_game_overlay();
-            }
-
-            let pause_for_fullscreen =
-                !general.game_overlay && general.pause_on_fullscreen && is_fullscreen;
-            let hide_top_target = if pause_for_fullscreen {
-                current_target
-            } else {
-                None
-            };
-            if hide_top_target != last_hide_top_target {
-                last_hide_top_target = hide_top_target;
-                sync_top_widgets(&app, hide_top_target);
-            }
-
-            let battery = general.pause_on_battery && on_battery();
-
-            let next_auto = if pause_for_fullscreen {
-                Some(PauseReason::Fullscreen)
-            } else if battery {
-                Some(PauseReason::Battery)
-            } else {
-                None
-            };
-
-            if next_auto != last_auto {
-                last_auto = next_auto.clone();
-                *state.auto_pause_reason.write() = next_auto;
-                recompute_pause(&app);
             }
         }
     });
-}
-
-fn on_battery() -> bool {
-    let mut status = SYSTEM_POWER_STATUS::default();
-    let ok = unsafe { GetSystemPowerStatus(&mut status) }.is_ok();
-    ok && status.ACLineStatus == 0
 }
 
 fn shell_reports_fullscreen() -> bool {
@@ -188,40 +155,15 @@ fn shell_reports_fullscreen() -> bool {
     }
 }
 
-fn sync_top_widgets(app: &AppHandle, target: Option<FullscreenTarget>) {
-    let visible = app.state::<AppState>().widgets_visible.load(Ordering::Acquire);
-    for (hwnd, label) in zorder::top_widgets() {
-        let Some(window) = app.get_webview_window(&label) else {
-            log::warn!("Top-widgetten {label} findes ikke længere");
-            continue;
-        };
-        let covered = hwnd_covered_by_fullscreen(hwnd, target);
-        zorder::set_fullscreen_hidden(hwnd, covered);
-        if covered || !visible {
-            // Tauris `hide()` er en no-op på de subklassede widget-vinduer.
-            unsafe {
-                let _ = ShowWindow(hwnd, SW_HIDE);
-            }
-            crate::windows::webview_opt::set_webview_suspended(&window, true);
-            continue;
-        }
-        crate::windows::webview_opt::set_webview_suspended(&window, false);
-        if let Err(error) = zorder::show_without_activation(hwnd) {
-            log::error!("Kunne ikke genanvende laget på {label}: {error}");
-        }
-    }
-}
-
 pub fn recompute_pause(app: &AppHandle) {
     let state = app.state::<AppState>();
     let visible = state.widgets_visible.load(Ordering::Acquire);
     let manual = state.manual_paused.load(Ordering::Acquire);
-    let auto_reason = state.auto_pause_reason.read().clone();
 
     let ui_reason = if manual {
         Some(PauseReason::User)
     } else {
-        auto_reason
+        None
     };
     let ui_paused = ui_reason.is_some();
     let scheduler_paused = ui_paused || !visible;
