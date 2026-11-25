@@ -26,7 +26,7 @@ Most desktop widget tools rely on polling loops, heavy Electron processes, or We
 - **~7.5 MB native release executable** (`6.45 MB` prior to the D3D11 wallpaper subsystem; `7.89 MB` / `7.53 MiB` measured with the full engine included) with no bundled Node runtime.
 - **Push-based IPC — zero polling loops:** Providers are reference-counted per active widget window (`src-tauri/src/providers/scheduler.rs`) and emit Tauri events on OS changes or hardware cadence. Widgets animate in CSS without idle `requestAnimationFrame` loops.
 - **Direct Win32 desktop integration:** Widgets anchor underneath normal application windows on the desktop layer (`HWND_BOTTOM`), never steal focus (`MA_NOACTIVATE`), survive Explorer restarts (`TaskbarCreated`), and respond properly to `Win+D` Show Desktop.
-- **Zero telemetry, zero accounts:** Only two explicit outbound Rust network clients exist — [Open-Meteo](https://open-meteo.com/) for local weather forecasts and on-demand caching of user-selected curated 4K Unsplash photographs.
+- **No accounts, no home-grown telemetry:** Open Dock itself collects nothing — no analytics pipeline, no crash uploader, no server run by the authors. Features do talk to third-party services when the feature requires it, always through Rust: weather forecasts (MET Norway / Open-Meteo), curated wallpaper downloads (Unsplash), update checks (GitHub Releases), Discord Rich Presence and avatars (discord.com / cdn.discordapp.com, optionally via ossidev.dk), and song-duration lookup for browser media that doesn't report it (youtube.com). Nothing is sent anywhere else.
 
 ---
 
