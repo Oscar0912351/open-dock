@@ -6,8 +6,9 @@
 import "./kill-app.mjs";
 
 import { spawnSync } from "node:child_process";
-import { createHash } from "node:crypto";
+import { createHash, createPrivateKey, sign } from "node:crypto";
 import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -60,11 +61,32 @@ copyFileSync(source, staged);
 const bytes = readFileSync(staged);
 const sha256 = createHash("sha256").update(bytes).digest("hex");
 
+// Signér installeren med ed25519-privatnøglen — uden den kan nye installationer
+// ikke verificere opdateringen (signaturen er den eneste reelle integritets-
+// beskyttelse; sha256 i samme manifest kan en angriber på GitHub bare regne om).
+// Mangler nøglen: kør "node scripts/generate-update-key.mjs" ÉN gang og behold
+// en backup af den — en mistet nøgle kan ikke genskabes.
+const keyPath =
+  process.env.OPEN_DOCK_UPDATE_KEY ??
+  join(homedir(), ".open-dock", "update-signing-key.pem");
+if (!existsSync(keyPath)) {
+  console.error(`Signeringsnøglen findes ikke: ${keyPath}`);
+  console.error('Kør "node scripts/generate-update-key.mjs" først (én gang).');
+  process.exit(1);
+}
+const signingKey = createPrivateKey(readFileSync(keyPath, "utf8"));
+// Den signede besked binder build-id til exe-hashen — ellers kunne en angriber
+// på GitHub servere en gammel, legitimt signeret build som værende "ny"
+// (rollback). Formatet skal matche signed_message() i src-tauri/src/update.rs.
+const signedMessage = Buffer.from(`open-dock-update-v1\n${buildId}\n${sha256}\n`, "utf8");
+const signature = sign(null, signedMessage, signingKey).toString("base64");
+
 const manifest = {
   version,
   buildId,
   url: `${REPO}/releases/latest/download/${RELEASE_ASSET_NAME}`,
   sha256,
+  signature,
   size: bytes.length,
   notes: "",
 };

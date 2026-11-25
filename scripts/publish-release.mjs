@@ -3,7 +3,7 @@
 // stabile releases/latest/download/-URL og sammenligner buildId.
 
 import { spawnSync } from "node:child_process";
-import { createHash } from "node:crypto";
+import { createHash, createPublicKey, verify } from "node:crypto";
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -22,16 +22,38 @@ if (!existsSync(manifestPath)) {
   fail(`release/latest.json findes ikke. Kør "npm run build:tauri" først.`);
 }
 const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
-const { version, buildId, sha256 } = manifest;
+const { version, buildId, sha256, signature } = manifest;
 const stagedExe = join(releaseDir, "Open-Dock-Setup.exe");
 if (!existsSync(stagedExe)) {
   fail(`${stagedExe} findes ikke. Kør "npm run build:tauri" først.`);
 }
+if (!signature) {
+  fail(
+    "latest.json mangler ed25519-signaturen. Kør en frisk " +
+    '"npm run build:tauri" — builds uden signatur kan nye installationer ikke verificere.',
+  );
+}
 
-// Verificér at den stagede exe stadig matcher manifestet.
-const actual = createHash("sha256").update(readFileSync(stagedExe)).digest("hex");
+// Verificér at den stagede exe stadig matcher manifestet — både hash og signatur.
+const stagedBytes = readFileSync(stagedExe);
+const actual = createHash("sha256").update(stagedBytes).digest("hex");
 if (actual !== sha256) {
   fail(`SHA-256 på ${stagedExe} matcher ikke latest.json — kør "npm run build:tauri" igen.`);
+}
+const pubDerPrefix = Buffer.from("302a300506032b6570032100", "hex");
+const pubHex = "f8403449d1bc826bdd204d77cdf099e0a7a14069f1089b23f10cfa01266d33dc";
+const pubKey = createPublicKey({
+  key: Buffer.concat([pubDerPrefix, Buffer.from(pubHex, "hex")]),
+  format: "der",
+  type: "spki",
+});
+// Samme kanoniske beskedformat som appen verificerer mod (signed_message i update.rs).
+const signedMessage = Buffer.from(`open-dock-update-v1\n${buildId}\n${sha256}\n`, "utf8");
+if (!verify(null, signedMessage, pubKey, Buffer.from(signature, "base64"))) {
+  fail(
+    "Signaturen i latest.json verificerer ikke mod den indlejrede offentlige nøgle. " +
+    "Er filen signet med en anden nøgle? Kør en frisk build.",
+  );
 }
 
 // Advar hvis nsis-mappen rummer et nyere build end det stagede.

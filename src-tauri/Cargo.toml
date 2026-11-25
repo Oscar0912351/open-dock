@@ -40,6 +40,7 @@ panic = "unwind"
 
 [dependencies]
 base64 = "0.23.1"
+ed25519-dalek = "2.2.0"
 image = { version = "0.25.10", default-features = false, features = ["jpeg", "png", "webp", "bmp"] }
 jiff = "0.2"
 log = "0.4.35"

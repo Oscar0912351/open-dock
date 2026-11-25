@@ -1,12 +1,13 @@
 use std::{
     fs,
-    io::Write,
     path::{Path, PathBuf},
     process::Command,
     sync::atomic::{AtomicBool, Ordering},
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
+use base64::{engine::general_purpose::STANDARD as B64, Engine as _};
+use ed25519_dalek::{Signature, VerifyingKey};
 use parking_lot::Mutex;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
@@ -27,6 +28,16 @@ const STARTUP_CHECK_DELAY: Duration = Duration::from_secs(15);
 /// Installeren er lille nok til at downloade på under et sekund — hold
 /// download-staten synlig lidt, så indikatoren ikke blinker forbi uset.
 const MIN_DOWNLOAD_DISPLAY: Duration = Duration::from_millis(1800);
+
+/// Offentlig ed25519-nøgle (hex) som opdateringssignaturer verificeres mod.
+/// Indlejret ved compile-time — en angriber der kun kontrollerer GitHub-
+/// releasen (manifest + installer) kan ikke fremstille en gyldig signatur
+/// uden privatnøglen, som ligger på udviklerens maskine uden for repoet
+/// (%USERPROFILE%/.open-dock/update-signing-key.pem). Nøglen genereres med
+/// scripts/generate-update-key.mjs; mistes den, kan eksisterende installationer
+/// ikke opdateres længere — behold en sikker backup af privatnøglen.
+const UPDATE_PUBLIC_KEY_HEX: &str =
+    "f8403449d1bc826bdd204d77cdf099e0a7a14069f1089b23f10cfa01266d33dc";
 
 /// Cached result of the last update check, managed as Tauri state.
 pub struct UpdateTracker {
@@ -56,6 +67,11 @@ pub struct ReleaseManifest {
     pub build_id: i64,
     pub url: String,
     pub sha256: String,
+    /// Detached ed25519-signatur (base64) over installer-bytesene, lavet med
+    /// privatnøglen ved release-tidspunktet. Manifestet er kun transport —
+    /// tilliden kommer fra den indlejrede offentlige nøgle, ikke kanalen.
+    #[serde(default)]
+    pub signature: String,
     #[ts(type = "number")]
     pub size: u64,
     #[serde(default)]
@@ -183,25 +199,93 @@ pub async fn check() -> Result<UpdateStatus, AppError> {
     })
 }
 
-/// Verificerer at en allerede-downloadet fil matcher manifestets SHA-256.
-fn verify_sha256(path: &Path, expected: &str) -> Result<bool, AppError> {
-    let bytes = fs::read(path)
-        .map_err(|err| AppError::Other(format!("Kunne ikke læse hentet fil: {err}")))?;
-    let digest = format!("{:x}", Sha256::digest(&bytes));
-    Ok(digest.eq_ignore_ascii_case(expected))
+/// Den kanoniske besked der signeres ved release: domæne-separeret og med
+/// build-id bundet til exe-hashen. Uden bindingen kunne en angriber på GitHub
+/// servere en gammel, legitimt signeret build med et højere build-id i
+/// manifestet og dermed nedgradere brugere (rollback-angreb).
+fn signed_message(build_id: i64, sha256: &str) -> Vec<u8> {
+    format!("open-dock-update-v1\n{build_id}\n{sha256}\n").into_bytes()
 }
 
-/// Downloader installeren fra manifestet, verificerer SHA-256 og returnerer stien.
+/// Verificerer en ed25519-signatur (base64, detached) over bytes mod den
+/// compile-time indlejrede offentlige nøgle. Det er dét der reelt beskytter
+/// opdateringen — SHA-256 i manifestet dækker kun transportfejl, fordi både
+/// manifest og installer hostes samme sted.
+fn verify_signature(bytes: &[u8], signature_b64: &str) -> bool {
+    let Ok(key_bytes) = hex_decode_32(UPDATE_PUBLIC_KEY_HEX) else {
+        log::error!(target: "update", "Indlejret opdateringsnøgle er ugyldig hex");
+        return false;
+    };
+    let Ok(key) = VerifyingKey::from_bytes(&key_bytes) else {
+        log::error!(target: "update", "Indlejret opdateringsnøgle er ikke en ed25519-nøgle");
+        return false;
+    };
+    let Ok(sig_bytes) = B64.decode(signature_b64.trim()) else {
+        return false;
+    };
+    let Ok(signature) = Signature::from_slice(&sig_bytes) else {
+        return false;
+    };
+    key.verify_strict(bytes, &signature).is_ok()
+}
+
+fn hex_decode_32(hex: &str) -> Result<[u8; 32], ()> {
+    if hex.len() != 64 {
+        return Err(());
+    }
+    let mut out = [0u8; 32];
+    for (i, byte) in out.iter_mut().enumerate() {
+        *byte = u8::from_str_radix(&hex[i * 2..i * 2 + 2], 16).map_err(|_| ())?;
+    }
+    Ok(out)
+}
+
+/// Fuld integritetsverificering af en downloadet installer: SHA-256 (transport-
+/// fejl) OG ed25519-signatur (ægthed). Begge skal passere.
+fn verify_installer_bytes(bytes: &[u8], manifest: &ReleaseManifest) -> Result<(), AppError> {
+    let digest = format!("{:x}", Sha256::digest(bytes));
+    if !digest.eq_ignore_ascii_case(&manifest.sha256) {
+        log::warn!(target: "update", "SHA-256 mismatch: forventede {}, fik {digest}", manifest.sha256);
+        return Err(AppError::Other(
+            "Integritetstjek fejlede for den hentede fil".into(),
+        ));
+    }
+    if manifest.signature.is_empty() {
+        log::warn!(target: "update", "Manifestet har ingen signatur — afviser opdateringen");
+        return Err(AppError::Other(
+            "Opdateringen er ikke signatureret og kan ikke verificeres".into(),
+        ));
+    }
+    let message = signed_message(manifest.build_id, &digest);
+    if !verify_signature(&message, &manifest.signature) {
+        log::warn!(target: "update", "ed25519-signatur verificerede ikke for build {}", manifest.build_id);
+        return Err(AppError::Other(
+            "Signaturen på den hentede opdatering er ugyldig".into(),
+        ));
+    }
+    Ok(())
+}
+
+/// Downloader installeren fra manifestet, verificerer SHA-256 + ed25519-signatur
+/// og returnerer stien. Bytesene holdes i memory under download og skrives FØRST
+/// til disk efter fuld verificering — der eksisterer aldrig en uverificeret
+/// installer på disken under det endelige filnavn.
 async fn download_installer(app: &AppHandle, manifest: &ReleaseManifest) -> Result<PathBuf, AppError> {
-    if manifest.url.is_empty() || manifest.sha256.is_empty() {
-        return Err(AppError::Other("Manifestet mangler url eller sha256".into()));
+    if manifest.url.is_empty() || manifest.sha256.is_empty() || manifest.signature.is_empty() {
+        return Err(AppError::Other(
+            "Manifestet mangler url, sha256 eller signatur".into(),
+        ));
     }
     let path = std::env::temp_dir().join(format!("open-dock-update-{}.exe", manifest.build_id));
-    // En tidligere session kan have hentet samme build — genbrug hvis hashet matcher.
+    // En tidligere session kan have hentet samme build — genbrug hvis den
+    // stadig verificerer (hash + signatur) mod manifestet.
     if path.exists() {
-        if verify_sha256(&path, &manifest.sha256).unwrap_or(false) {
-            log::info!(target: "update", "Genbruger hentet installer {:?}", path);
-            return Ok(path);
+        let cached = fs::read(&path).ok();
+        if let Some(bytes) = cached {
+            if verify_installer_bytes(&bytes, manifest).is_ok() {
+                log::info!(target: "update", "Genbruger hentet installer {:?}", path);
+                return Ok(path);
+            }
         }
         let _ = fs::remove_file(&path);
     }
@@ -232,45 +316,22 @@ async fn download_installer(app: &AppHandle, manifest: &ReleaseManifest) -> Resu
     }
 
     let total = manifest.size.max(response.content_length().unwrap_or(0));
-    let tmp_path = path.with_extension("download");
-
-    let mut file = fs::File::create(&tmp_path)
-        .map_err(|err| AppError::Other(format!("Kunne ikke oprette midlertidig fil: {err}")))?;
-    let mut hasher = Sha256::new();
+    let mut bytes: Vec<u8> = Vec::with_capacity(total.min(64 * 1024 * 1024) as usize);
     let mut downloaded: u64 = 0;
     let mut last_emit: u64 = 0;
 
-    while let Some(bytes) = response.chunk().await.map_err(AppError::Network)? {
-        file.write_all(&bytes).map_err(|err| {
-            AppError::Other(format!("Kunne ikke skrive opdateringsfil: {err}"))
-        })?;
-        hasher.update(&bytes);
-        downloaded += bytes.len() as u64;
+    while let Some(chunk) = response.chunk().await.map_err(AppError::Network)? {
+        bytes.extend_from_slice(&chunk);
+        downloaded += chunk.len() as u64;
         if downloaded - last_emit > 256 * 1024 || downloaded == total {
             last_emit = downloaded;
             let _ = app.emit("update://progress", UpdateProgress { downloaded, total });
         }
     }
-    drop(file);
 
-    let digest = format!("{:x}", hasher.finalize());
-    if !digest.eq_ignore_ascii_case(&manifest.sha256) {
-        let _ = fs::remove_file(&tmp_path);
-        log::warn!(target: "update", "SHA-256 mismatch: forventede {}, fik {digest}", manifest.sha256);
-        return Err(AppError::Other(
-            "Integritetstjek fejlede for den hentede fil".into(),
-        ));
-    }
-    // fs::rename overskriver ikke en eksisterende fil på Windows.
-    if path.exists() {
-        let _ = fs::remove_file(&path);
-    }
-    if let Err(err) = fs::rename(&tmp_path, &path) {
-        let _ = fs::remove_file(&tmp_path);
-        return Err(AppError::Other(format!(
-            "Kunne ikke færdiggøre opdateringsfilen: {err}"
-        )));
-    }
+    verify_installer_bytes(&bytes, manifest)?;
+    fs::write(&path, &bytes)
+        .map_err(|err| AppError::Other(format!("Kunne ikke færdiggøre opdateringsfilen: {err}")))?;
     Ok(path)
 }
 
@@ -1151,4 +1212,153 @@ fn unix_now_s() -> i64 {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Cross-kompatibilitetsvektor genereret med node:crypto (throwaway-nøgle)
+    // over præcis den kanoniske besked signed_message() bygger — samme kodevej
+    // som scripts/build-release.mjs bruger ved rigtige releases. Hvis Node-
+    // signeringen og Rust-verificeringen nogensinde uenige om formatet
+    // (eller RFC 8032), fanger denne test det FØR en release.
+    const VECTOR_PUB_HEX: &str =
+        "5e4ba36135b4464aec5a92a805d1b990aec3eb3b0f0ba06360399a5b8db2c0bd";
+    const VECTOR_SIG_B64: &str =
+        "zffcu5K4dZE4GA+KWCDAKJ7t9jekAR+gxcUSsG1suBjhpB8PVtiqgePtPJQpbRFeNUrSrfuryNYaIqO/aI84CA==";
+    const VECTOR_BUILD_ID: i64 = 1732483200;
+
+    fn vector_sha256() -> String {
+        "a".repeat(64)
+    }
+
+    fn vector_message() -> Vec<u8> {
+        signed_message(VECTOR_BUILD_ID, &vector_sha256())
+    }
+
+    fn verify_with_key(bytes: &[u8], sig_b64: &str, pub_hex: &str) -> bool {
+        let key_bytes = hex_decode_32(pub_hex).expect("testvektor-nøgle skal være gyldig hex");
+        let key = VerifyingKey::from_bytes(&key_bytes).expect("testvektor skal være ed25519-nøgle");
+        let sig_bytes = B64.decode(sig_b64).expect("testvektor-signatur skal være base64");
+        let sig = Signature::from_slice(&sig_bytes).expect("testvektor skal være 64 bytes");
+        key.verify_strict(bytes, &sig).is_ok()
+    }
+
+    #[test]
+    fn node_signatur_verificerer_i_rust() {
+        assert!(
+            verify_with_key(&vector_message(), VECTOR_SIG_B64, VECTOR_PUB_HEX),
+            "Node-ed25519-signatur skal verificere i Rust"
+        );
+    }
+
+    #[test]
+    fn beskadigede_bytes_fejler() {
+        let mut bytes = vector_message();
+        bytes[0] ^= 0xff;
+        assert!(!verify_with_key(&bytes, VECTOR_SIG_B64, VECTOR_PUB_HEX));
+    }
+
+    #[test]
+    fn forkert_noegle_fejler() {
+        // Den reelle indlejrede nøgle er en ANDEN end testvektorens — verificering
+        // mod den skal fejle, ellers binder nøglen ikke til signaturen.
+        assert!(!verify_with_key(
+            &vector_message(),
+            VECTOR_SIG_B64,
+            UPDATE_PUBLIC_KEY_HEX
+        ));
+    }
+
+    #[test]
+    fn ugyldig_signatur_afvises() {
+        assert!(!verify_signature(&vector_message(), "ikke-base64!!!"));
+        assert!(!verify_signature(&vector_message(), ""));
+        // Gyldig base64 men forkert længde til en ed25519-signatur.
+        assert!(!verify_signature(&vector_message(), "aGVsbG8="));
+    }
+
+    #[test]
+    fn hex_decode_validerer_laengde_og_indhold() {
+        assert!(hex_decode_32(UPDATE_PUBLIC_KEY_HEX).is_ok());
+        assert!(hex_decode_32("abcd").is_err());
+        assert!(hex_decode_32(&"zz".repeat(32)).is_err());
+    }
+
+    #[test]
+    fn manifest_uden_signatur_afvises() {
+        let manifest = ReleaseManifest {
+            version: "0.1.0".into(),
+            build_id: 1,
+            url: "https://example.invalid/x.exe".into(),
+            sha256: format!("{:x}", Sha256::digest(b"test")),
+            signature: String::new(),
+            size: 4,
+            notes: None,
+        };
+        let err = verify_installer_bytes(b"test", &manifest);
+        assert!(err.is_err(), "usigneret manifest skal afvises");
+    }
+
+    #[test]
+    fn manifest_med_forkert_hash_afvises() {
+        let manifest = ReleaseManifest {
+            version: "0.1.0".into(),
+            build_id: 1,
+            url: "https://example.invalid/x.exe".into(),
+            sha256: "0".repeat(64),
+            signature: VECTOR_SIG_B64.into(),
+            size: 4,
+            notes: None,
+        };
+        assert!(verify_installer_bytes(b"test", &manifest).is_err());
+    }
+
+    // Fuld-flow-vektor signet med den RIGTIGE privatnøgle over harmløse
+    // fake-bytes. Kan ikke misbruges: signaturen binder sig til sha256 af
+    // netop disse bytes, og ingen kan fremstille en exe med samme hash.
+    const REAL_VEC_BYTES: &[u8] = b"open-dock fake installer bytes for test";
+    const REAL_VEC_SHA256: &str =
+        "329b7d42821cee5fdf98afb85d63998f3c2b6221dfc58045e7b9102254fa01b3";
+    const REAL_VEC_BUILD_ID: i64 = 9999999999;
+    const REAL_VEC_SIG: &str =
+        "S+1wyF5PlKAvv1EXban41V6TjbpGMtzvapVUnvAyeUYJ8AImqw3vlKLRH6UDITi5t+ALeNZqWPmO7towQPfMCQ==";
+
+    fn real_vec_manifest() -> ReleaseManifest {
+        ReleaseManifest {
+            version: "0.1.0".into(),
+            build_id: REAL_VEC_BUILD_ID,
+            url: "https://example.invalid/x.exe".into(),
+            sha256: REAL_VEC_SHA256.into(),
+            signature: REAL_VEC_SIG.into(),
+            size: REAL_VEC_BYTES.len() as u64,
+            notes: None,
+        }
+    }
+
+    #[test]
+    fn fuld_flow_accepterer_korrekt_signeret_manifest() {
+        assert!(
+            verify_installer_bytes(REAL_VEC_BYTES, &real_vec_manifest()).is_ok(),
+            "korrekt signet manifest skal passere fuld verificering"
+        );
+    }
+
+    #[test]
+    fn rollback_med_hoejere_build_id_afvises() {
+        // Rollback-angrebet: manifestet lyver om build-id men genbruger en
+        // legitim signatur. Da build-id indgår i den signede besked, bryder
+        // verificeringen — ellers kunne gamle builds serveres som "nye".
+        let mut manifest = real_vec_manifest();
+        manifest.build_id = REAL_VEC_BUILD_ID + 1;
+        assert!(verify_installer_bytes(REAL_VEC_BYTES, &manifest).is_err());
+    }
+
+    #[test]
+    fn fuld_flow_afviser_beskadigede_bytes() {
+        let mut bytes = REAL_VEC_BYTES.to_vec();
+        bytes[0] ^= 0xff;
+        assert!(verify_installer_bytes(&bytes, &real_vec_manifest()).is_err());
+    }
 }
