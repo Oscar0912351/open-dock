@@ -13,7 +13,6 @@ import {
   Shuffle,
   SkipBack,
   SkipForward,
-  Bell,
   Hourglass,
   ArrowCounterClockwise,
   SpeakerSlash,
@@ -92,6 +91,7 @@ import { formatCountdown, formatOvertime } from "../kinds/timer/formatDuration";
 import { useTimer } from "../kinds/timer/useTimer";
 import "../kinds/timer/timer.css";
 import { Sparkline } from "../kinds/system/Sparkline";
+import { Ring } from "../kinds/system/Ring";
 import { resolveSystemSettings } from "../kinds/system/System";
 import { WaveChart } from "../kinds/weather/WaveChart";
 import { resolveWeatherSettings } from "../kinds/weather/Weather";
@@ -155,62 +155,49 @@ const TimerClusterMod = memo(function TimerClusterMod({
     noteLoaded.current = true;
     void ipc
       .noteLoad(mod.id)
-      .then((content) => setNote(content))
+      .then((content) => setNote(content.split(/\r?\n/)[0] ?? ""))
       .catch(() => {});
   }, [mod.id, preview]);
 
   const saveNote = (text: string) => {
-    setNote(text);
-    if (!preview) void ipc.noteSave(mod.id, text).catch(() => {});
+    const clipped = text.replace(/\r?\n/g, " ").slice(0, 120);
+    setNote(clipped);
+    if (!preview) void ipc.noteSave(mod.id, clipped).catch(() => {});
   };
 
   const status = snapshot?.status ?? "idle";
-  const remaining = snapshot
-    ? status === "running" && snapshot.endsAt
+  const finished = status === "finished";
+  const remaining =
+    snapshot && status === "running" && snapshot.endsAt
       ? Math.max(0, Number(snapshot.endsAt) - nowMs)
-      : Number(snapshot.remainingMs)
-    : 0;
+      : snapshot
+        ? Math.max(0, Number(snapshot.remainingMs))
+        : 0;
   const total = snapshot ? Math.max(1, Number(snapshot.totalMs)) : 1;
   const overtime =
-    status === "finished" && snapshot?.finishedAt ? nowMs - Number(snapshot.finishedAt) : 0;
-  const progress = status === "running" ? Math.min(1, Math.max(0, 1 - remaining / total)) : status === "finished" ? 1 : 0;
-  const timeText =
-    status === "finished" ? formatOvertime(overtime) : formatCountdown(remaining);
+    finished && snapshot?.finishedAt ? nowMs - Number(snapshot.finishedAt) : 0;
+  const progress = status === "running" ? Math.min(100, Math.max(0, (remaining / total) * 100)) : finished ? 0 : status === "paused" ? Math.min(100, (remaining / total) * 100) : 0;
+  const timeText = finished ? formatOvertime(overtime) : formatCountdown(remaining);
 
-  const ringSize = mode === "expanded" ? 52 : 20;
-  const stroke = mode === "expanded" ? 4.5 : 2.2;
-  const r = (ringSize - stroke) / 2;
-  const c = 2 * Math.PI * r;
-
-  const ringEl = (
-    <span
-      className="tm-ringbtn is-static"
-      style={{ width: `calc(${ringSize} * var(--u))`, height: `calc(${ringSize} * var(--u))` }}
-      aria-hidden="true"
-    >
-      <svg viewBox={`0 0 ${ringSize} ${ringSize}`}>
-        <circle className="tm-ring-track" cx={ringSize / 2} cy={ringSize / 2} r={r} strokeWidth={stroke} />
-        <circle
-          className={`tm-ring-prog${status === "finished" ? " is-done" : ""}`}
-          cx={ringSize / 2}
-          cy={ringSize / 2}
-          r={r}
-          strokeWidth={stroke}
-          strokeDasharray={c}
-          strokeDashoffset={c * (1 - progress)}
-          transform={`rotate(-90 ${ringSize / 2} ${ringSize / 2})`}
-        />
-      </svg>
-      {mode === "expanded" && (
-        <span className={`tm-time tm-time-xs${status === "finished" ? " is-overtime" : ""}`}>{timeText}</span>
-      )}
+  const ringEl = (ringSize: number, stroke: number, timePx: number) => (
+    <span className="tm-cring" aria-hidden="true">
+      <Ring size={ringSize} stroke={stroke} pct={progress}>
+        {timePx > 0 && status !== "idle" ? (
+          <span
+            className={`tm-ctime${finished ? " is-overtime" : ""}`}
+            style={{ fontSize: `calc(${timePx} * var(--u))` }}
+          >
+            {timeText}
+          </span>
+        ) : null}
+      </Ring>
     </span>
   );
 
   if (mode === "compact") {
     return (
       <div
-        className={`c-mod is-compact c-mod-timer${status === "finished" ? " tm-is-finished" : ""}`}
+        className={`c-mod is-compact c-mod-timer${finished ? " is-finished" : ""}`}
         style={viewTransitionStyle(mod.id, preview)}
         onClick={onClick}
       >
@@ -219,14 +206,12 @@ const TimerClusterMod = memo(function TimerClusterMod({
             {status === "idle" ? (
               <Hourglass size="calc(15 * var(--u))" aria-hidden="true" />
             ) : (
-              ringEl
+              ringEl(20, 2.4, 0)
             )}
             {status === "idle" ? (
               <span className="label">{t("timer.name")}</span>
             ) : (
-              <span className={`value tabular${status === "finished" ? " tm-overtime-ink" : ""}`}>
-                {timeText}
-              </span>
+              <span className={`value tabular${finished ? " tm-overtime-ink" : ""}`}>{timeText}</span>
             )}
             {status === "paused" && <span className="micro">{t("timer.paused")}</span>}
             {snapshot?.segment === "break" || snapshot?.segment === "longBreak" ? (
@@ -242,18 +227,18 @@ const TimerClusterMod = memo(function TimerClusterMod({
     );
   }
 
-  // Expanded (76px): ring til venstre, note + knapper til højre.
+  // Expanded (76u): ring 52u med tid til venstre, knapper + note til højre.
   return (
     <div
-      className={`c-mod is-exp c-mod-timer-exp${status === "finished" ? " tm-is-finished" : ""}`}
+      className={`c-mod is-exp c-mod-timer-exp${finished ? " is-finished" : ""}`}
       style={viewTransitionStyle(mod.id, preview)}
       onClick={onClick}
     >
       <div className="row g10 tm-cluster-exp">
-        {ringEl}
-        <div className="col g4 grow">
+        {ringEl(52, 4.5, 10)}
+        <div className="col g6 grow">
           {status === "idle" ? (
-            <div className="row g6">
+            <div className="row g6" data-no-expand>
               <span className="label grow">{t("timer.name")}</span>
               <button
                 type="button"
@@ -262,17 +247,16 @@ const TimerClusterMod = memo(function TimerClusterMod({
                 disabled={preview}
                 onClick={() => void ipc.timerStart(mod.id).catch(() => {})}
               >
-                <Play size="calc(13 * var(--u))" weight="fill" aria-hidden="true" />
+                <Play size="calc(12 * var(--u))" weight="fill" aria-hidden="true" />
               </button>
             </div>
           ) : (
-            <div className="row g6" data-no-expand>
-              {status === "finished" ? (
+            <div className="row g4" data-no-expand>
+              {finished ? (
                 <>
-                  <Bell size="calc(13 * var(--u))" className="tm-bell" aria-hidden="true" />
                   <button
                     type="button"
-                    className="od-chip tm-chip-mini"
+                    className="tm-chipbtn tm-chipbtn-mini"
                     disabled={preview}
                     onClick={() => void ipc.timerSnooze(mod.id, 5).catch(() => {})}
                   >
@@ -351,7 +335,6 @@ const TimerClusterMod = memo(function TimerClusterMod({
     </div>
   );
 });
-
 
 function HintBadge({ label }: { label: string }) {
   return (

@@ -60,15 +60,17 @@ export function Ring({
     <div className={`ring${className ? ` ${className}` : ""}`} style={ringStyle}>
       <svg viewBox="0 0 100 100" aria-hidden="true">
         <circle className="r-track" cx="50" cy="50" r={r} strokeWidth={sw} />
-        <circle
-          className={`r-fill${isCountdown ? " r-countdown" : ""}`}
-          cx="50"
-          cy="50"
-          r={r}
-          strokeWidth={sw}
-          pathLength={100}
-          style={fillStyle}
-        />
+        {clamped > 0 && (
+          <circle
+            className={`r-fill${isCountdown ? " r-countdown" : ""}`}
+            cx="50"
+            cy="50"
+            r={r}
+            strokeWidth={sw}
+            pathLength={100}
+            style={fillStyle}
+          />
+        )}
         {!isCountdown && clamped > 0 && (
           <circle
             className="r-knob"

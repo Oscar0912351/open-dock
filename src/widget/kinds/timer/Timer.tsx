@@ -1,5 +1,6 @@
 import {
   ArrowCounterClockwise,
+  Bell,
   Pause,
   Play,
   SkipForward,
@@ -13,6 +14,7 @@ import {
   useState,
   type CSSProperties,
   type KeyboardEvent,
+  type ReactNode,
   type WheelEvent,
 } from "react";
 import { t } from "../../../shared/i18n";
@@ -80,6 +82,7 @@ interface TimerProps {
 }
 
 const PREVIEW_NOTE = "Hente vasketøj";
+const PRESETS_MIN = [5, 10, 25, 45];
 
 function formatEndTime(endsAtMs: number): string {
   return new Intl.DateTimeFormat("da-DK", { hour: "2-digit", minute: "2-digit", hourCycle: "h23" })
@@ -87,27 +90,46 @@ function formatEndTime(endsAtMs: number): string {
     .replaceAll(".", ":");
 }
 
+function ic(kind: "play" | "pause" | "reset" | "skip" | "stop" | "bell", px: number): ReactNode {
+  const size = `calc(${px} * var(--u))`;
+  switch (kind) {
+    case "play":
+      return <Play size={size} weight="fill" />;
+    case "pause":
+      return <Pause size={size} weight="fill" />;
+    case "reset":
+      return <ArrowCounterClockwise size={size} />;
+    case "skip":
+      return <SkipForward size={size} />;
+    case "stop":
+      return <X size={size} weight="bold" />;
+    case "bell":
+      return <Bell size={size} weight="fill" />;
+  }
+}
+
 export function Timer({ id, settings, size, editMode, preview = false, onAriaChange }: TimerProps) {
   const isPreview = preview || id.startsWith("preview-");
   const { snapshot, nowMs } = useTimer(isPreview ? null : id, !isPreview);
 
-  // ── Note ────────────────────────────────────────────────────────────────
+  // ── Note (samme fokus-mønster som note-widgetten) ─────────────────────
   const [note, setNote] = useState("");
   const [noteLoaded, setNoteLoaded] = useState(false);
-  const [noteFocused, setNoteFocused] = useState(false);
+  const [noteEditing, setNoteEditing] = useState(false);
   const noteInputRef = useRef<HTMLInputElement>(null);
-  const noteSaveTimerRef = useRef<number | null>(null);
+  const noteDebounceRef = useRef<number | null>(null);
   const latestNoteRef = useRef("");
 
   useEffect(() => {
-    if (isPreview) return;
+    if (isPreview) {
+      setNoteLoaded(true);
+      return;
+    }
     let active = true;
     ipc
       .noteLoad(id)
       .then((content) => {
         if (!active) return;
-        // Noten deles fil-navneplads med note-widgetten, men timeren bruger
-        // kun første linje — resten er ikke meningsfuldt i en titel.
         const firstLine = content.split(/\r?\n/)[0] ?? "";
         setNote(firstLine);
         latestNoteRef.current = firstLine;
@@ -118,73 +140,62 @@ export function Timer({ id, settings, size, editMode, preview = false, onAriaCha
       });
     return () => {
       active = false;
-      if (noteSaveTimerRef.current !== null) window.clearTimeout(noteSaveTimerRef.current);
+      if (noteDebounceRef.current !== null) window.clearTimeout(noteDebounceRef.current);
     };
   }, [id, isPreview]);
 
-  const saveNote = useCallback(
+  const persistNote = useCallback(
     (value: string) => {
       if (isPreview) return;
-      if (noteSaveTimerRef.current !== null) window.clearTimeout(noteSaveTimerRef.current);
-      noteSaveTimerRef.current = window.setTimeout(() => {
-        noteSaveTimerRef.current = null;
-        void ipc.noteSave(id, value.slice(0, 4000)).catch(() => {});
+      if (noteDebounceRef.current !== null) window.clearTimeout(noteDebounceRef.current);
+      noteDebounceRef.current = window.setTimeout(() => {
+        noteDebounceRef.current = null;
+        void ipc.noteSave(id, value).catch(() => {});
       }, 500);
     },
     [id, isPreview],
   );
+
+  const flushNote = useCallback(() => {
+    if (noteDebounceRef.current !== null) {
+      window.clearTimeout(noteDebounceRef.current);
+      noteDebounceRef.current = null;
+      if (!isPreview) void ipc.noteSave(id, latestNoteRef.current).catch(() => {});
+    }
+  }, [id, isPreview]);
 
   const updateNote = useCallback(
     (value: string) => {
       const clipped = value.replace(/\r?\n/g, " ").slice(0, 120);
       setNote(clipped);
       latestNoteRef.current = clipped;
-      saveNote(clipped);
+      persistNote(clipped);
     },
-    [saveNote],
+    [persistNote],
   );
 
-  const flushNote = useCallback(() => {
-    if (noteSaveTimerRef.current !== null) {
-      window.clearTimeout(noteSaveTimerRef.current);
-      noteSaveTimerRef.current = null;
-    }
-    if (!isPreview) void ipc.noteSave(id, latestNoteRef.current.slice(0, 4000)).catch(() => {});
-  }, [id, isPreview]);
-
-  const enterNoteEditing = useCallback(async () => {
-    if (editMode || isPreview) return;
-    if (!noteFocused) {
-      try {
-        await ipc.widgetSetFocusable(id, true);
-      } catch {
-        // Ignorér — focusable-tilstand er en forbedring, ikke en forudsætning.
-      }
-      setNoteFocused(true);
-    }
+  const enterNoteEditing = useCallback(() => {
+    if (editMode || isPreview || noteEditing) return;
+    void ipc.widgetSetFocusable(id, true).catch(() => {});
+    setNoteEditing(true);
     window.requestAnimationFrame(() => noteInputRef.current?.focus());
-  }, [editMode, isPreview, noteFocused, id]);
+  }, [editMode, isPreview, noteEditing, id]);
 
   const leaveNoteEditing = useCallback(() => {
-    setNoteFocused(false);
+    setNoteEditing(false);
     flushNote();
     if (!isPreview) void ipc.widgetSetFocusable(id, false).catch(() => {});
   }, [flushNote, id, isPreview]);
 
-  // ── Varigheds-opsætning (idle, nedtælling) ──────────────────────────────
-  const totalFromSnapshot = snapshot ? Number(snapshot.totalMs) : 0;
-  const initialMs = (totalFromSnapshot >= 5000 ? totalFromSnapshot : settings.durationMin * 60_000);
-  const [editMs, setEditMs] = useState(initialMs);
+  // ── Countdown-varighed i idle ─────────────────────────────────────────
+  const [editMs, setEditMs] = useState(settings.durationMin * 60_000);
   const editMsRef = useRef(editMs);
   editMsRef.current = editMs;
 
-  // Hvis indstillingerne ændres udefra (kontrolcenter) mens vi er i idle, følg med.
   useEffect(() => {
     if (!snapshot || snapshot.status === "idle") {
       const fromSettings = settings.durationMin * 60_000;
-      if (totalFromSnapshot < 5000 && editMsRef.current !== fromSettings) {
-        setEditMs(fromSettings);
-      }
+      if (editMsRef.current !== fromSettings) setEditMs(fromSettings);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [settings.durationMin]);
@@ -194,7 +205,6 @@ export function Timer({ id, settings, size, editMode, preview = false, onAriaCha
     (nextMs: number) => {
       setEditMs(nextMs);
       if (isPreview) return;
-      // Husk seneste varighed i indstillingerne — debounced, så scroll ikke spammer config.
       if (persistTimerRef.current !== null) window.clearTimeout(persistTimerRef.current);
       persistTimerRef.current = window.setTimeout(() => {
         persistTimerRef.current = null;
@@ -212,17 +222,7 @@ export function Timer({ id, settings, size, editMode, preview = false, onAriaCha
     [],
   );
 
-  const onWheelAdjust = useCallback(
-    (part: "minutes" | "seconds") => (event: WheelEvent) => {
-      if (editMode || isPreview) return;
-      if (!snapshot || snapshot.status !== "idle" || settings.mode !== "countdown") return;
-      const direction = event.deltaY < 0 ? 1 : -1;
-      changeDuration(adjustDuration(editMsRef.current, part, direction, event.shiftKey));
-    },
-    [editMode, isPreview, snapshot, settings.mode, changeDuration],
-  );
-
-  // ── Afledt visningstilstand ─────────────────────────────────────────────
+  // ── Afledt visningstilstand ───────────────────────────────────────────
   const status = snapshot?.status ?? "idle";
   const segment = snapshot?.segment ?? "countdown";
   const isPomodoro = settings.mode === "pomodoro";
@@ -244,36 +244,29 @@ export function Timer({ id, settings, size, editMode, preview = false, onAriaCha
     displayMs = editMs;
   }
 
-  const timeText = status === "finished" ? formatOvertime(overtimeMs) : formatCountdown(displayMs);
-  const timeLong = timeText.length > 5 ? " is-long" : "";
+  const finished = status === "finished";
+  const timeText = finished ? formatOvertime(overtimeMs) : formatCountdown(displayMs);
   const endLabel = status === "running" && endsAt !== null ? formatEndTime(endsAt) : null;
 
-  // Ring-progress: CSS-animationen kører selvstændigt ud fra endsAt — den må ikke
-  // genstartes ved hvert sekund-tick, så parametrene fryses på snapshot-tilstanden.
+  // Ring-parametre fryses på snapshot-tilstanden, så sekund-ticks ikke genstarter
+  // CSS-drain-animationen (den kører selvstændigt med varighed = resterende tid).
   const ringProps = useMemo(() => {
-    if (!snapshot || status === "idle") {
-      return { pct: 100, durationMs: undefined as number | undefined, running: false };
-    }
-    if (status === "finished") {
-      return { pct: 0, durationMs: undefined, running: false };
+    if (!snapshot || status === "idle" || status === "finished") {
+      return { pct: 0, durationMs: 0, running: false };
     }
     const total = Math.max(1, Number(snapshot.totalMs));
     if (status === "paused") {
       const remaining = Math.max(0, Number(snapshot.remainingMs));
-      return { pct: (remaining / total) * 100, durationMs: undefined, running: false };
+      return { pct: (remaining / total) * 100, durationMs: 0, running: false };
     }
     const end = snapshot.endsAt != null ? Number(snapshot.endsAt) : null;
-    if (end === null) return { pct: 100, durationMs: undefined, running: false };
+    if (end === null) return { pct: 0, durationMs: 0, running: false };
     const remaining = Math.max(0, end - Date.now());
-    return {
-      pct: Math.min(100, (remaining / total) * 100),
-      durationMs: remaining,
-      running: true,
-    };
+    return { pct: Math.min(100, (remaining / total) * 100), durationMs: remaining, running: true };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [snapshot, status]);
 
-  // ── Kommandoer ──────────────────────────────────────────────────────────
+  // ── Kommandoer ────────────────────────────────────────────────────────
   const start = useCallback(() => {
     if (isPreview) return;
     const duration = isPomodoro ? undefined : Math.round(editMsRef.current);
@@ -302,100 +295,184 @@ export function Timer({ id, settings, size, editMode, preview = false, onAriaCha
     if (!isPreview) void ipc.timerSkip(id).catch(() => {});
   }, [id, isPreview]);
 
-  // ── Labels og aria ──────────────────────────────────────────────────────
+  // ── Tekst og aria ─────────────────────────────────────────────────────
   const segmentLabel = isPomodoro
-    ? segment === "focus"
-      ? t("timer.focus")
-      : segment === "break"
-        ? t("timer.break")
-        : segment === "longBreak"
-          ? t("timer.longBreak")
-          : t("timer.focus")
+    ? segment === "break"
+      ? t("timer.break")
+      : segment === "longBreak"
+        ? t("timer.longBreak")
+        : t("timer.focus")
     : null;
 
   const effectiveNote = isPreview ? PREVIEW_NOTE : note;
-  const title = effectiveNote.trim() || (isPomodoro ? (segmentLabel ?? t("timer.pomodoro")) : t("timer.name"));
+  const title =
+    effectiveNote.trim() || (isPomodoro ? (segmentLabel ?? t("timer.pomodoro")) : t("timer.name"));
 
   useEffect(() => {
     if (!onAriaChange) return;
     const state =
       status === "running"
         ? t("timer.ariaRunning", { time: timeText })
-        : status === "finished"
+        : finished
           ? t("timer.ariaFinished")
           : status === "paused"
             ? t("timer.ariaPaused", { time: timeText })
             : t("timer.ariaIdle");
     onAriaChange(`${title}: ${state}`);
-  }, [onAriaChange, title, status, timeText]);
+  }, [onAriaChange, title, status, timeText, finished]);
 
   const round = snapshot?.round ?? 0;
-  const completedRounds = segment === "focus" ? Math.max(0, round - 1) : round;
+  const roundPos = segment === "focus" ? Math.max(1, round) : Math.min(settings.rounds, round + 1);
+  const doneRounds = segment === "focus" ? Math.max(0, round - 1) : round;
 
-  // ── Del-elementer ───────────────────────────────────────────────────────
-  const ringIsButton = true;
-  const ringButtonLabel =
-    status === "running"
-      ? t("timer.pause")
-      : status === "finished"
-        ? t("timer.stop")
-        : t("timer.start");
+  // ── Scroll-justering af varighed (idle countdown) ─────────────────────
+  const canAdjust = status === "idle" && !isPomodoro && !editMode && !isPreview;
+  const onWheelAdjust = useCallback(
+    (event: WheelEvent) => {
+      if (!canAdjust) return;
+      const direction = event.deltaY < 0 ? 1 : -1;
+      changeDuration(adjustDuration(editMsRef.current, "minutes", direction, event.shiftKey));
+    },
+    [canAdjust, changeDuration],
+  );
 
-  const onRingClick = () => {
-    if (editMode) return;
+  // ── Del-elementer ─────────────────────────────────────────────────────
+  const ringClick = () => {
+    if (editMode || isPreview) return;
     if (status === "idle") start();
-    else if (status === "finished") dismiss();
+    else if (finished) dismiss();
     else pauseToggle();
   };
 
-  const ringIcon =
-    status === "running" ? (
-      <Pause size="calc(11 * var(--u))" weight="fill" />
-    ) : status === "finished" ? (
-      <X size="calc(11 * var(--u))" weight="bold" />
-    ) : (
-      <Play size="calc(11 * var(--u))" weight="fill" />
-    );
+  const ringButtonLabel =
+    status === "running" ? t("timer.pause") : finished ? t("timer.stop") : t("timer.start");
 
-  const ring = (ringSize: number, stroke: number, showTime: boolean, timeClass: string) => (
+  /** Ringen ER start/pause-knappen — ikon i centrum (pill) eller tid (s/m). */
+  const ringButton = (
+    ringSize: number,
+    stroke: number,
+    center: "icon" | "time",
+    iconPx: number,
+    timePx: number,
+  ) => (
     <button
       type="button"
-      className={`tm-ringbtn${ringIsButton ? "" : ""}`}
+      className={`tm-ringbtn${finished ? " is-done" : ""}`}
+      style={{ width: `calc(${ringSize} * var(--u))`, height: `calc(${ringSize} * var(--u))` }}
       aria-label={ringButtonLabel}
-      onClick={onRingClick}
+      title={canAdjust && center === "time" ? t("timer.adjustMinutes") : undefined}
+      onClick={ringClick}
+      onWheel={center === "time" ? onWheelAdjust : undefined}
       data-enter="pop"
     >
       <Ring
         size={ringSize}
         stroke={stroke}
         pct={ringProps.pct}
-        animateDurationMs={ringProps.durationMs}
+        animateDurationMs={ringProps.running ? ringProps.durationMs : undefined}
         animateRunning={ringProps.running}
       >
-        {showTime ? (
-          <span className={`tm-time ${timeClass}${timeLong}${status === "finished" ? " is-overtime" : ""}`}>
+        {center === "time" ? (
+          <span
+            className={`tm-time${finished ? " is-overtime" : ""}`}
+            style={{ fontSize: `calc(${timePx} * var(--u))` }}
+          >
             <RollingNumber value={timeText} />
           </span>
+        ) : finished ? (
+          ic("bell", iconPx)
+        ) : status === "running" ? (
+          ic("pause", iconPx)
         ) : (
-          ringIcon
+          ic("play", iconPx)
         )}
       </Ring>
     </button>
   );
 
-  const noteField = (compact: boolean) =>
-    size === "pill" ? null : (
+  const ctlBtn = (
+    label: string,
+    boxU: number,
+    icon: ReactNode,
+    onClick: () => void,
+    primary = false,
+  ) => (
+    <button
+      type="button"
+      className={`od-btn${primary ? " primary" : ""}`}
+      style={{ "--b": boxU } as CSSProperties}
+      aria-label={label}
+      onClick={onClick}
+    >
+      {icon}
+    </button>
+  );
+
+  /** Kontrolrække efter reference: reset 24 · pause/start 28|30 primary · skip 24. */
+  const controlsRow = (primaryU: number, centerIdle = false) => {
+    if (finished) {
+      return (
+        <div className="row tm-controls" data-enter>
+          <button type="button" className="tm-chipbtn tm-snooze" onClick={snooze}>
+            {t("timer.snooze")}
+          </button>
+          {ctlBtn(t("timer.stop"), 24, ic("stop", 11), dismiss)}
+        </div>
+      );
+    }
+    if (status === "idle") {
+      return (
+        <div className={`row tm-controls${centerIdle ? " is-center" : ""}`} data-enter>
+          {ctlBtn(t("timer.start"), primaryU, ic("play", Math.round(primaryU * 0.42)), start, true)}
+        </div>
+      );
+    }
+    return (
+      <div className="row tm-controls" data-enter>
+        {ctlBtn(t("timer.reset"), 24, ic("reset", 12), reset)}
+        {ctlBtn(
+          status === "running" ? t("timer.pause") : t("timer.resume"),
+          primaryU,
+          ic(status === "running" ? "pause" : "play", Math.round(primaryU * 0.42)),
+          pauseToggle,
+          true,
+        )}
+        {isPomodoro ? (
+          ctlBtn(t("timer.skip"), 24, ic("skip", 12), skip)
+        ) : (
+          <span className="tm-ctl-end" />
+        )}
+      </div>
+    );
+  };
+
+  const roundDots = isPomodoro ? (
+    <span className="tm-rounds" aria-hidden="true">
+      {Array.from({ length: settings.rounds }, (_, i) => (
+        <span
+          key={i}
+          className={`tm-dot${i < doneRounds ? " is-done" : ""}${
+            i === doneRounds && status !== "idle" && !finished ? " is-active" : ""
+          }`}
+        />
+      ))}
+    </span>
+  ) : null;
+
+  const noteField = (compact: boolean) => {
+    if (!noteLoaded) return null;
+    return (
       <input
         ref={noteInputRef}
         type="text"
-        className={`tm-note${noteFocused ? " is-focused" : ""}${compact ? " tm-note-compact" : ""}`}
+        className={`tm-note${noteEditing ? " is-editing" : ""}${compact ? " tm-note-compact" : ""}`}
         value={effectiveNote}
         maxLength={120}
         placeholder={t("timer.notePlaceholder")}
-        readOnly={!noteFocused}
+        readOnly={!noteEditing}
         data-enter
         onPointerDown={() => {
-          if (!noteFocused) void enterNoteEditing();
+          if (!noteEditing) enterNoteEditing();
         }}
         onChange={(event) => updateNote(event.target.value)}
         onBlur={() => leaveNoteEditing()}
@@ -403,149 +480,50 @@ export function Timer({ id, settings, size, editMode, preview = false, onAriaCha
           if (event.key === "Escape" || event.key === "Enter") {
             event.preventDefault();
             event.currentTarget.blur();
-            leaveNoteEditing();
           }
         }}
       />
     );
-
-  const roundDots = isPomodoro && (status !== "idle" || isPomodoro) ? (
-    <span className="tm-rounds" aria-hidden="true">
-      {Array.from({ length: settings.rounds }, (_, i) => (
-        <span
-          key={i}
-          className={`tm-dot${i < completedRounds ? " is-done" : ""}${
-            i === completedRounds && status !== "idle" ? " is-active" : ""
-          }`}
-        />
-      ))}
-    </span>
-  ) : null;
-
-  const controlsRow = (big: number, small: number) => {
-    if (status === "finished") {
-      return (
-        <div className="row tm-controls" data-enter>
-          <button type="button" className="od-chip tm-snooze" onClick={snooze}>
-            {t("timer.snooze")}
-          </button>
-          <button type="button" className="od-btn" aria-label={t("timer.stop")} onClick={dismiss}>
-            <X size="calc(12 * var(--u))" weight="bold" />
-          </button>
-        </div>
-      );
-    }
-    if (status === "idle") {
-      return (
-        <div className="row tm-controls" data-enter>
-          <button type="button" className="od-btn primary" aria-label={t("timer.start")} onClick={start}>
-            <Play size={`calc(${Math.round(big * 0.45)} * var(--u))`} weight="fill" />
-          </button>
-        </div>
-      );
-    }
-    return (
-      <div className="row tm-controls" data-enter>
-        <button type="button" className="od-btn" aria-label={t("timer.reset")} onClick={reset}>
-          <ArrowCounterClockwise size={`calc(${Math.round(small * 0.5)} * var(--u))`} weight="regular" />
-        </button>
-        <button
-          type="button"
-          className="od-btn primary"
-          aria-label={status === "running" ? t("timer.pause") : t("timer.resume")}
-          onClick={pauseToggle}
-        >
-          {status === "running" ? (
-            <Pause size={`calc(${Math.round(big * 0.45)} * var(--u))`} weight="fill" />
-          ) : (
-            <Play size={`calc(${Math.round(big * 0.45)} * var(--u))`} weight="fill" />
-          )}
-        </button>
-        {isPomodoro ? (
-          <button type="button" className="od-btn" aria-label={t("timer.skip")} onClick={skip}>
-            <SkipForward size={`calc(${Math.round(small * 0.5)} * var(--u))`} weight="regular" />
-          </button>
-        ) : (
-          <span className="tm-spacer" />
-        )}
-      </div>
-    );
   };
 
-  const presetChips =
-    status === "idle" && !isPomodoro ? (
-      <div className="row tm-chips" data-enter>
-        {[5, 10, 25, 45].map((min) => (
-          <button
-            key={min}
-            type="button"
-            className={`od-chip${editMs === min * 60_000 ? " is-active" : ""}`}
-            onClick={() => changeDuration(min * 60_000)}
-          >
-            {min}
-          </button>
-        ))}
-      </div>
-    ) : null;
-
-  // Tiden med scroll-zoner i idle (nedtælling): minutdel og sekunddel justeres hver for sig.
-  const editableTime = (className: string) => {
-    const text = timeText;
-    const colonIdx = text.indexOf(":");
-    if (status !== "idle" || isPomodoro || colonIdx < 0) {
-      return (
-        <span className={`tm-time ${className}${timeLong}${status === "finished" ? " is-overtime" : ""}`}>
-          <RollingNumber value={text} />
-        </span>
-      );
+  const metaLine = (withPrefix: boolean) => {
+    if (finished) return t("timer.finished");
+    if (status === "paused") return t("timer.paused");
+    if (status === "running" && endLabel) {
+      return withPrefix ? t("timer.doneAt", { time: endLabel }) : endLabel;
     }
-    // Ved h:mm:ss er scroll kun på minut-delen — ellers både min og sek.
-    const parts = text.split(":");
-    const minutePart = parts.length === 3 ? `${parts[0]}:${parts[1]}` : parts[0];
-    const secondPart = parts[parts.length - 1];
-    return (
-      <span className={`tm-time tm-time-edit ${className}${timeLong}`} role="group" aria-label={t("timer.adjustHint")}>
-        <span className="tm-zone" onWheel={onWheelAdjust("minutes")} title={t("timer.adjustMinutes")}>
-          {minutePart}
-        </span>
-        <span className="tm-colon">:</span>
-        <span className="tm-zone" onWheel={onWheelAdjust("seconds")} title={t("timer.adjustSeconds")}>
-          {secondPart}
-        </span>
-      </span>
-    );
+    if (isPomodoro) {
+      return t("timer.pomodoroMeta", { focus: settings.focusMin, break: settings.breakMin });
+    }
+    return "";
   };
 
-  // ── Layouts ─────────────────────────────────────────────────────────────
-  const rootClass = `tm tm-${size}${status === "finished" ? " is-finished" : ""}${status === "paused" ? " is-paused" : ""}`;
-  const shellStyle: CSSProperties = {};
+  // ── Layouts ───────────────────────────────────────────────────────────
+  const rootClass = `tm tm-${size}${finished ? " is-finished" : ""}${status === "paused" ? " is-paused" : ""}`;
 
   if (size === "pill") {
     return (
-      <section className={rootClass} style={shellStyle} data-size="pill">
-        {ring(32, 2.8, false, "")}
-        <div className="tm-pill-mid" data-enter>
-          {status === "idle" && !isPomodoro ? (
-            editableTime("display-s")
-          ) : (
-            <span className={`tm-time display-s${status === "finished" ? " is-overtime" : ""}`}>
-              <RollingNumber value={timeText} />
-            </span>
-          )}
-        </div>
+      <section className={rootClass} data-size="pill">
+        {ringButton(32, 2.8, "icon", 12, 0)}
+        <span
+          className={`tm-time display-s tm-pill-time${finished ? " is-overtime" : ""}`}
+          onWheel={onWheelAdjust}
+          title={canAdjust ? t("timer.adjustMinutes") : undefined}
+          data-enter
+        >
+          <RollingNumber value={timeText} />
+        </span>
         <div className="col tm-pill-meta" data-enter>
-          <span className="title-s trunc">{title}</span>
-          {status === "finished" ? (
-            <button type="button" className="od-chip tm-chip-mini tm-snooze" onClick={snooze}>
+          <span className="label trunc">{title}</span>
+          {finished ? (
+            <button type="button" className="tm-chipbtn tm-chipbtn-mini tm-snooze" onClick={snooze}>
               {t("timer.snooze")}
             </button>
           ) : (
-            <span className="micro ink3 trunc">
+            <span className="micro trunc">
               {isPomodoro && status !== "idle"
-                ? t("timer.roundOf", { round: Math.max(1, round), rounds: settings.rounds })
-                : endLabel
-                  ? t("timer.doneAt", { time: endLabel })
-                  : segmentLabel ?? ""}
+                ? t("timer.roundOf", { round: roundPos, rounds: settings.rounds })
+                : metaLine(false)}
             </span>
           )}
         </div>
@@ -555,68 +533,54 @@ export function Timer({ id, settings, size, editMode, preview = false, onAriaCha
 
   if (size === "s") {
     return (
-      <section className={rootClass} style={shellStyle} data-size="s">
+      <section className={rootClass} data-size="s">
         <div className="row between tm-head" data-enter>
-          {noteLoaded || isPreview ? (
-            noteField(true) ?? <span className="label trunc">{title}</span>
-          ) : (
-            <span className="label trunc">{title}</span>
-          )}
+          {noteField(true)}
           {isPomodoro && status !== "idle" && (
-            <span className="micro ink4">
-              {Math.max(1, round)}/{settings.rounds}
+            <span className="micro tm-roundcount">
+              {roundPos}/{settings.rounds}
             </span>
           )}
         </div>
-        <div className="grow tm-center">{ring(64, 5.5, true, "tm-time-s")}</div>
-        {status === "idle" && !isPomodoro ? (
-          <div className="tm-footnote micro ink4" data-enter>
-            {t("timer.scrollHint")}
-          </div>
-        ) : null}
-        {controlsRow(28, 24)}
-        {roundDots}
+        <div className="grow tm-center">
+          {ringButton(60, 5, "time", 0, timeText.length > 5 ? 14 : 18)}
+        </div>
+        {controlsRow(28, true)}
       </section>
     );
   }
 
-  // m — hovedstørrelsen: ring til venstre, note + kontekst + kontroller til højre.
+  // m — reference-layout: ring 104u til venstre, kontekst + kontroller til højre.
   return (
-    <section className={rootClass} style={shellStyle} data-size="m">
-      <div className="tm-m-left">
-        {status === "idle" && !isPomodoro ? (
-          <div className="tm-m-idle-ring">
-            {ring(96, 6, false, "")}
-            <div className="tm-m-idle-time">{editableTime("tm-time-m")}</div>
-          </div>
-        ) : (
-          ring(96, 6, true, "tm-time-m")
-        )}
-      </div>
+    <section className={rootClass} data-size="m">
+      <div className="tm-m-left">{ringButton(104, 6, "time", 0, timeText.length > 5 ? 17 : 24)}</div>
       <div className="col tm-m-right">
         <div className="row between" data-enter>
-          {isPomodoro ? (
-            <span className="label trunc">{segmentLabel ?? t("timer.pomodoro")}</span>
-          ) : (
-            <span className="label trunc">{t("timer.name")}</span>
-          )}
-          {isPomodoro && status !== "idle" ? roundDots : null}
+          <span className="title-s trunc">
+            {isPomodoro ? (segmentLabel ?? t("timer.pomodoro")) : title}
+          </span>
+          {isPomodoro && status !== "idle" && !finished ? roundDots : null}
         </div>
-        {noteLoaded || isPreview ? noteField(false) : null}
-        <div className="micro ink3" data-enter>
-          {status === "running" && endLabel
-            ? t("timer.doneAt", { time: endLabel })
-            : status === "finished"
-              ? t("timer.finished")
-              : status === "paused"
-                ? t("timer.paused")
-                : isPomodoro
-                  ? t("timer.pomodoroMeta", { focus: settings.focusMin, break: settings.breakMin })
-                  : " "}
+        {noteField(false)}
+        <div className="micro tm-m-meta" data-enter>
+          {metaLine(true) || " "}
         </div>
         <div className="grow" />
-        {presetChips}
-        {controlsRow(30, 24)}
+        {status === "idle" && !isPomodoro ? (
+          <div className="row tm-chips" data-enter>
+            {PRESETS_MIN.map((min) => (
+              <button
+                key={min}
+                type="button"
+                className={`tm-chipbtn${editMs === min * 60_000 ? " is-active" : ""}`}
+                onClick={() => changeDuration(min * 60_000)}
+              >
+                {min}
+              </button>
+            ))}
+          </div>
+        ) : null}
+        {controlsRow(30)}
       </div>
     </section>
   );

@@ -422,7 +422,7 @@ export function WidgetApp({ id }: WidgetAppProps) {
   const effectiveHiddenIdle = (kind === "nowPlaying" || kind === "cluster") && hiddenIdle;
   const backdropVisible = !(effectiveHiddenIdle && !isEditing);
   const activeClusterFrame = kind === "cluster" ? shellClusterFrame : null;
-  const needsWeatherSprite = kind === "weather" || kind === "cluster";
+  const needsWeatherSprite = kind === "weather" || kind === "cluster" || kind === "timer";
 
   const prevBackdropStateRef = useRef<{ live: boolean; visible: boolean }>({
     live: false,
