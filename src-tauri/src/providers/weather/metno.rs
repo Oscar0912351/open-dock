@@ -558,9 +558,23 @@ mod tests {
 
     #[test]
     fn builds_snapshot_from_complete_payload() {
+        // Tiderne laves dynamisk: entry1 er kl. 23 lokal tid i dag, entry2 er
+        // midnat (i morgen kl. 00 lokal tid) — så straddler de altid to lokale
+        // dage OG ligger inden for hourly-filterets vindue (>= nu-1t), uanset
+        // hvornår testen kører. Faste datoer gjorde testen til en tidsbombe.
+        let tz = TimeZone::get("Europe/Copenhagen").unwrap();
+        let today = Timestamp::now().to_zoned(tz.clone()).date();
+        let tomorrow = today.tomorrow().unwrap();
+        let midnight_ms = tomorrow
+            .to_zoned(tz)
+            .unwrap()
+            .timestamp()
+            .as_millisecond();
+        let t2 = Timestamp::from_millisecond(midnight_ms).unwrap();
+        let t1 = Timestamp::from_millisecond(midnight_ms - 3_600_000).unwrap();
         let json = r#"{
             "properties": { "timeseries": [
-                { "time": "2026-11-23T22:00:00Z", "data": {
+                { "time": "__T1__", "data": {
                     "instant": { "details": {
                         "air_temperature": 1.8, "apparent_air_temperature": -1.9,
                         "relative_humidity": 85.6, "cloud_area_fraction": 97.1,
@@ -579,7 +593,7 @@ mod tests {
                                      "probability_of_precipitation": 0.0 }
                     }
                 }},
-                { "time": "2026-11-23T23:00:00Z", "data": {
+                { "time": "__T2__", "data": {
                     "instant": { "details": {
                         "air_temperature": 1.2, "apparent_air_temperature": -1.8,
                         "relative_humidity": 93.0, "cloud_area_fraction": 79.8,
@@ -592,8 +606,10 @@ mod tests {
                     }
                 }}
             ]}
-        }"#;
-        let raw: MetResponse = serde_json::from_str(json).unwrap();
+        }"#
+        .replace("__T1__", &t1.to_string())
+        .replace("__T2__", &t2.to_string());
+        let raw: MetResponse = serde_json::from_str(&json).unwrap();
         let snap = build_snapshot(&loc(), "loc-1", raw).unwrap();
 
         assert_eq!(snap.source, "Yr.no");
@@ -609,14 +625,14 @@ mod tests {
         assert_eq!(snap.hourly[1].precip_prob, 62.0);
         assert!(!snap.hourly[1].is_day);
 
-        // 22:00Z og 23:00Z er hhv. 23:00 og 00:00 dansk tid — to lokale dage.
+        // 23:00 og 00:00 dansk tid ligger på hhv. i dag og i morgen — to lokale dage.
         assert_eq!(snap.daily.len(), 2);
-        assert_eq!(snap.daily[0].date, "2026-11-23");
+        assert_eq!(snap.daily[0].date, today.to_string());
         assert_eq!(snap.daily[0].min_c, 0.9);
         assert_eq!(snap.daily[0].max_c, 1.8);
         assert_eq!(snap.daily[0].precip_prob, 0.0);
         assert!(snap.daily[0].sunrise > 0);
-        assert_eq!(snap.daily[1].date, "2026-11-24");
+        assert_eq!(snap.daily[1].date, tomorrow.to_string());
         assert_eq!(snap.daily[1].min_c, 1.2);
         assert_eq!(snap.daily[1].max_c, 1.2);
         assert_eq!(snap.daily[1].precip_prob, 62.0);
