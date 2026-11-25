@@ -60,6 +60,8 @@ export function Settings() {
   const [failedDiscordAvatar, setFailedDiscordAvatar] = useState<string | null>(null);
   const [showCustomApp, setShowCustomApp] = useState(false);
   const [customClientId, setCustomClientId] = useState("");
+  const [prevDiscordErr, setPrevDiscordErr] = useState("");
+  const [prefilledClientId, setPrefilledClientId] = useState<string | null>(null);
   const [customSecret, setCustomSecret] = useState("");
   const [copiedRedirect, setCopiedRedirect] = useState(false);
 
@@ -149,22 +151,23 @@ export function Settings() {
 
   // Fold egen-app-formularen ud når Discord afviser scopes (invalid_scope rammer
   // alle der ikke er testere på den ikke-godkendte Central-app).
-  useEffect(() => {
-    const err = discordError ?? discordStatus?.lastError ?? "";
-    if (err.toLowerCase().includes("scope")) setShowCustomApp(true);
-  }, [discordError, discordStatus?.lastError]);
+  const discordErrText = discordError ?? discordStatus?.lastError ?? "";
+  if (discordErrText !== prevDiscordErr) {
+    setPrevDiscordErr(discordErrText);
+    if (discordErrText.toLowerCase().includes("scope")) setShowCustomApp(true);
+  }
 
-  useEffect(() => {
-    if (
-      showCustomApp &&
-      !customClientId &&
-      discordStatus &&
-      !discordStatus.viaCentral &&
-      discordStatus.clientId
-    ) {
-      setCustomClientId(discordStatus.clientId);
-    }
-  }, [showCustomApp, customClientId, discordStatus]);
+  if (
+    showCustomApp &&
+    !customClientId &&
+    discordStatus &&
+    !discordStatus.viaCentral &&
+    discordStatus.clientId &&
+    discordStatus.clientId !== prefilledClientId
+  ) {
+    setPrefilledClientId(discordStatus.clientId);
+    setCustomClientId(discordStatus.clientId);
+  }
 
   if (!config) return null;
 
