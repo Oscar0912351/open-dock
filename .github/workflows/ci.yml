@@ -1,0 +1,67 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  frontend:
+    name: Frontend (typecheck, lint, test, build)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Test
+        run: npm run test
+
+      - name: Build
+        run: npm run build
+
+  rust:
+    name: Rust (check, test, bindings-sync)
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: src-tauri
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Check
+        run: cargo check --locked
+
+      - name: Test (also regenerates ts-rs bindings)
+        run: cargo test --locked
+
+      - name: Verify generated bindings are committed
+        shell: bash
+        run: |
+          if ! git diff --exit-code -- ../src/shared/bindings; then
+            echo "::error::ts-rs bindings are out of sync. Run 'npm run bindings' and commit the result."
+            exit 1
+          fi
