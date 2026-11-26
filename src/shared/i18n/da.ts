@@ -79,6 +79,7 @@ export const da = {
     repeat: "Gentag",
     seek: "Spol i nummeret",
     seekUnsupported: "Spoling er ikke tilgængelig i {source}",
+    positionUnknown: "{source} oplyser ikke, hvor langt du er",
     sources: "Kilder",
   },
   system: {

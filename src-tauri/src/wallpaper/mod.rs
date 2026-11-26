@@ -470,7 +470,10 @@ pub fn delete_custom(app: &AppHandle, id: &str) -> Result<Config, AppError> {
     })?;
 
     if let Some(item) = removed_item {
-        library::delete_custom_assets(app, &item);
+        let app_clone = app.clone();
+        let _ = tauri::async_runtime::spawn_blocking(move || {
+            library::delete_custom_assets(&app_clone, &item);
+        });
     }
     sync_runtime(app, &updated);
     Ok(updated)

@@ -33,7 +33,9 @@ use windows::{
                 D3D11CreateDevice, ID3D11Device, ID3D11DeviceContext, ID3D11RenderTargetView,
                 ID3D11Resource, ID3D11Texture2D, D3D11_BIND_RENDER_TARGET,
                 D3D11_BIND_SHADER_RESOURCE, D3D11_BOX, D3D11_CREATE_DEVICE_BGRA_SUPPORT,
+                D3D11_CPU_ACCESS_READ, D3D11_MAPPED_SUBRESOURCE, D3D11_MAP_READ,
                 D3D11_SDK_VERSION, D3D11_TEXTURE2D_DESC, D3D11_USAGE_DEFAULT,
+                D3D11_USAGE_STAGING,
             },
             Dxgi::{
                 Common::{
@@ -53,10 +55,12 @@ use windows::{
 };
 use windows_numerics::Vector2;
 
+use tauri::Emitter;
+
 use super::capture::{
-    bump_generation, fail_pending_replies, influence_rect, is_generation_current, rect_dims,
-    rects_intersect, regions_to_copy, remove_worker_if_same, CaptureTargetSpec, MonitorKey,
-    SendSwapChain, WorkerControl,
+    bump_generation, fail_pending_replies, influence_rect, is_generation_current, mean_luma_bgra,
+    rect_dims, rects_intersect, regions_to_copy, remove_worker_if_same, store_live_luma,
+    CaptureTargetSpec, MonitorKey, SendSwapChain, WorkerControl,
 };
 use super::hdr::{
     device_name_display, ensure_hdr_input_cache, query_monitor_color_info, HdrInputCache,
@@ -77,7 +81,14 @@ pub(super) struct TargetRuntime {
     pub(super) rect_changed_at: Instant,
     pub(super) pending_reply: Option<SyncSender<Result<SendSwapChain, String>>>,
     pub(super) swap_chain: Option<IDXGISwapChain1>,
+    pub(super) luma_dirty: bool,
+    pub(super) last_luma_at: Option<Instant>,
+    pub(super) last_luma_sent: Option<f32>,
+    pub(super) logged_first_luma: bool,
 }
+
+const LUMA_MIN_INTERVAL: Duration = Duration::from_millis(250);
+const LUMA_EMIT_DELTA: f32 = 0.02;
 
 struct MonitorGpuPipeline {
     mon_rect: RECT,
@@ -102,6 +113,7 @@ struct MonitorGpuPipeline {
     _border_fx: ID2D1Effect,
     blur_fx: ID2D1Effect,
     sat_fx: ID2D1Effect,
+    luma_staging: Option<(ID3D11Texture2D, u32, u32)>,
 }
 
 fn find_adapter_and_output(
@@ -373,6 +385,7 @@ impl MonitorGpuPipeline {
             _border_fx: border_fx,
             blur_fx,
             sat_fx,
+            luma_staging: None,
         })
     }
 
@@ -549,6 +562,125 @@ impl MonitorGpuPipeline {
         }
     }
 
+    fn measure_luma(&mut self, rect: RECT) -> Option<f32> {
+        let clipped = RECT {
+            left: rect.left.max(self.mon_rect.left),
+            top: rect.top.max(self.mon_rect.top),
+            right: rect.right.min(self.mon_rect.right),
+            bottom: rect.bottom.min(self.mon_rect.bottom),
+        };
+        if clipped.right <= clipped.left || clipped.bottom <= clipped.top {
+            return None;
+        }
+
+        let tex_w = self.desktop_tex_desc.Width as i32;
+        let tex_h = self.desktop_tex_desc.Height as i32;
+        let left = (clipped.left - self.mon_rect.left).clamp(0, tex_w);
+        let top = (clipped.top - self.mon_rect.top).clamp(0, tex_h);
+        let right = (clipped.right - self.mon_rect.left).clamp(0, tex_w);
+        let bottom = (clipped.bottom - self.mon_rect.top).clamp(0, tex_h);
+        if right <= left || bottom <= top {
+            return None;
+        }
+        let width = (right - left) as u32;
+        let height = (bottom - top) as u32;
+
+        let reuse = matches!(
+            self.luma_staging.as_ref(),
+            Some((_, w, h)) if *w == width && *h == height
+        );
+        if !reuse {
+            let desc = D3D11_TEXTURE2D_DESC {
+                Width: width,
+                Height: height,
+                MipLevels: 1,
+                ArraySize: 1,
+                Format: DXGI_FORMAT_B8G8R8A8_UNORM,
+                SampleDesc: DXGI_SAMPLE_DESC {
+                    Count: 1,
+                    Quality: 0,
+                },
+                Usage: D3D11_USAGE_STAGING,
+                BindFlags: 0,
+                CPUAccessFlags: D3D11_CPU_ACCESS_READ.0 as u32,
+                MiscFlags: 0,
+            };
+            let mut created: Option<ID3D11Texture2D> = None;
+            if let Err(err) = unsafe {
+                self.d3d_device
+                    .CreateTexture2D(&desc, None, Some(&mut created))
+            } {
+                log::debug!("CaptureD2d luma staging-tekstur kunne ikke oprettes ({width}x{height}): {err}");
+                return None;
+            }
+            let Some(tex) = created else {
+                log::debug!("CaptureD2d luma staging-tekstur manglede efter oprettelse ({width}x{height})");
+                return None;
+            };
+            self.luma_staging = Some((tex, width, height));
+        }
+        let staging = self.luma_staging.as_ref()?.0.clone();
+        let staging_res: ID3D11Resource = match staging.cast() {
+            Ok(res) => res,
+            Err(err) => {
+                log::debug!("CaptureD2d luma staging-resource kunne ikke castes: {err}");
+                return None;
+            }
+        };
+
+        let src_box = D3D11_BOX {
+            left: left as u32,
+            top: top as u32,
+            front: 0,
+            right: right as u32,
+            bottom: bottom as u32,
+            back: 1,
+        };
+        unsafe {
+            self.d3d_context.CopySubresourceRegion(
+                &staging_res,
+                0,
+                0,
+                0,
+                0,
+                &self.desktop_tex,
+                0,
+                Some(&src_box as *const D3D11_BOX),
+            );
+        }
+
+        let mut mapped = D3D11_MAPPED_SUBRESOURCE::default();
+        if let Err(err) = unsafe {
+            self.d3d_context.Map(
+                &staging_res,
+                0,
+                D3D11_MAP_READ,
+                0,
+                Some(&mut mapped),
+            )
+        } {
+            log::debug!("CaptureD2d luma staging-map fejlede ({width}x{height}): {err}");
+            return None;
+        }
+
+        let pitch = mapped.RowPitch as usize;
+        let base = mapped.pData as *const u8;
+        if base.is_null() || pitch < width as usize * 4 {
+            unsafe {
+                self.d3d_context.Unmap(&staging_res, 0);
+            }
+            log::debug!("CaptureD2d luma staging-buffer var ugyldig ({width}x{height}, pitch {})", mapped.RowPitch);
+            return None;
+        }
+        let len = (height as usize - 1) * pitch + width as usize * 4;
+        let data = unsafe { std::slice::from_raw_parts(base, len) };
+        let luma = mean_luma_bgra(data, width, height, mapped.RowPitch, 4);
+        unsafe {
+            self.d3d_context.Unmap(&staging_res, 0);
+        }
+        luma
+    }
+
     fn reconvert_cached_hdr(&mut self) -> Result<bool, String> {
         if !self.last_frame_was_hdr || self.hdr_input.is_none() {
             return Ok(false);
@@ -693,6 +825,26 @@ fn is_duplication_lost_hr(hr: HRESULT) -> bool {
         || hr == DXGI_ERROR_NOT_CURRENTLY_AVAILABLE
         || hr == DXGI_ERROR_DEVICE_REMOVED
         || hr == DXGI_ERROR_DEVICE_RESET
+}
+
+fn post_luma_to_widget(widget_hwnd: isize, luma: f32) {
+    let seq = store_live_luma(widget_hwnd, luma);
+    let Some(label) = crate::desktop::zorder::label_for_hwnd(widget_hwnd) else {
+        log::debug!("CaptureD2d luma kunne ikke sendes; widget-label for {widget_hwnd} findes ikke");
+        return;
+    };
+    if let Some(app) = crate::desktop::app_handle() {
+        if let Err(err) = app.emit_to(
+            &label,
+            "widget://live-luma",
+            super::WidgetLiveLuma {
+                seq,
+                luma: Some(luma),
+            },
+        ) {
+            log::warn!("CaptureD2d luma kunne ikke sendes til {label}: {err}");
+        }
+    }
 }
 
 fn post_swapchain_to_ui(widget_hwnd: isize, gen_id: u64, swap_chain: IDXGISwapChain1) {
@@ -1166,6 +1318,7 @@ pub(super) fn monitor_worker_loop(ctrl: Arc<WorkerControl>) {
                                 if initial_drawn {
                                     t.needs_redraw = false;
                                     t.first_drawn = true;
+                                    t.luma_dirty = true;
                                     t.last_draw_err = None;
                                     t.last_redraw_at = Some(Instant::now());
                                     if !t.logged_first_present {
@@ -1257,6 +1410,7 @@ pub(super) fn monitor_worker_loop(ctrl: Arc<WorkerControl>) {
                             if t.swapchain_gen == gen_id {
                                 t.needs_redraw = false;
                                 t.first_drawn = true;
+                                t.luma_dirty = true;
                                 t.last_draw_err = None;
                                 t.last_redraw_at = Some(Instant::now());
                                 if !t.logged_first_present {
@@ -1288,6 +1442,60 @@ pub(super) fn monitor_worker_loop(ctrl: Arc<WorkerControl>) {
                 st.display_dirty = true;
                 drop(st);
                 continue 'outer;
+            }
+
+            // 7. Mål lysheden bag widgets efter en gentegning.
+            let now = Instant::now();
+            let luma_jobs: Vec<(isize, RECT, u64)> = {
+                let st = ctrl.state.lock();
+                st.targets
+                    .iter()
+                    .filter_map(|(&hwnd, t)| {
+                        if t.spec.paused
+                            || !t.luma_dirty
+                            || !t.last_luma_at
+                                .map_or(true, |at| at.elapsed() >= LUMA_MIN_INTERVAL)
+                        {
+                            return None;
+                        }
+                        Some((hwnd, t.spec.rect, t.swapchain_gen))
+                    })
+                    .collect()
+            };
+
+            if !luma_jobs.is_empty() {
+                pipeline.prepare_for_draw();
+            }
+            for (hwnd, rect, gen_id) in luma_jobs {
+                let measured = pipeline.measure_luma(rect);
+                let mut emit_luma = None;
+                {
+                    let mut st = ctrl.state.lock();
+                    if let Some(t) = st.targets.get_mut(&hwnd) {
+                        if t.swapchain_gen == gen_id {
+                            t.luma_dirty = false;
+                            t.last_luma_at = Some(now);
+                            if let Some(luma) = measured {
+                                if !t.logged_first_luma {
+                                    t.logged_first_luma = true;
+                                    log::info!(
+                                        "CaptureD2d første luma målt ({luma:.3}) for widget {hwnd}"
+                                    );
+                                }
+                                let changed = t
+                                    .last_luma_sent
+                                    .map_or(true, |last| (luma - last).abs() >= LUMA_EMIT_DELTA);
+                                if changed {
+                                    t.last_luma_sent = Some(luma);
+                                    emit_luma = Some(luma);
+                                }
+                            }
+                        }
+                    }
+                }
+                if let Some(luma) = emit_luma {
+                    post_luma_to_widget(hwnd, luma);
+                }
             }
         }
     }

@@ -61,7 +61,14 @@ pub fn timer_remove(app: AppHandle, id: Uuid, item: Uuid) -> Result<(), AppError
 
 /// Afspiller en testlyd i widget-indstillinger-panelet (volume 0-100).
 #[tauri::command]
-pub fn timer_preview_sound(app: AppHandle, sound: String, volume: u8) -> Result<(), AppError> {
-    crate::providers::sound::play(&app, &sound, volume);
-    Ok(())
+pub async fn timer_preview_sound(
+    app: AppHandle,
+    sound: String,
+    volume: u8,
+) -> Result<(), AppError> {
+    crate::commands::blocking("timer_preview_sound", move || {
+        crate::providers::sound::play(&app, &sound, volume);
+        Ok(())
+    })
+    .await
 }

@@ -1,7 +1,7 @@
 use std::{
     collections::HashMap,
     sync::{
-        atomic::{AtomicBool, AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering},
         mpsc::{self},
         Arc, LazyLock,
     },
@@ -111,6 +111,78 @@ static LATEST_GEN: LazyLock<Mutex<HashMap<isize, u64>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 static NEXT_GEN: AtomicU64 = AtomicU64::new(1);
 static SHUTTING_DOWN: AtomicBool = AtomicBool::new(false);
+static LIVE_LUMA: LazyLock<Mutex<HashMap<isize, f32>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+static LUMA_SEQ: AtomicU32 = AtomicU32::new(0);
+static SRGB_LINEAR_LUT: LazyLock<[f32; 256]> = LazyLock::new(|| {
+    let mut lut = [0.0_f32; 256];
+    for (i, slot) in lut.iter_mut().enumerate() {
+        let c = i as f32 / 255.0;
+        *slot = if c <= 0.04045 {
+            c / 12.92
+        } else {
+            ((c + 0.055) / 1.055).powf(2.4)
+        };
+    }
+    lut
+});
+
+pub(super) fn mean_luma_bgra(
+    data: &[u8],
+    width: u32,
+    height: u32,
+    row_pitch: u32,
+    step: u32,
+) -> Option<f32> {
+    if width == 0 || height == 0 {
+        return None;
+    }
+    let row_pitch = row_pitch as usize;
+    let width = width as usize;
+    let needed = (height as usize - 1)
+        .checked_mul(row_pitch)?
+        .checked_add(width.checked_mul(4)?)?;
+    if data.len() < needed {
+        return None;
+    }
+
+    let step = step.max(1) as usize;
+    let lut = &*SRGB_LINEAR_LUT;
+    let mut sum = 0.0_f64;
+    let mut count = 0_u64;
+    let mut y = 0_usize;
+    while y < height as usize {
+        let row_base = y * row_pitch;
+        let mut x = 0_usize;
+        while x < width {
+            let idx = row_base + x * 4;
+            let b = data[idx] as usize;
+            let g = data[idx + 1] as usize;
+            let r = data[idx + 2] as usize;
+            sum += (0.2126 * lut[r] + 0.7152 * lut[g] + 0.0722 * lut[b]) as f64;
+            count += 1;
+            x += step;
+        }
+        y += step;
+    }
+    if count == 0 {
+        return None;
+    }
+    Some(((sum / count as f64) as f32).clamp(0.0, 1.0))
+}
+
+pub(super) fn store_live_luma(widget_hwnd: isize, luma: f32) -> u32 {
+    let mut live = LIVE_LUMA.lock();
+    live.insert(widget_hwnd, luma);
+    LUMA_SEQ.fetch_add(1, Ordering::AcqRel) + 1
+}
+
+pub fn live_luma_snapshot(widget_hwnd: isize) -> (u32, Option<f32>) {
+    let live = LIVE_LUMA.lock();
+    let luma = live.get(&widget_hwnd).copied();
+    let seq = LUMA_SEQ.fetch_add(1, Ordering::AcqRel) + 1;
+    (seq, luma)
+}
 
 pub(super) fn bump_generation(widget_hwnd: isize) -> u64 {
     let gen_id = NEXT_GEN.fetch_add(1, Ordering::AcqRel);
@@ -371,6 +443,10 @@ pub fn register_sync(spec: CaptureTargetSpec) -> Result<Option<SendSwapChain>, S
                     rect_changed_at: now,
                     pending_reply: Some(reply_tx),
                     swap_chain: None,
+                    luma_dirty: false,
+                    last_luma_at: None,
+                    last_luma_sent: None,
+                    logged_first_luma: false,
                 },
             );
         }
@@ -440,6 +516,10 @@ pub fn update_nonblocking(spec: CaptureTargetSpec) {
                 rect_changed_at: now,
                 pending_reply: None,
                 swap_chain: None,
+                luma_dirty: false,
+                last_luma_at: None,
+                last_luma_sent: None,
+                logged_first_luma: false,
             },
         );
         st.last_drag_at = Some(now);
@@ -538,6 +618,7 @@ pub fn request_redraw(widget_hwnd: isize) {
 
 pub fn unregister(widget_hwnd: isize) {
     LATEST_GEN.lock().remove(&widget_hwnd);
+    LIVE_LUMA.lock().remove(&widget_hwnd);
     let mut coord = COORDINATOR.lock();
     remove_widget_from_worker_locked(&mut coord, widget_hwnd);
 }
@@ -629,6 +710,68 @@ mod tests {
             right,
             bottom,
         }
+    }
+
+    fn bgra(width: usize, height: usize, pitch: usize, px: [u8; 4]) -> Vec<u8> {
+        let mut data = vec![0_u8; pitch * height];
+        for y in 0..height {
+            for x in 0..width {
+                let idx = y * pitch + x * 4;
+                data[idx..idx + 4].copy_from_slice(&px);
+            }
+        }
+        data
+    }
+
+    #[test]
+    fn mean_luma_black_is_zero_and_white_is_one() {
+        assert_eq!(mean_luma_bgra(&bgra(2, 2, 8, [0, 0, 0, 255]), 2, 2, 8, 1), Some(0.0));
+        let white = mean_luma_bgra(&bgra(2, 2, 8, [255, 255, 255, 255]), 2, 2, 8, 1);
+        assert!((white.unwrap_or(-1.0) - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn mean_luma_half_black_half_white_is_midpoint() {
+        let data = [
+            0, 0, 0, 255,
+            255, 255, 255, 255,
+        ];
+        let luma = mean_luma_bgra(&data, 2, 1, 8, 1).unwrap_or(-1.0);
+        assert!((luma - 0.5).abs() < 1e-6);
+    }
+
+    #[test]
+    fn mean_luma_uses_bgra_channel_order() {
+        let blue = mean_luma_bgra(&bgra(1, 1, 4, [255, 0, 0, 255]), 1, 1, 4, 1).unwrap_or(-1.0);
+        let red = mean_luma_bgra(&bgra(1, 1, 4, [0, 0, 255, 255]), 1, 1, 4, 1).unwrap_or(-1.0);
+        assert!((blue - 0.0722).abs() < 1e-4);
+        assert!((red - 0.2126).abs() < 1e-4);
+    }
+
+    #[test]
+    fn mean_luma_ignores_row_padding() {
+        let mut data = bgra(2, 2, 12, [0, 0, 0, 255]);
+        for y in 0..2 {
+            for x in 8..12 {
+                data[y * 12 + x] = 0xFF;
+            }
+        }
+        let luma = mean_luma_bgra(&data, 2, 2, 12, 1).unwrap_or(-1.0);
+        assert_eq!(luma, 0.0);
+    }
+
+    #[test]
+    fn mean_luma_rejects_short_buffer() {
+        assert_eq!(mean_luma_bgra(&[0; 7], 2, 1, 8, 1), None);
+        assert_eq!(mean_luma_bgra(&[0; 12], 2, 2, 8, 1), None);
+    }
+
+    #[test]
+    fn mean_luma_step_matches_uniform_image() {
+        let data = bgra(8, 8, 32, [32, 96, 160, 255]);
+        let full = mean_luma_bgra(&data, 8, 8, 32, 1);
+        let sparse = mean_luma_bgra(&data, 8, 8, 32, 4);
+        assert_eq!(full, sparse);
     }
 
     #[test]

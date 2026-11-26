@@ -1,5 +1,6 @@
 use tauri::{AppHandle, Emitter, Manager};
 use uuid::Uuid;
+use windows::Win32::Foundation::HWND;
 
 use crate::{
     config::{
@@ -10,6 +11,7 @@ use crate::{
         },
     },
     desktop::{
+        backdrop::{self, WidgetLiveLuma},
         monitors::{self, MonitorInfo},
         snap::{self, SnapCtx},
     },
@@ -418,6 +420,22 @@ pub fn widget_context_menu(app: AppHandle, id: String) -> Result<(), AppError> {
     let result = menu::show_widget_context_menu(&app, &id);
     if let Err(error) = &result {
         log::error!(target: "cmd", "widget_context_menu fejlede for {id}: {error:?}");
+    }
+    result
+}
+
+#[tauri::command]
+pub fn widget_live_luma(app: AppHandle, id: String) -> Result<WidgetLiveLuma, AppError> {
+    let result = (|| {
+        let uuid = Uuid::parse_str(&id).map_err(|_| AppError::WidgetNotFound)?;
+        let label = format!("w-{uuid}");
+        let window = app
+            .get_webview_window(&label)
+            .ok_or(AppError::WidgetNotFound)?;
+        Ok(backdrop::live_luma(HWND(window.hwnd()?.0 as _)))
+    })();
+    if let Err(error) = &result {
+        log::error!(target: "cmd", "widget_live_luma fejlede for {id}: {error:?}");
     }
     result
 }

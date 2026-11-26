@@ -14,6 +14,7 @@ function makeSnapshot(overrides: Partial<MediaSnapshot> = {}): MediaSnapshot {
     artColor: null,
     positionMs: 10_000,
     durationMs: 60_000,
+    positionKnown: true,
     updatedAt: 1_000,
     canPlayPause: true,
     canNext: true,
@@ -54,6 +55,11 @@ describe("computeLivePositionMs", () => {
 
   it("returns 0 when snapshot is null", () => {
     expect(computeLivePositionMs(null, 5_000)).toBe(0);
+  });
+
+  it("returns 0 when the position is not known", () => {
+    const snap = makeSnapshot({ positionKnown: false, positionMs: 10_000, updatedAt: 1_000 });
+    expect(computeLivePositionMs(snap, 30_000)).toBe(0);
   });
 });
 

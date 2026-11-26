@@ -7,6 +7,16 @@ use windows::Win32::System::Com::{
     CoInitializeEx, CoUninitialize, COINIT_APARTMENTTHREADED, COINIT_MULTITHREADED,
 };
 
+pub fn event_target_label(target: &tauri::EventTarget) -> Option<&str> {
+    match target {
+        tauri::EventTarget::Window { label }
+        | tauri::EventTarget::Webview { label }
+        | tauri::EventTarget::WebviewWindow { label }
+        | tauri::EventTarget::AnyLabel { label } => Some(label),
+        _ => None,
+    }
+}
+
 pub fn unix_now_ms() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)

@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type Dispatch, type RefObject, type SetSta
 import type { Location } from "../../shared/bindings/Location";
 import type { MonitorInfo } from "../../shared/bindings/MonitorInfo";
 import type { WidgetBoot } from "../../shared/bindings/WidgetBoot";
+import type { WidgetLiveLuma } from "../../shared/bindings/WidgetLiveLuma";
 import { setLocale, t } from "../../shared/i18n";
 import { ipc, on, toAssetUrl } from "../../shared/ipc";
 import { reportError } from "../../shared/logging";
@@ -39,8 +40,11 @@ export function useWidgetEvents({
     wy: number;
     luma: number;
   } | null>(null);
+  const [liveLuma, setLiveLuma] = useState<number | null>(null);
 
   const placementRef = useRef<{ monitor: string; wx: number; wy: number; luma: number } | null>(null);
+  const liveLumaRef = useRef<number | null>(null);
+  const liveLumaSeqRef = useRef(-1);
   const bootRef = useRef<WidgetBoot | null>(null);
   const lastDragEndRef = useRef(0);
   const draggingIdRef = useRef<string | null>(null);
@@ -101,6 +105,35 @@ export function useWidgetEvents({
     let active = true;
     const unlisteners: Array<() => void> = [];
 
+    const applyLiveLuma = (payload: WidgetLiveLuma) => {
+      if (!active || payload.seq <= liveLumaSeqRef.current) return;
+      liveLumaSeqRef.current = payload.seq;
+      const next = payload.luma ?? null;
+      liveLumaRef.current = next;
+      setLiveLuma(next);
+    };
+
+    const pullLiveLuma = () => {
+      if (!active) return;
+      void ipc
+        .widgetLiveLuma(id)
+        .then(applyLiveLuma)
+        .catch((reason: unknown) => {
+          if (active) void reportError(`widget_live_luma (${id}): ${String(reason)}`);
+        });
+    };
+
+    on.liveLuma(applyLiveLuma).then((dispose) => {
+      if (active) {
+        unlisteners.push(dispose);
+        pullLiveLuma();
+      } else {
+        dispose();
+      }
+    }).catch((reason: unknown) => {
+      void reportError(`widget://live-luma: ${String(reason)}`);
+    });
+
     on.placement((placement) => {
       if (!active || placement.id !== id) return;
       const prev = placementRef.current;
@@ -123,7 +156,7 @@ export function useWidgetEvents({
 
       const currentBoot = bootRef.current;
       const scrimNode = scrimRef.current;
-      if (draggingIdRef.current && scrimNode && currentBoot) {
+      if (draggingIdRef.current && scrimNode && currentBoot && liveLumaRef.current == null) {
         const theme = currentBoot.instance.themeOverride ?? currentBoot.appearance.themeId;
         const scrim = computeScrimAlpha(
           theme,
@@ -186,6 +219,7 @@ export function useWidgetEvents({
             }
           : prev,
       );
+      pullLiveLuma();
     }).then((dispose) => {
       if (active) unlisteners.push(dispose);
       else dispose();
@@ -344,5 +378,6 @@ export function useWidgetEvents({
     selectedWidgetId,
     draggingWidgetId,
     placementState,
+    liveLuma,
   };
 }

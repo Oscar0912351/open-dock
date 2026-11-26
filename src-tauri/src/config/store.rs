@@ -30,6 +30,8 @@ pub struct ConfigStore {
     config: RwLock<Config>,
     app: Option<AppHandle>,
     save_seq: AtomicU64,
+    revision: AtomicU64,
+    emitted: Mutex<u64>,
     write_lock: Mutex<()>,
     backed_up_session: AtomicBool,
     had_valid_file_on_load: AtomicBool,
@@ -107,6 +109,8 @@ impl ConfigStore {
             config: RwLock::new(config),
             app,
             save_seq: AtomicU64::new(0),
+            revision: AtomicU64::new(0),
+            emitted: Mutex::new(0),
             write_lock: Mutex::new(()),
             backed_up_session: AtomicBool::new(restored_from_backup),
             had_valid_file_on_load: AtomicBool::new(had_valid),
@@ -138,9 +142,9 @@ impl ConfigStore {
     where
         F: FnOnce(&mut Config) -> Result<R, AppError>,
     {
-        let (result, snapshot) = self.apply_mutation(f)?;
+        let result = self.apply_mutation(f)?;
         self.schedule_save();
-        self.notify_changed(&snapshot);
+        self.notify_changed();
         Ok(result)
     }
 
@@ -148,14 +152,14 @@ impl ConfigStore {
     where
         F: FnOnce(&mut Config) -> Result<R, AppError>,
     {
-        let (result, snapshot) = self.apply_mutation(f)?;
+        let result = self.apply_mutation(f)?;
         self.save_seq.fetch_add(1, Ordering::AcqRel);
         self.flush()?;
-        self.notify_changed(&snapshot);
+        self.notify_changed();
         Ok(result)
     }
 
-    fn apply_mutation<F, R>(&self, f: F) -> Result<(R, Config), AppError>
+    fn apply_mutation<F, R>(&self, f: F) -> Result<R, AppError>
     where
         F: FnOnce(&mut Config) -> Result<R, AppError>,
     {
@@ -163,17 +167,33 @@ impl ConfigStore {
         let mut candidate = guard.clone();
         let result = f(&mut candidate)?;
         migrate::sanitize(&mut candidate);
-        *guard = candidate.clone();
-        Ok((result, candidate))
+        *guard = candidate;
+        self.revision.fetch_add(1, Ordering::AcqRel);
+        Ok(result)
     }
 
-    fn notify_changed(&self, snapshot: &Config) {
+    fn notify_changed(&self) {
         crate::desktop::hover::poke();
-        if let Some(app) = &self.app {
-            if let Err(error) = app.emit("config://changed", snapshot) {
-                log::warn!("Kunne ikke sende config://changed: {error}");
+        let Some(app) = &self.app else { return };
+        self.emit_latest(app);
+        crate::tray::sync(app);
+    }
+
+    fn emit_latest(&self, app: &AppHandle) {
+        loop {
+            let Some(mut emitted) = self.emitted.try_lock() else { return };
+            let (revision, snapshot) = {
+                let guard = self.config.read();
+                (self.revision.load(Ordering::Acquire), guard.clone())
+            };
+            if revision > *emitted {
+                if let Err(error) = app.emit("config://changed", &snapshot) {
+                    log::warn!("Kunne ikke sende config://changed: {error}");
+                }
+                *emitted = revision;
             }
-            crate::tray::sync(app);
+            drop(emitted);
+            if self.revision.load(Ordering::Acquire) == revision { return; }
         }
     }
 
@@ -220,24 +240,26 @@ impl ConfigStore {
 
     fn schedule_save(self: &Arc<Self>) {
         let seq = self.save_seq.fetch_add(1, Ordering::AcqRel) + 1;
-        if let Ok(handle) = tokio::runtime::Handle::try_current() {
-            let store = Arc::clone(self);
-            handle.spawn(async move {
-                tokio::time::sleep(Duration::from_millis(SAVE_DEBOUNCE_MS)).await;
-                if store.save_seq.load(Ordering::Acquire) != seq {
-                    return;
-                }
-                tokio::task::spawn_blocking(move || {
-                    if store.save_seq.load(Ordering::Acquire) == seq {
-                        if let Err(error) = store.flush() {
-                            log::error!("Kunne ikke gemme konfiguration: {error:?}");
-                        }
-                    }
-                });
-            });
-        } else if let Err(error) = self.flush() {
-            log::error!("Kunne ikke gemme konfiguration synkront: {error:?}");
+        if self.app.is_none() {
+            if let Err(error) = self.flush() {
+                log::error!("Kunne ikke gemme konfiguration synkront: {error:?}");
+            }
+            return;
         }
+        let store = Arc::clone(self);
+        let _ = tauri::async_runtime::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(SAVE_DEBOUNCE_MS)).await;
+            if store.save_seq.load(Ordering::Acquire) != seq {
+                return;
+            }
+            tokio::task::spawn_blocking(move || {
+                if store.save_seq.load(Ordering::Acquire) == seq {
+                    if let Err(error) = store.flush() {
+                        log::error!("Kunne ikke gemme konfiguration: {error:?}");
+                    }
+                }
+            });
+        });
     }
 }
 

@@ -20,11 +20,14 @@ mod aumid;
 mod artwork;
 mod color;
 mod gsmtc;
+mod persist;
 mod youtube;
 
 pub use aumid::format_source_name;
 pub use color::extract_ambient_color;
 pub use youtube::{clean_media_title, extract_matching_youtube_duration_ms, parse_duration_text};
+
+const MAX_UNOBSERVED_GAP_MS: i64 = 120_000;
 
 #[derive(Debug, Clone)]
 struct TrackFallbackTimer {
@@ -32,6 +35,10 @@ struct TrackFallbackTimer {
     accumulated_ms: u64,
     playing_since_ms: Option<i64>,
     known_duration_ms: u64,
+    anchored: bool,
+    unverified: bool,
+    timeline_backed: bool,
+    last_seen_ms: i64,
 }
 
 impl TrackFallbackTimer {
@@ -41,20 +48,33 @@ impl TrackFallbackTimer {
         status: PlaybackStatus,
         now_ms: i64,
         known_pos_ms: Option<u64>,
-    ) -> u64 {
+    ) -> (u64, bool) {
         if self.track_key != track_key {
             self.track_key.clear();
             self.track_key.push_str(track_key);
             self.accumulated_ms = known_pos_ms.unwrap_or(0);
             self.playing_since_ms = (status == PlaybackStatus::Playing).then_some(now_ms);
             self.known_duration_ms = 0;
-            return self.accumulated_ms;
+            self.anchored = known_pos_ms.is_some() || !self.unverified;
+            self.timeline_backed = known_pos_ms.is_some();
+            self.unverified = false;
+            self.last_seen_ms = now_ms;
+            return (self.accumulated_ms, self.anchored);
         }
+
+        let gap = (now_ms - self.last_seen_ms).max(0);
+        if gap > MAX_UNOBSERVED_GAP_MS && (self.unverified || self.playing_since_ms.is_some()) {
+            self.anchored = false;
+        }
+        self.unverified = false;
+        self.last_seen_ms = now_ms;
 
         if let Some(pos) = known_pos_ms {
             self.accumulated_ms = pos;
             self.playing_since_ms = (status == PlaybackStatus::Playing).then_some(now_ms);
-            return pos;
+            self.anchored = true;
+            self.timeline_backed = true;
+            return (pos, true);
         }
 
         match status {
@@ -75,12 +95,17 @@ impl TrackFallbackTimer {
             }
         }
 
-        match self.playing_since_ms {
+        let pos = match self.playing_since_ms {
             Some(since) => {
                 let delta = (now_ms - since).max(0) as u64;
                 self.accumulated_ms.saturating_add(delta)
             }
             None => self.accumulated_ms,
+        };
+        if self.anchored {
+            (pos, true)
+        } else {
+            (0, false)
         }
     }
 
@@ -90,6 +115,7 @@ impl TrackFallbackTimer {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn update_fallback_timer(
     timers: &mut HashMap<String, TrackFallbackTimer>,
     source: &str,
@@ -98,10 +124,11 @@ fn update_fallback_timer(
     status: PlaybackStatus,
     now_ms: i64,
     known_pos_ms: Option<u64>,
-) -> u64 {
+    fresh_is_start: bool,
+) -> (u64, bool) {
     if source.is_empty() || (title.is_empty() && artist.is_empty()) {
         timers.remove(source);
-        return known_pos_ms.unwrap_or(0);
+        return (known_pos_ms.unwrap_or(0), known_pos_ms.is_some());
     }
     let track_key = format!("{}|{}", title.trim(), artist.trim());
     let entry = timers.entry(source.to_string()).or_insert_with(|| TrackFallbackTimer {
@@ -109,8 +136,18 @@ fn update_fallback_timer(
         accumulated_ms: known_pos_ms.unwrap_or(0),
         playing_since_ms: (status == PlaybackStatus::Playing).then_some(now_ms),
         known_duration_ms: 0,
+        anchored: known_pos_ms.is_some() || fresh_is_start,
+        unverified: false,
+        timeline_backed: known_pos_ms.is_some(),
+        last_seen_ms: now_ms,
     });
     entry.update_and_get(&track_key, status, now_ms, known_pos_ms)
+}
+
+fn mark_timeline_missing(timers: &mut HashMap<String, TrackFallbackTimer>, source: &str) {
+    if let Some(timer) = timers.get_mut(source) {
+        timer.timeline_backed = false;
+    }
 }
 
 fn sync_fallback_duration(
@@ -160,6 +197,7 @@ pub struct MediaSnapshot {
     pub art_color: Option<[u8; 3]>,
     pub position_ms: u64,
     pub duration_ms: u64,
+    pub position_known: bool,
     pub updated_at: i64,
     pub can_play_pause: bool,
     pub can_next: bool,
@@ -183,6 +221,7 @@ impl Default for MediaSnapshot {
             art_color: None,
             position_ms: 0,
             duration_ms: 0,
+            position_known: false,
             updated_at: unix_now_ms(),
             can_play_pause: false,
             can_next: false,
@@ -279,13 +318,15 @@ impl MediaProvider {
                     match &action {
                         MediaAction::PlayPause => {
                             if current.status == PlaybackStatus::Playing {
-                                let elapsed = (now - current.updated_at).max(0) as u64;
-                                let next_pos = current.position_ms.saturating_add(elapsed);
-                                current.position_ms = if current.duration_ms > 0 {
-                                    next_pos.min(current.duration_ms)
-                                } else {
-                                    next_pos
-                                };
+                                if current.position_known {
+                                    let elapsed = (now - current.updated_at).max(0) as u64;
+                                    let next_pos = current.position_ms.saturating_add(elapsed);
+                                    current.position_ms = if current.duration_ms > 0 {
+                                        next_pos.min(current.duration_ms)
+                                    } else {
+                                        next_pos
+                                    };
+                                }
                                 current.status = PlaybackStatus::Paused;
                             } else {
                                 current.status = PlaybackStatus::Playing;
@@ -473,6 +514,7 @@ fn snapshots_differ(prev: Option<&MediaSnapshot>, next: &MediaSnapshot) -> bool 
         && prev.art_url == next.art_url
         && prev.art_color == next.art_color
         && prev.duration_ms == next.duration_ms
+        && prev.position_known == next.position_known
         && prev.can_play_pause == next.can_play_pause
         && prev.can_next == next.can_next
         && prev.can_prev == next.can_prev
@@ -482,6 +524,9 @@ fn snapshots_differ(prev: Option<&MediaSnapshot>, next: &MediaSnapshot) -> bool 
         && prev.available_sources == next.available_sources
         && prev.sessions == next.sessions
     {
+        if !next.position_known {
+            return false;
+        }
         if prev.status == PlaybackStatus::Playing {
             let elapsed = (next.updated_at - prev.updated_at).max(0) as u64;
             let raw_expected = prev.position_ms.saturating_add(elapsed);
@@ -502,11 +547,25 @@ mod tests {
     use super::{
         clean_media_title, compute_timeline_ms, extract_ambient_color,
         extract_matching_youtube_duration_ms, format_source_name, parse_duration_text,
-        snapshots_differ, sync_fallback_duration, update_fallback_timer, MediaSnapshot,
-        PlaybackStatus, TrackFallbackTimer,
+        snapshots_differ, sync_fallback_duration, MediaSnapshot, PlaybackStatus,
+        TrackFallbackTimer,
     };
+    use super::persist::{persistable, restore, PersistedState, PersistedTimer};
     use image::{Rgb, RgbImage};
-    use std::collections::HashMap;
+    use std::collections::{BTreeMap, HashMap};
+
+    #[allow(clippy::too_many_arguments)]
+    fn update_fallback_timer(
+        timers: &mut HashMap<String, TrackFallbackTimer>,
+        source: &str,
+        title: &str,
+        artist: &str,
+        status: PlaybackStatus,
+        now_ms: i64,
+        known_pos_ms: Option<u64>,
+    ) -> u64 {
+        super::update_fallback_timer(timers, source, title, artist, status, now_ms, known_pos_ms, true).0
+    }
 
     #[test]
     fn formats_known_and_unknown_sources() {
@@ -755,6 +814,7 @@ mod tests {
             title: "Song".into(),
             position_ms: 10_000,
             duration_ms: 120_000,
+            position_known: true,
             updated_at: 1_000,
             ..MediaSnapshot::default()
         };
@@ -795,6 +855,160 @@ mod tests {
         };
         assert!(!snapshots_differ(Some(&paused), &paused_jitter));
         assert!(snapshots_differ(Some(&paused), &paused_seek));
+    }
+
+    #[test]
+    fn fallback_position_is_unknown_for_track_already_running_at_startup() {
+        let mut timers: HashMap<String, TrackFallbackTimer> = HashMap::new();
+        assert_eq!(
+            super::update_fallback_timer(
+                &mut timers, "Firefox", "Video", "Kanal", PlaybackStatus::Playing, 1_000, None, false,
+            ),
+            (0, false)
+        );
+        assert_eq!(
+            super::update_fallback_timer(
+                &mut timers, "Firefox", "Video", "Kanal", PlaybackStatus::Playing, 6_000, None, false,
+            ),
+            (0, false)
+        );
+        assert_eq!(
+            super::update_fallback_timer(
+                &mut timers, "Firefox", "Anden Video", "Kanal", PlaybackStatus::Playing, 10_000, None, false,
+            ),
+            (0, true)
+        );
+        assert_eq!(
+            super::update_fallback_timer(
+                &mut timers, "Firefox", "Anden Video", "Kanal", PlaybackStatus::Playing, 15_000, None, false,
+            ),
+            (5_000, true)
+        );
+    }
+
+    #[test]
+    fn gsmtc_position_anchors_unknown_timer() {
+        let mut timers: HashMap<String, TrackFallbackTimer> = HashMap::new();
+        assert_eq!(
+            super::update_fallback_timer(
+                &mut timers, "Firefox", "Video", "Kanal", PlaybackStatus::Playing, 1_000, Some(5_000), false,
+            ),
+            (5_000, true)
+        );
+        assert_eq!(
+            super::update_fallback_timer(
+                &mut timers, "Firefox", "Video", "Kanal", PlaybackStatus::Playing, 11_000, None, false,
+            ),
+            (15_000, true)
+        );
+    }
+
+    #[test]
+    fn unobserved_gap_while_playing_makes_position_unknown() {
+        let mut timers: HashMap<String, TrackFallbackTimer> = HashMap::new();
+        let first = super::update_fallback_timer(
+            &mut timers, "Firefox", "Video", "Kanal", PlaybackStatus::Playing, 1_000, None, true,
+        );
+        assert_eq!(first, (0, true));
+        let after_gap = super::update_fallback_timer(
+            &mut timers, "Firefox", "Video", "Kanal", PlaybackStatus::Playing, 1_000 + 121_000, None, true,
+        );
+        assert!(!after_gap.1);
+
+        let mut timers: HashMap<String, TrackFallbackTimer> = HashMap::new();
+        let _ = super::update_fallback_timer(
+            &mut timers, "Firefox", "Video", "Kanal", PlaybackStatus::Playing, 1_000, None, true,
+        );
+        assert_eq!(
+            super::update_fallback_timer(
+                &mut timers, "Firefox", "Video", "Kanal", PlaybackStatus::Paused, 6_000, None, true,
+            ),
+            (5_000, true)
+        );
+        assert_eq!(
+            super::update_fallback_timer(
+                &mut timers, "Firefox", "Video", "Kanal", PlaybackStatus::Paused, 6_000 + 600_000, None, true,
+            ),
+            (5_000, true)
+        );
+    }
+
+    fn restored_state() -> PersistedState {
+        let mut timers = BTreeMap::new();
+        timers.insert(
+            "Firefox".to_string(),
+            PersistedTimer {
+                track_key: "Video|Kanal".to_string(),
+                accumulated_ms: 60_000,
+                playing_since_ms: Some(90_000),
+                known_duration_ms: 0,
+            },
+        );
+        PersistedState { version: 1, saved_at_ms: 100_000, timers }
+    }
+
+    #[test]
+    fn restored_timer_resumes_when_fresh_and_track_matches() {
+        let mut timers = restore(restored_state());
+        assert_eq!(
+            super::update_fallback_timer(
+                &mut timers, "Firefox", "Video", "Kanal", PlaybackStatus::Playing, 130_000, None, false,
+            ),
+            (100_000, true)
+        );
+    }
+
+    #[test]
+    fn restored_timer_is_unknown_when_stale_or_track_changed() {
+        let mut timers = restore(restored_state());
+        let stale = super::update_fallback_timer(
+            &mut timers, "Firefox", "Video", "Kanal", PlaybackStatus::Playing, 100_000 + 121_000, None, false,
+        );
+        assert!(!stale.1);
+
+        let mut timers = restore(restored_state());
+        assert_eq!(
+            super::update_fallback_timer(
+                &mut timers, "Firefox", "Helt Anden Video", "Kanal", PlaybackStatus::Playing, 110_000, None, false,
+            ),
+            (0, false)
+        );
+    }
+
+    #[test]
+    fn persistable_skips_unknown_and_timeline_backed_timers() {
+        let mut timers: HashMap<String, TrackFallbackTimer> = HashMap::new();
+        let _ = super::update_fallback_timer(
+            &mut timers, "Firefox", "Video", "Kanal", PlaybackStatus::Playing, 1_000, None, false,
+        );
+        let _ = super::update_fallback_timer(
+            &mut timers, "Spotify", "Sang", "Kunstner", PlaybackStatus::Playing, 1_000, Some(2_000), false,
+        );
+        let _ = super::update_fallback_timer(
+            &mut timers, "Edge", "Klip", "Kanal", PlaybackStatus::Playing, 1_000, None, true,
+        );
+        let map = persistable(&timers);
+        assert!(!map.contains_key("Firefox"));
+        assert!(!map.contains_key("Spotify"));
+        assert!(map.contains_key("Edge"));
+    }
+
+    #[test]
+    fn dedup_ignores_position_when_unknown() {
+        let a = MediaSnapshot {
+            status: PlaybackStatus::Playing,
+            source: "Firefox".into(),
+            title: "Video".into(),
+            position_ms: 0,
+            duration_ms: 120_000,
+            position_known: false,
+            updated_at: 1_000,
+            ..MediaSnapshot::default()
+        };
+        let b = MediaSnapshot { updated_at: 60_000, ..a.clone() };
+        assert!(!snapshots_differ(Some(&a), &b));
+        let c = MediaSnapshot { position_known: true, ..b.clone() };
+        assert!(snapshots_differ(Some(&a), &c));
     }
 
     #[test]

@@ -16,8 +16,11 @@ pub fn system_history(app: AppHandle) -> Result<Vec<SystemSample>, AppError> {
 }
 
 #[tauri::command]
-pub fn system_caps(app: AppHandle) -> Result<SystemCaps, AppError> {
-    Ok(app.state::<Scheduler>().system().caps())
+pub async fn system_caps(app: AppHandle) -> Result<SystemCaps, AppError> {
+    crate::commands::blocking("system_caps", move || {
+        Ok(app.state::<Scheduler>().system().caps())
+    })
+    .await
 }
 
 #[tauri::command]

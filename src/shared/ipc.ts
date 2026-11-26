@@ -1,6 +1,7 @@
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
+import type { EventCallback, UnlistenFn } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import type { AgentsSnapshot } from "./bindings/AgentsSnapshot";
 import type { Appearance } from "./bindings/Appearance";
 import type { AppearancePatch } from "./bindings/AppearancePatch";
@@ -40,6 +41,7 @@ import type { TimerListSnapshot } from "./bindings/TimerListSnapshot";
 import type { WeatherSnapshot } from "./bindings/WeatherSnapshot";
 import type { WidgetBoot } from "./bindings/WidgetBoot";
 import type { WidgetHover } from "./bindings/WidgetHover";
+import type { WidgetLiveLuma } from "./bindings/WidgetLiveLuma";
 import type { WidgetGlassState } from "./bindings/WidgetGlassState";
 import type { WidgetInstance } from "./bindings/WidgetInstance";
 import type { WidgetKind } from "./bindings/WidgetKind";
@@ -75,6 +77,7 @@ export const ipc = {
   widgetContextMenu: (id: string) => invoke<void>("widget_context_menu", { id }),
   widgetSetBackdropVisible: (id: string, visible: boolean, durationMs: number) =>
     invoke<void>("widget_set_backdrop_visible", { id, visible, durationMs }),
+  widgetLiveLuma: (id: string) => invoke<WidgetLiveLuma>("widget_live_luma", { id }),
   widgetSetIdleHidden: (id: string, hidden: boolean) =>
     invoke<void>("widget_set_idle_hidden", { id, hidden }),
   widgetAnimateBackdropBox: (
@@ -177,61 +180,67 @@ export const ipc = {
   updateInstall: () => invoke<void>("update_install"),
 };
 
+function listenHere<T>(event: string, handler: EventCallback<T>): Promise<UnlistenFn> {
+  return getCurrentWebviewWindow().listen<T>(event, handler);
+}
+
 export const on = {
   config: (callback: (config: Config) => void) =>
-    listen<Config>("config://changed", (event) => callback(event.payload)),
+    listenHere<Config>("config://changed", (event) => callback(event.payload)),
   configRestored: (callback: (message: string) => void) =>
-    listen<string>("config://restored", (event) => callback(event.payload)),
+    listenHere<string>("config://restored", (event) => callback(event.payload)),
   editMode: (callback: (state: EditModeState) => void) =>
-    listen<EditModeState>("edit://mode", (event) => callback(event.payload)),
+    listenHere<EditModeState>("edit://mode", (event) => callback(event.payload)),
   editSelected: (callback: (state: EditSelected) => void) =>
-    listen<EditSelected>("edit://selected", (event) => callback(event.payload)),
+    listenHere<EditSelected>("edit://selected", (event) => callback(event.payload)),
   editDragging: (callback: (state: EditDragging) => void) =>
-    listen<EditDragging>("edit://dragging", (event) => callback(event.payload)),
+    listenHere<EditDragging>("edit://dragging", (event) => callback(event.payload)),
   editGuides: (callback: (guides: EditGuides) => void) =>
-    listen<EditGuides>("edit://guides", (event) => callback(event.payload)),
+    listenHere<EditGuides>("edit://guides", (event) => callback(event.payload)),
   paused: (callback: (state: AppPaused) => void) =>
-    listen<AppPaused>("app://paused", (event) => callback(event.payload)),
+    listenHere<AppPaused>("app://paused", (event) => callback(event.payload)),
   visible: (callback: (state: AppVisible) => void) =>
-    listen<AppVisible>("app://visible", (event) => callback(event.payload)),
+    listenHere<AppVisible>("app://visible", (event) => callback(event.payload)),
   gameOverlay: (callback: (state: GameOverlayState) => void) =>
-    listen<GameOverlayState>("app://game-overlay", (event) => callback(event.payload)),
+    listenHere<GameOverlayState>("app://game-overlay", (event) => callback(event.payload)),
   trayNotice: (callback: (message: string) => void) =>
-    listen<string>("app://tray-notice", (event) => callback(event.payload)),
+    listenHere<string>("app://tray-notice", (event) => callback(event.payload)),
   monitors: (callback: (monitors: MonitorInfo[]) => void) =>
-    listen<MonitorInfo[]>("desktop://monitors", (event) => callback(event.payload)),
+    listenHere<MonitorInfo[]>("desktop://monitors", (event) => callback(event.payload)),
   placement: (callback: (placement: WidgetPlacement) => void) =>
-    listen<WidgetPlacement>("widget://placement", (event) => callback(event.payload)),
+    listenHere<WidgetPlacement>("widget://placement", (event) => callback(event.payload)),
   glass: (callback: (glass: WidgetGlassState) => void) =>
-    listen<WidgetGlassState>("widget://glass", (event) => callback(event.payload)),
+    listenHere<WidgetGlassState>("widget://glass", (event) => callback(event.payload)),
   widgetRemoved: (callback: (instance: WidgetInstance) => void) =>
-    listen<WidgetInstance>("widget://removed", (event) => callback(event.payload)),
+    listenHere<WidgetInstance>("widget://removed", (event) => callback(event.payload)),
   widgetHover: (callback: (state: WidgetHover) => void) =>
-    listen<WidgetHover>("widget://hover", (event) => callback(event.payload)),
+    listenHere<WidgetHover>("widget://hover", (event) => callback(event.payload)),
+  liveLuma: (callback: (state: WidgetLiveLuma) => void) =>
+    listenHere<WidgetLiveLuma>("widget://live-luma", (event) => callback(event.payload)),
   navigate: (callback: (route: string) => void) =>
-    listen<string>("app://navigate", (event) => callback(event.payload)),
+    listenHere<string>("app://navigate", (event) => callback(event.payload)),
   media: (callback: (snapshot: MediaSnapshot) => void) =>
-    listen<MediaSnapshot>("provider://media", (event) => callback(event.payload)),
+    listenHere<MediaSnapshot>("provider://media", (event) => callback(event.payload)),
   system: (callback: (sample: SystemSample) => void) =>
-    listen<SystemSample>("provider://system", (event) => callback(event.payload)),
+    listenHere<SystemSample>("provider://system", (event) => callback(event.payload)),
   weather: (callback: (snapshot: WeatherSnapshot) => void) =>
-    listen<WeatherSnapshot>("provider://weather", (event) => callback(event.payload)),
+    listenHere<WeatherSnapshot>("provider://weather", (event) => callback(event.payload)),
   discord: (callback: (snapshot: DiscordSnapshot) => void) =>
-    listen<DiscordSnapshot>("provider://discord", (event) => callback(event.payload)),
+    listenHere<DiscordSnapshot>("provider://discord", (event) => callback(event.payload)),
   discordRpcStatus: (callback: (status: DiscordRpcStatus) => void) =>
-    listen<DiscordRpcStatus>("discord://rpc-status", (event) => callback(event.payload)),
+    listenHere<DiscordRpcStatus>("discord://rpc-status", (event) => callback(event.payload)),
   timerState: (callback: (snapshot: TimerListSnapshot) => void) =>
-    listen<TimerListSnapshot>("timer://state", (event) => callback(event.payload)),
+    listenHere<TimerListSnapshot>("timer://state", (event) => callback(event.payload)),
   agents: (callback: (snapshot: AgentsSnapshot) => void) =>
-    listen<AgentsSnapshot>("provider://agents", (event) => callback(event.payload)),
+    listenHere<AgentsSnapshot>("provider://agents", (event) => callback(event.payload)),
   wallpaperStatus: (callback: (status: WallpaperEngineStatus) => void) =>
-    listen<WallpaperEngineStatus>("wallpaper://status", (event) => callback(event.payload)),
+    listenHere<WallpaperEngineStatus>("wallpaper://status", (event) => callback(event.payload)),
   wallpaperThumbsReady: (callback: () => void) =>
-    listen<void>("wallpaper://thumbs-ready", () => callback()),
+    listenHere<void>("wallpaper://thumbs-ready", () => callback()),
   updateStatus: (callback: (status: UpdateStatus) => void) =>
-    listen<UpdateStatus>("update://status", (event) => callback(event.payload)),
+    listenHere<UpdateStatus>("update://status", (event) => callback(event.payload)),
   updateProgress: (callback: (progress: UpdateProgress) => void) =>
-    listen<UpdateProgress>("update://progress", (event) => callback(event.payload)),
+    listenHere<UpdateProgress>("update://progress", (event) => callback(event.payload)),
 };
 
 export const windowControls = {

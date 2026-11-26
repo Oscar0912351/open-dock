@@ -81,6 +81,7 @@ export const en: Messages = {
     repeat: "Repeat",
     seek: "Seek in track",
     seekUnsupported: "{source} can't seek",
+    positionUnknown: "{source} doesn't report the playback position",
     sources: "Sources",
   },
   system: {

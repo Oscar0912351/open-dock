@@ -7,7 +7,7 @@ use std::{
 };
 
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Emitter, Manager, WebviewWindow};
+use tauri::{AppHandle, Manager, WebviewWindow};
 use tokio::time::{interval, MissedTickBehavior};
 use ts_rs::TS;
 
@@ -182,10 +182,7 @@ pub fn emit_all_placements(app: &AppHandle, monitors: &[MonitorEntry]) {
             continue;
         };
         if let Some(placement) = compute_widget_placement(&widget_id, &window, monitors) {
-            if let Err(error) = app.emit_to(&label, "widget://placement", &placement) {
-                log::warn!("Kunne ikke sende widget://placement til {label}: {error}");
-            }
-            let _ = app.emit_to("control", "widget://placement", &placement);
+            crate::windows::widget::emit_placement(app, &label, &placement);
         }
     }
 }

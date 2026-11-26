@@ -17,8 +17,8 @@ use crate::{
 };
 
 #[tauri::command]
-pub fn wallpaper_catalog(app: AppHandle) -> Result<Vec<WallpaperItem>, AppError> {
-    library::build_catalog(&app)
+pub async fn wallpaper_catalog(app: AppHandle) -> Result<Vec<WallpaperItem>, AppError> {
+    crate::commands::blocking("wallpaper_catalog", move || library::build_catalog(&app)).await
 }
 
 #[tauri::command]

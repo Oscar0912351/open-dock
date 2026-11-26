@@ -1,5 +1,5 @@
 use std::{
-    collections::HashMap,
+    collections::{BTreeMap, HashMap},
     path::{Path, PathBuf},
     sync::{
         atomic::{AtomicBool, AtomicU64, Ordering},
@@ -30,15 +30,34 @@ const GRACE_PERIOD: Duration = Duration::from_secs(2);
 const EPOCH_DIFF_100NS: i64 = 116_444_736_000_000_000;
 const TIMELINE_HYDRATE_DELAYS_MS: [u64; 4] = [250, 1_000, 3_000, 5_000];
 const ART_HYDRATE_DELAYS_MS: [u64; 4] = [300, 900, 2_000, 4_000];
+const STARTUP_WINDOW: Duration = Duration::from_secs(5);
+const PERSIST_HEARTBEAT: Duration = Duration::from_secs(20);
 
 use super::{
     aumid::resolve_source_name,
     artwork::resolve_artwork,
-    compute_timeline_ms, snapshots_differ, sync_fallback_duration, update_fallback_timer,
+    compute_timeline_ms, mark_timeline_missing,
+    persist::{self, PersistedTimer},
+    snapshots_differ, sync_fallback_duration, update_fallback_timer,
     youtube::{resolve_fallback_duration_ms, DurationLookupState},
     Cmd, MediaAction, MediaSessionInfo, MediaSnapshot, PlaybackStatus, RepeatMode,
     TrackFallbackTimer,
 };
+
+fn persist_timers_if_needed(
+    fallback_timers: &HashMap<String, TrackFallbackTimer>,
+    last_persisted: &mut BTreeMap<String, PersistedTimer>,
+    last_persist_at: &mut Instant,
+) {
+    let map = persist::persistable(fallback_timers);
+    let changed = map != *last_persisted;
+    let heartbeat = !map.is_empty() && last_persist_at.elapsed() >= PERSIST_HEARTBEAT;
+    if changed || heartbeat {
+        persist::save(&map, unix_now_ms());
+        *last_persisted = map;
+        *last_persist_at = Instant::now();
+    }
+}
 
 struct SessionHooks {
     session: Session,
@@ -182,8 +201,12 @@ pub(super) fn run_media_thread(
     let mut bg_hooks: Vec<BgSessionHook> = Vec::new();
     let mut color_cache: HashMap<u64, Option<[u8; 3]>> = HashMap::new();
     let mut source_name_cache: HashMap<String, String> = HashMap::new();
-    let mut fallback_timers: HashMap<String, TrackFallbackTimer> = HashMap::new();
+    let mut fallback_timers: HashMap<String, TrackFallbackTimer> = persist::load();
     let mut last_track_by_source: HashMap<String, (String, Option<String>)> = HashMap::new();
+    let started_at = Instant::now();
+    let mut dropped_unverified = false;
+    let mut last_persisted: BTreeMap<String, PersistedTimer> = persist::persistable(&fallback_timers);
+    let mut last_persist_at = Instant::now();
     let duration_lookup = Arc::new(Mutex::new(DurationLookupState::default()));
     let mut last_emitted: Option<MediaSnapshot> = None;
     let mut lost_since: Option<Instant> = None;
@@ -262,6 +285,12 @@ pub(super) fn run_media_thread(
             }
             Err(RecvTimeoutError::Disconnected) => break,
         };
+
+        let fresh_is_start = started_at.elapsed() >= STARTUP_WINDOW;
+        if fresh_is_start && !dropped_unverified {
+            fallback_timers.retain(|_, timer| !timer.unverified);
+            dropped_unverified = true;
+        }
 
         if let Some(cmd) = cmd {
             match cmd {
@@ -345,6 +374,7 @@ pub(super) fn run_media_thread(
                     &manager,
                     &mut source_name_cache,
                     &mut fallback_timers,
+                    fresh_is_start,
                 );
                 if let Some(snapshot) = read_session_snapshot(
                     &hooks.session,
@@ -355,6 +385,7 @@ pub(super) fn run_media_thread(
                     &duration_lookup,
                     &tx,
                     sessions,
+                    fresh_is_start,
                 ) {
                     lost_since = None;
                     let full_track_key =
@@ -475,6 +506,7 @@ pub(super) fn run_media_thread(
                     &manager,
                     &mut source_name_cache,
                     &mut fallback_timers,
+                    fresh_is_start,
                 );
                 let empty = MediaSnapshot {
                     available_sources: sessions.iter().map(|s| s.source.clone()).collect(),
@@ -491,7 +523,11 @@ pub(super) fn run_media_thread(
                 }
             }
         }
+
+        persist_timers_if_needed(&fallback_timers, &mut last_persisted, &mut last_persist_at);
     }
+
+    persist_timers_if_needed(&fallback_timers, &mut last_persisted, &mut last_persist_at);
 
     if let Some(old) = active_hooks.take() {
         old.detach();
@@ -539,6 +575,7 @@ fn collect_sessions(
     manager: &GsmtcManager,
     source_name_cache: &mut HashMap<String, String>,
     fallback_timers: &mut HashMap<String, TrackFallbackTimer>,
+    fresh_is_start: bool,
 ) -> Vec<MediaSessionInfo> {
     let mut out: Vec<MediaSessionInfo> = Vec::new();
     let Ok(sessions) = manager.GetSessions() else {
@@ -582,7 +619,7 @@ fn collect_sessions(
             fallback_timers.remove(&label);
             continue;
         }
-        update_fallback_timer(fallback_timers, &label, &title, &artist, status, now_ms, None);
+        update_fallback_timer(fallback_timers, &label, &title, &artist, status, now_ms, None, fresh_is_start);
         out.push(MediaSessionInfo {
             source: label,
             title,
@@ -654,6 +691,7 @@ fn read_session_snapshot(
     duration_lookup: &Arc<Mutex<DurationLookupState>>,
     tx: &Sender<Cmd>,
     sessions: Vec<MediaSessionInfo>,
+    fresh_is_start: bool,
 ) -> Option<MediaSnapshot> {
     let props = session.TryGetMediaPropertiesAsync().ok()?.join().ok()?;
     let info = session.GetPlaybackInfo().ok()?;
@@ -729,7 +767,7 @@ fn read_session_snapshot(
     };
 
     let gsmtc_has_timeline = gsmtc_dur_ms > 0 || gsmtc_pos_ms > 0;
-    let raw_position_ms = update_fallback_timer(
+    let (raw_position_ms, position_known) = update_fallback_timer(
         fallback_timers,
         &source,
         &title,
@@ -737,14 +775,20 @@ fn read_session_snapshot(
         status,
         now_ms,
         gsmtc_has_timeline.then_some(gsmtc_pos_ms),
+        fresh_is_start,
     );
+    if !gsmtc_has_timeline {
+        mark_timeline_missing(fallback_timers, &source);
+    }
     let remembered_dur_ms = sync_fallback_duration(fallback_timers, &source, gsmtc_dur_ms);
     let duration_ms = if remembered_dur_ms > 0 {
         remembered_dur_ms
     } else {
         resolve_fallback_duration_ms(duration_lookup, tx, &title, &artist)
     };
-    let position_ms = if duration_ms > 0 {
+    let position_ms = if !position_known {
+        0
+    } else if duration_ms > 0 {
         raw_position_ms.min(duration_ms)
     } else {
         raw_position_ms
@@ -795,6 +839,7 @@ fn read_session_snapshot(
         art_color,
         position_ms,
         duration_ms,
+        position_known,
         updated_at: now_ms,
         can_play_pause,
         can_next,

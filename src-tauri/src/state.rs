@@ -210,5 +210,6 @@ mod tests {
         assert!(AppStatus::output_path().is_some());
         assert!(WidgetBoot::output_path().is_some());
         assert!(crate::desktop::hover::WidgetHover::output_path().is_some());
+        assert!(crate::desktop::backdrop::WidgetLiveLuma::output_path().is_some());
     }
 }

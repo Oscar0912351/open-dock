@@ -50,6 +50,7 @@ export function WidgetApp({ id }: WidgetAppProps) {
     selectedWidgetId,
     draggingWidgetId,
     placementState,
+    liveLuma,
   } = useWidgetEvents({
     id,
     boot,
@@ -163,6 +164,7 @@ export function WidgetApp({ id }: WidgetAppProps) {
         theme={theme}
         engine={engine}
         liveBackdrop={liveBackdrop}
+        liveLuma={liveBackdrop ? liveLuma : null}
         radius={appearance?.radius ?? "round"}
         motion={appearance?.motion ?? "full"}
         glassStrength={glassStrength}

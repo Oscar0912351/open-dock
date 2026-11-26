@@ -328,6 +328,13 @@ pub fn layer_for_label(label: &str) -> Option<Layer> {
         .map(|state| state.layer())
 }
 
+pub fn label_for_hwnd(hwnd: isize) -> Option<String> {
+    REGISTRY
+        .lock()
+        .get(&hwnd)
+        .map(|state| state.label.clone())
+}
+
 fn state_for(hwnd: HWND) -> Option<Arc<HwndState>> {
     REGISTRY.lock().get(&(hwnd.0 as isize)).cloned()
 }

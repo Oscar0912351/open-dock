@@ -313,12 +313,7 @@ fn run_drag_loop(session: DragSession) {
                 &window,
                 &session.monitor_entries,
             ) {
-                let _ = session
-                    .app
-                    .emit_to(&session.label, "widget://placement", &placement);
-                let _ = session
-                    .app
-                    .emit_to("control", "widget://placement", &placement);
+                widget::emit_placement(&session.app, &session.label, &placement);
             }
             overlay::clear_guides(&session.app);
             let _ = session
@@ -464,12 +459,7 @@ fn run_drag_loop(session: DragSession) {
                 &window,
                 &session.monitor_entries,
             ) {
-                let _ = session
-                    .app
-                    .emit_to(&session.label, "widget://placement", &placement);
-                let _ = session
-                    .app
-                    .emit_to("control", "widget://placement", &placement);
+                widget::emit_placement(&session.app, &session.label, &placement);
             }
         }
     }

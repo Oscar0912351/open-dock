@@ -112,7 +112,7 @@ impl Scheduler {
         event: &str,
         payload: &S,
     ) {
-        let labels: Vec<String> = {
+        let labels: HashSet<String> = {
             let subs = self.subs.lock();
             let mut set = HashSet::new();
             for (sub_key, win_counts) in subs.iter() {
@@ -130,13 +130,16 @@ impl Scheduler {
                     set.insert(label.clone());
                 }
             }
-            set.into_iter().collect()
+            set
         };
 
-        for label in labels {
-            if let Err(err) = self.app.emit_to(&label, event, payload) {
-                log::debug!(target: "scheduler", "Kunne ikke sende {event} til {label}: {err}");
-            }
+        if labels.is_empty() {
+            return;
+        }
+        if let Err(err) = self.app.emit_filter(event, payload, |target| {
+            crate::util::event_target_label(target).is_some_and(|label| labels.contains(label))
+        }) {
+            log::debug!(target: "scheduler", "Kunne ikke sende {event} til abonnenter: {err}");
         }
     }
 

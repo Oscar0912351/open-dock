@@ -5,7 +5,7 @@ export function computeLivePositionMs(
   snapshot: MediaSnapshot | null,
   nowMs: number,
 ): number {
-  if (!snapshot) return 0;
+  if (!snapshot || !snapshot.positionKnown) return 0;
   const base = Math.max(0, snapshot.positionMs);
   const dur = Math.max(0, snapshot.durationMs);
   if (snapshot.status !== "playing") {
@@ -22,7 +22,7 @@ export function useLiveMediaPosition(
   intervalMs = 1000,
 ): number {
   const [tickNow, setTickNow] = useState(() => Date.now());
-  const isPlaying = snapshot?.status === "playing" && !paused;
+  const isPlaying = snapshot?.status === "playing" && !paused && snapshot.positionKnown;
 
   useEffect(() => {
     if (!isPlaying) return;

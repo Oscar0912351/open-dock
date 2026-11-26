@@ -155,6 +155,20 @@
 .widget-root:not(.is-preview).is-live-backdrop .glass-plate {
   opacity: 0.5;
 }
+.widget-root:not(.is-preview).is-live-measured .glass-plate {
+  display: none;
+}
+.widget-root:not(.is-preview).is-live-measured .glass-scrim {
+  transition: background-color 180ms var(--e-soft);
+}
+.motion-off.widget-root:not(.is-preview).is-live-measured .glass-scrim {
+  transition: none;
+}
+@media (prefers-reduced-motion: reduce) {
+  .widget-root:not(.is-preview).is-live-measured .glass-scrim {
+    transition: none;
+  }
+}
 .widget-root:not(.is-preview).is-live-backdrop .widget {
   animation-name: od-fade-in;
 }

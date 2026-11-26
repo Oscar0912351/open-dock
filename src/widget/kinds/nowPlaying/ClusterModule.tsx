@@ -52,10 +52,13 @@ const MediaClusterMod = memo(function MediaClusterMod({
   const artist = media?.artist || t("media.empty.body");
   const sourceLabel = media?.source || "Spotify";
   const trackKey = `${media?.source ?? ""}-${media?.title ?? ""}-${media?.artist ?? ""}`;
+  const positionKnown = media?.positionKnown ?? false;
   const disabledSeekHint =
-    !preview && media && !media.canSeek && durMs > 0
-      ? t("media.seekUnsupported", { source: sourceLabel })
-      : undefined;
+    !preview && media && durMs > 0 && !positionKnown
+      ? t("media.positionUnknown", { source: sourceLabel })
+      : !preview && media && !media.canSeek && durMs > 0
+        ? t("media.seekUnsupported", { source: sourceLabel })
+        : undefined;
 
   if (mode === "expanded") {
     return (
@@ -121,7 +124,7 @@ const MediaClusterMod = memo(function MediaClusterMod({
 
         <div className="row g8" style={{ marginTop: "calc(6 * var(--u))" }}>
           <span className="micro">
-            {durMs > 0 || displayPosMs > 0 ? formatTrackTime(displayPosMs) : t("state.dash")}
+            {positionKnown && (durMs > 0 || displayPosMs > 0) ? formatTrackTime(displayPosMs) : t("state.dash")}
           </span>
           <div className="grow" data-no-expand>
             <Progress
@@ -129,7 +132,7 @@ const MediaClusterMod = memo(function MediaClusterMod({
               anchorPositionMs={anchorPos}
               anchorUpdatedAt={anchorUpdatedAt}
               durationMs={durMs}
-              playing={isAnimating}
+              playing={isAnimating && positionKnown}
               trackKey={trackKey}
               interactive={!preview && Boolean(media?.canSeek) && durMs > 0}
               disabledHint={disabledSeekHint}
@@ -310,7 +313,7 @@ const MediaClusterMod = memo(function MediaClusterMod({
       <div className="c-media-prog-edge" aria-hidden="true">
         {durMs > 0 && (
           <i
-            className={isAnimating ? "is-playing" : undefined}
+            className={isAnimating && positionKnown ? "is-playing" : undefined}
             style={
               {
                 "--p0": p0.toFixed(5),

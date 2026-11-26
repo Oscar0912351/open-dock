@@ -13,6 +13,8 @@ use std::{
 };
 
 use parking_lot::Mutex;
+use serde::Serialize;
+use ts_rs::TS;
 use windows::{
     core::{h, w, Interface},
     Foundation::TimeSpan,
@@ -53,6 +55,14 @@ use window::{
 pub use capture::{notify_color_change, notify_display_change};
 pub use squircle::{build_squircle_points, compute_blur_and_saturation, compute_corner_geometry};
 
+#[derive(Debug, Clone, Copy, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../src/shared/bindings/")]
+pub struct WidgetLiveLuma {
+    pub seq: u32,
+    pub luma: Option<f32>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct BackdropSpec {
     pub theme: ThemeId,
@@ -87,6 +97,11 @@ pub fn backdrop_hwnd_for(widget_hwnd: HWND) -> Option<HWND> {
 
 pub fn is_live(widget_hwnd: HWND) -> bool {
     backdrop_hwnd_for(widget_hwnd).is_some()
+}
+
+pub fn live_luma(widget_hwnd: HWND) -> WidgetLiveLuma {
+    let (seq, luma) = capture::live_luma_snapshot(widget_hwnd.0 as isize);
+    WidgetLiveLuma { seq, luma }
 }
 
 pub fn system_transparency_enabled() -> bool {

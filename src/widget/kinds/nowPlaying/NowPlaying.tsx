@@ -146,10 +146,13 @@ export function NowPlaying({
   const restMs = Math.max(0, durMs - posMs);
 
   const sourceLabel = snapshot.source || "Afspiller";
+  const positionKnown = snapshot?.positionKnown ?? false;
   const disabledSeekHint =
-    !snapshot.canSeek && durMs > 0
-      ? t("media.seekUnsupported", { source: sourceLabel })
-      : undefined;
+    durMs > 0 && !positionKnown
+      ? t("media.positionUnknown", { source: sourceLabel })
+      : !snapshot.canSeek && durMs > 0
+        ? t("media.seekUnsupported", { source: sourceLabel })
+        : undefined;
 
   const sendControl = (action: Parameters<typeof ipc.mediaControl>[0]) => {
     void ipc.mediaControl(action, prefArg);
@@ -213,7 +216,7 @@ export function NowPlaying({
               anchorPositionMs={anchorPosMs}
               anchorUpdatedAt={anchorUpdatedAt}
               durationMs={durMs}
-              playing={isPlaying}
+              playing={isPlaying && positionKnown}
               trackKey={trackKey}
               height={2}
             />
@@ -270,7 +273,7 @@ export function NowPlaying({
             anchorPositionMs={anchorPosMs}
             anchorUpdatedAt={anchorUpdatedAt}
             durationMs={durMs}
-            playing={isPlaying}
+            playing={isPlaying && positionKnown}
             trackKey={trackKey}
             height={2.5}
           />
@@ -313,14 +316,14 @@ export function NowPlaying({
           <div className="grow" />
           {settings.showProgress && durMs > 0 && (
             <div className="row g6" data-enter>
-              <span className="micro">{formatTrackTime(posMs)}</span>
+              <span className="micro">{positionKnown ? formatTrackTime(posMs) : t("state.dash")}</span>
               <div className="grow">
                 <Progress
                   positionMs={posMs}
                   anchorPositionMs={anchorPosMs}
                   anchorUpdatedAt={anchorUpdatedAt}
                   durationMs={durMs}
-                  playing={isPlaying}
+                  playing={isPlaying && positionKnown}
                   trackKey={trackKey}
                   height={2.5}
                   interactive={snapshot.canSeek}
@@ -329,7 +332,7 @@ export function NowPlaying({
                   onSeek={(ms) => sendControl({ type: "seek", ms })}
                 />
               </div>
-              <span className="micro">−{formatTrackTime(restMs)}</span>
+              <span className="micro">{positionKnown ? `−${formatTrackTime(restMs)}` : formatTrackTime(durMs)}</span>
             </div>
           )}
           <div className="row between np-m-controls">
@@ -446,7 +449,7 @@ export function NowPlaying({
             anchorPositionMs={anchorPosMs}
             anchorUpdatedAt={anchorUpdatedAt}
             durationMs={durMs}
-            playing={isPlaying}
+            playing={isPlaying && positionKnown}
             trackKey={trackKey}
             height={3.5}
             interactive={snapshot.canSeek}
@@ -455,8 +458,8 @@ export function NowPlaying({
             onSeek={(ms) => sendControl({ type: "seek", ms })}
           />
           <div className="row between np-l-times">
-            <span className="micro">{formatTrackTime(posMs)}</span>
-            <span className="micro">−{formatTrackTime(restMs)}</span>
+            <span className="micro">{positionKnown ? formatTrackTime(posMs) : t("state.dash")}</span>
+            <span className="micro">{positionKnown ? `−${formatTrackTime(restMs)}` : formatTrackTime(durMs)}</span>
           </div>
         </div>
       )}

@@ -144,6 +144,7 @@ pub fn run() {
             commands::widgets::widget_ready,
             commands::widgets::widget_set_focusable,
             commands::widgets::widget_context_menu,
+            commands::widgets::widget_live_luma,
             commands::widgets::widget_set_backdrop_visible,
             commands::widgets::widget_set_idle_hidden,
             commands::widgets::widget_animate_backdrop_box,

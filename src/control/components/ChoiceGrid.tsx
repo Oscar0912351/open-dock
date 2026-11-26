@@ -33,7 +33,7 @@ export function ChoiceGrid<T extends string>({
             role="radio"
             aria-checked={active}
             disabled={opt.disabled}
-            title={opt.title}
+            title={opt.title ?? opt.label}
             className={`cc-choice-item${active ? " is-selected" : ""}`}
             onClick={() => {
               if (!opt.disabled && !active) onChange(opt.value);

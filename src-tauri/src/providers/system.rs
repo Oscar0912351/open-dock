@@ -112,13 +112,14 @@ impl SystemProvider {
     }
 
     pub fn caps(&self) -> SystemCaps {
-        let cached = self.caps_cache.lock().clone();
-        if let Some(caps) = cached {
-            return caps;
+        let mut cache = self.caps_cache.lock();
+        if let Some(caps) = cache.as_ref() {
+            return caps.clone();
         }
         let sampler = HardwareSampler::new();
         let fresh = sampler.caps.clone();
-        *self.caps_cache.lock() = Some(fresh.clone());
+        *cache = Some(fresh.clone());
+        drop(cache);
         *self.pending_sampler.lock() = Some(sampler);
         fresh
     }

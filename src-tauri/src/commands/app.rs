@@ -216,13 +216,20 @@ pub fn app_open_folder(app: AppHandle, kind: String) -> Result<(), AppError> {
 }
 
 #[tauri::command]
-pub fn layout_export(window: tauri::Window, app: AppHandle, path: String) -> Result<(), AppError> {
+pub async fn layout_export(
+    window: tauri::Window,
+    app: AppHandle,
+    path: String,
+) -> Result<(), AppError> {
     crate::commands::ensure_control_window(&window)?;
-    let cfg = app.state::<AppState>().config.get();
-    let json = serde_json::to_string_pretty(&cfg)
-        .map_err(|err| AppError::Other(format!("JSON-serialisering fejlede: {err}")))?;
-    fs::write(&path, json).map_err(AppError::ConfigWrite)?;
-    Ok(())
+    crate::commands::blocking("layout_export", move || {
+        let cfg = app.state::<AppState>().config.get();
+        let json = serde_json::to_string_pretty(&cfg)
+            .map_err(|err| AppError::Other(format!("JSON-serialisering fejlede: {err}")))?;
+        fs::write(&path, json).map_err(AppError::ConfigWrite)?;
+        Ok(())
+    })
+    .await
 }
 
 #[tauri::command]

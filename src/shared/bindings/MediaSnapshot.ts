@@ -3,4 +3,4 @@ import type { MediaSessionInfo } from "./MediaSessionInfo";
 import type { PlaybackStatus } from "./PlaybackStatus";
 import type { RepeatMode } from "./RepeatMode";
 
-export type MediaSnapshot = { status: PlaybackStatus, source: string, title: string, artist: string, album: string, artUrl: string | null, artColor: [number, number, number] | null, positionMs: number, durationMs: number, updatedAt: number, canPlayPause: boolean, canNext: boolean, canPrev: boolean, canSeek: boolean, shuffle: boolean | null, repeat: RepeatMode | null, availableSources: Array<string>, sessions: Array<MediaSessionInfo>, };
+export type MediaSnapshot = { status: PlaybackStatus, source: string, title: string, artist: string, album: string, artUrl: string | null, artColor: [number, number, number] | null, positionMs: number, durationMs: number, positionKnown: boolean, updatedAt: number, canPlayPause: boolean, canNext: boolean, canPrev: boolean, canSeek: boolean, shuffle: boolean | null, repeat: RepeatMode | null, availableSources: Array<string>, sessions: Array<MediaSessionInfo>, };

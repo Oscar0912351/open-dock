@@ -15,12 +15,20 @@ use crate::{
     desktop::{
         backdrop::{self, BackdropSpec},
         glass,
-        monitors::{self, MonitorInfo},
+        monitors::{self, MonitorInfo, WidgetPlacement},
         styles, zorder,
     },
     error::AppError,
     state::{AppState, GameOverlayState, WidgetBoot, WidgetGlassState},
 };
+
+pub fn emit_placement(app: &AppHandle, label: &str, placement: &WidgetPlacement) {
+    if let Err(error) = app.emit_filter("widget://placement", placement, |target| {
+        matches!(crate::util::event_target_label(target), Some(l) if l == label || l == "control")
+    }) {
+        log::warn!("Kunne ikke sende widget://placement til {label}: {error}");
+    }
+}
 
 pub fn spawn_all(app: &AppHandle) -> Result<(), AppError> {
     let state = app.state::<AppState>();
@@ -303,8 +311,7 @@ pub fn ready(app: &AppHandle, id: &str) -> Result<WidgetBoot, AppError> {
         .map(|m| m.info.clone());
 
     if let Some(ref p) = placement {
-        let _ = app.emit_to(&label, "widget://placement", p);
-        let _ = app.emit_to("control", "widget://placement", p);
+        emit_placement(app, &label, p);
     }
 
     let start_delay_ms = state.start_delays.write().remove(&uuid).unwrap_or(0);
@@ -438,8 +445,7 @@ pub fn apply_instance_live(app: &AppHandle, instance: &WidgetInstance) {
 
     let id_str = instance.id.to_string();
     if let Some(placement) = monitors::compute_widget_placement(&id_str, &window, &monitor_entries) {
-        let _ = app.emit_to(&label, "widget://placement", &placement);
-        let _ = app.emit_to("control", "widget://placement", &placement);
+        emit_placement(app, &label, &placement);
     }
 }
 
@@ -604,8 +610,7 @@ pub fn reposition_all(app: AppHandle) {
             if let Some(placement) =
                 monitors::compute_widget_placement(&id_str, &window, &monitor_entries)
             {
-                let _ = app_for_main.emit_to(&label, "widget://placement", &placement);
-                let _ = app_for_main.emit_to("control", "widget://placement", &placement);
+                emit_placement(&app_for_main, &label, &placement);
             }
         }
     });
@@ -775,8 +780,7 @@ pub fn cluster_set_window_size(
 
     let id_str = id.to_string();
     if let Some(placement) = monitors::compute_widget_placement(&id_str, &window, &monitor_entries) {
-        let _ = app.emit_to(&label, "widget://placement", &placement);
-        let _ = app.emit_to("control", "widget://placement", &placement);
+        emit_placement(app, &label, &placement);
     }
 
     Ok(())

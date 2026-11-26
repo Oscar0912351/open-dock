@@ -68,6 +68,7 @@ interface WidgetShellProps {
   theme: ThemeId;
   engine: GlassEngine;
   liveBackdrop?: boolean;
+  liveLuma?: number | null;
   radius?: RadiusPreset;
   motion?: MotionPreset;
   glassStrength?: number;
@@ -102,6 +103,7 @@ export function WidgetShell({
   theme,
   engine,
   liveBackdrop = false,
+  liveLuma = null,
   radius = "round",
   motion = "full",
   glassStrength = 1.0,
@@ -136,7 +138,12 @@ export function WidgetShell({
   const effectiveScrimRef = scrimRef ?? fallbackScrimRef;
   const dimensions = WIDGET_SIZES[size];
   const rBase = clusterFrame ? CLUSTER_RADII[radius] : RADII[radius][size];
-  const scrimAlpha = computeScrimAlpha(theme, glass?.luma ?? 0.15, autoContrast);
+  const liveMeasured = liveBackdrop && !preview && liveLuma != null;
+  const scrimAlpha = computeScrimAlpha(
+    theme,
+    liveMeasured ? liveLuma : (glass?.luma ?? 0.15),
+    autoContrast,
+  );
 
   useLayoutEffect(() => {
     effectiveScrimRef.current?.style.setProperty("--scrim-a", scrimAlpha.toFixed(4));
@@ -186,6 +193,7 @@ export function WidgetShell({
     `radius-${radius}`,
     `engine-${engine}`,
     liveBackdrop && !preview ? "is-live-backdrop" : "",
+    liveMeasured ? "is-live-measured" : "",
     `motion-${motion}`,
     paused ? "is-paused" : "",
     hiddenIdle ? "is-hidden-idle" : "",
