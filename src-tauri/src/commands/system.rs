@@ -24,7 +24,7 @@ pub fn system_caps(app: AppHandle) -> Result<SystemCaps, AppError> {
 pub async fn cpu_sensor_status() -> Result<CpuSensorStatus, AppError> {
     tokio::task::spawn_blocking(cpu_sensor::service_status)
         .await
-        .map_err(|e| AppError::Other(format!("Kunne ikke se om CPU-temperaturen kører: {e}")))
+        .map_err(|e| AppError::Other(format!("CPU-sensorens status kunne ikke læses: {e}")))
 }
 
 #[tauri::command]
@@ -32,7 +32,7 @@ pub async fn cpu_sensor_install(window: tauri::Window) -> Result<CpuSensorStatus
     crate::commands::ensure_control_window(&window)?;
     tokio::task::spawn_blocking(cpu_sensor::install_service)
         .await
-        .map_err(|e| AppError::Other(format!("CPU-temperaturen kunne ikke slås til: {e}")))?
+        .map_err(|e| AppError::Other(format!("CPU-sensoren kunne ikke installeres: {e}")))?
         .map_err(AppError::Other)
 }
 
@@ -41,6 +41,6 @@ pub async fn cpu_sensor_uninstall(window: tauri::Window) -> Result<CpuSensorStat
     crate::commands::ensure_control_window(&window)?;
     tokio::task::spawn_blocking(cpu_sensor::uninstall_service)
         .await
-        .map_err(|e| AppError::Other(format!("CPU-temperaturen kunne ikke fjernes: {e}")))?
+        .map_err(|e| AppError::Other(format!("CPU-sensoren kunne ikke fjernes: {e}")))?
         .map_err(AppError::Other)
 }

@@ -293,7 +293,7 @@ export function Note({ id, settings, editMode, preview = false, onAriaChange }: 
                 <button
                   type="button"
                   className={`note-check${row.done ? " is-done" : ""}`}
-                  aria-label={row.done ? "Fjern markering" : "Markér som udført"}
+                  aria-label={t(row.done ? "note.uncheckItem" : "note.checkItem")}
                   onMouseDown={(event) => event.preventDefault()}
                   onClick={() => toggleRow(idx)}
                 >

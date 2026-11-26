@@ -344,7 +344,7 @@ export function Discord({ size, preview = false, onAriaChange }: DiscordProps) {
           />
         ) : (
           <div className="micro ink3 dc-m-foot">
-            {data.mode === "rpc" ? "Discord RPC" : t("discord.fallbackHint")}
+            {t(data.mode === "rpc" ? "discord.rpcStatusConnectedShort" : "discord.fallbackHint")}
           </div>
         )}
       </div>

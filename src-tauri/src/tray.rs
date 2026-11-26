@@ -149,7 +149,7 @@ pub fn handle_menu_event(app: &AppHandle, menu_id: &str) {
                 if let Err(error) =
                     commands::widgets::add_cluster_preset_internal(&handle, "allInOne", None)
                 {
-                    log::warn!(target: "tray", "Kunne ikke tilføje Alt-i-én Boks: {error:?}");
+                    log::warn!(target: "tray", "Kunne ikke tilføje gruppen Alt i én: {error:?}");
                 }
             });
         }
@@ -217,7 +217,7 @@ fn current_key(app: &AppHandle) -> TraySyncKey {
 fn tooltip_text(lang: Language, paused: bool) -> &'static str {
     match (lang, paused) {
         (Language::Da, false) => "Open Dock",
-        (Language::Da, true) => "Open Dock – pauset",
+        (Language::Da, true) => "Open Dock – på pause",
         (Language::En, false) => "Open Dock",
         (Language::En, true) => "Open Dock – paused",
     }
@@ -255,8 +255,8 @@ fn copy_for(lang: Language) -> TrayCopy {
             weather: "Vejr",
             note: "Note",
             discord: "Discord",
-            all_in_one: "Alt-i-én Boks",
-            quit: "Afslut",
+            all_in_one: "Alt i én",
+            quit: "Afslut Open Dock",
         },
         Language::En => TrayCopy {
             open: "Show Open Dock",
@@ -271,8 +271,8 @@ fn copy_for(lang: Language) -> TrayCopy {
             weather: "Weather",
             note: "Note",
             discord: "Discord",
-            all_in_one: "All-in-one Box",
-            quit: "Quit",
+            all_in_one: "All in one",
+            quit: "Quit Open Dock",
         },
     }
 }

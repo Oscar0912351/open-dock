@@ -1,4 +1,13 @@
 import type { ReactNode } from "react";
+import type { ClusterModuleRenderProps } from "./cluster/clusterModuleShared";
+import { AgentsClusterModule } from "./kinds/agents/ClusterModule";
+import { ClockClusterModule } from "./kinds/clock/ClusterModule";
+import { DiscordClusterModule } from "./kinds/discord/ClusterModule";
+import { NoteClusterModule } from "./kinds/note/ClusterModule";
+import { NowPlayingClusterModule } from "./kinds/nowPlaying/ClusterModule";
+import { SystemClusterModule } from "./kinds/system/ClusterModule";
+import { TimerClusterModule } from "./kinds/timer/ClusterModule";
+import { WeatherClusterModule } from "./kinds/weather/ClusterModule";
 import type { Location } from "../shared/bindings/Location";
 import type { ThemeId } from "../shared/bindings/ThemeId";
 import type { WidgetKind } from "../shared/bindings/WidgetKind";
@@ -89,11 +98,13 @@ export interface WidgetMeta {
   defaultSettings: Record<string, unknown>;
   settingsSchema: readonly WidgetSettingField[];
   render: (ctx: WidgetRenderContext) => ReactNode;
+  renderCluster: (props: ClusterModuleRenderProps) => ReactNode;
 }
 
 export const WIDGET_REGISTRY: Record<FreeWidgetKind, WidgetMeta> = {
   clock: {
     kind: "clock",
+    renderCluster: ClockClusterModule,
     nameKey: "widgets.clock.name",
     descriptionKey: "widgets.clock.desc",
     allowedSizes: ["pill", "s", "m"],
@@ -154,6 +165,7 @@ export const WIDGET_REGISTRY: Record<FreeWidgetKind, WidgetMeta> = {
   },
   nowPlaying: {
     kind: "nowPlaying",
+    renderCluster: NowPlayingClusterModule,
     nameKey: "widgets.nowPlaying.name",
     descriptionKey: "widgets.nowPlaying.desc",
     allowedSizes: ["pill", "s", "m", "l"],
@@ -213,6 +225,7 @@ export const WIDGET_REGISTRY: Record<FreeWidgetKind, WidgetMeta> = {
   },
   system: {
     kind: "system",
+    renderCluster: SystemClusterModule,
     nameKey: "widgets.system.name",
     descriptionKey: "widgets.system.desc",
     allowedSizes: ["pill", "s", "m", "l"],
@@ -277,6 +290,7 @@ export const WIDGET_REGISTRY: Record<FreeWidgetKind, WidgetMeta> = {
   },
   weather: {
     kind: "weather",
+    renderCluster: WeatherClusterModule,
     nameKey: "widgets.weather.name",
     descriptionKey: "widgets.weather.desc",
     allowedSizes: ["s", "m", "l"],
@@ -331,6 +345,7 @@ export const WIDGET_REGISTRY: Record<FreeWidgetKind, WidgetMeta> = {
   },
   note: {
     kind: "note",
+    renderCluster: NoteClusterModule,
     nameKey: "widgets.note.name",
     descriptionKey: "widgets.note.desc",
     allowedSizes: ["s", "m", "l"],
@@ -391,6 +406,7 @@ export const WIDGET_REGISTRY: Record<FreeWidgetKind, WidgetMeta> = {
   },
   timer: {
     kind: "timer",
+    renderCluster: TimerClusterModule,
     nameKey: "widgets.timer.name",
     descriptionKey: "widgets.timer.desc",
     allowedSizes: ["pill", "s", "m", "l"],
@@ -445,6 +461,7 @@ export const WIDGET_REGISTRY: Record<FreeWidgetKind, WidgetMeta> = {
   },
   discord: {
     kind: "discord",
+    renderCluster: DiscordClusterModule,
     nameKey: "widgets.discord.name",
     descriptionKey: "widgets.discord.desc",
     allowedSizes: ["pill", "s", "m"],
@@ -457,6 +474,7 @@ export const WIDGET_REGISTRY: Record<FreeWidgetKind, WidgetMeta> = {
   },
   agents: {
     kind: "agents",
+    renderCluster: AgentsClusterModule,
     nameKey: "widgets.agents.name",
     descriptionKey: "widgets.agents.desc",
     allowedSizes: ["s", "m", "l"],

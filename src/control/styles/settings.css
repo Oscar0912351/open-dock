@@ -1,0 +1,303 @@
+/* Settings CPU sensor service */
+.cc-sensor-state {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--c-ink-3);
+}
+
+.cc-sensor-state.is-live {
+  color: var(--c-ink-1);
+}
+
+.cc-sensor-state.is-warn {
+  color: var(--c-warn);
+}
+
+.cc-sensor-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--c-ink-3);
+  flex: none;
+}
+
+.cc-sensor-state.is-live .cc-sensor-dot {
+  background: var(--c-ink-1);
+}
+
+.cc-sensor-state.is-warn .cc-sensor-dot {
+  background: var(--c-warn);
+}
+
+.cc-sensor-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.cc-sensor-error {
+  padding: 9px 16px;
+  border-top: 1px solid var(--c-danger-line);
+  background: var(--c-danger-bg);
+  color: var(--c-danger);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+/* Settings Discord integration row */
+.cc-discord-row {
+  display: flex;
+  align-items: center;
+  gap: 13px;
+  padding: 14px 16px;
+  flex-wrap: wrap;
+}
+
+.cc-discord-mark,
+.cc-discord-avatar-wrap {
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  flex: none;
+  overflow: hidden;
+}
+
+.cc-discord-mark {
+  display: grid;
+  place-items: center;
+  border: 1px solid var(--c-line);
+  background: var(--c-surface-2);
+  color: var(--c-ink-2);
+}
+
+.cc-discord-avatar-wrap {
+  border: 1px solid var(--c-line-2);
+  background: var(--c-surface-2);
+}
+
+.cc-discord-avatar-wrap.is-fallback {
+  display: grid;
+  place-items: center;
+}
+
+.cc-discord-avatar {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.cc-discord-avatar-fallback {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--c-ink-1);
+  user-select: none;
+}
+
+.cc-discord-copy {
+  flex: 1 1 200px;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.cc-discord-name-row {
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+  min-width: 0;
+}
+
+.cc-discord-name {
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--c-ink-1);
+  line-height: 1.25;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.cc-discord-handle {
+  font-size: 12.5px;
+  color: var(--c-ink-3);
+  line-height: 1.25;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.cc-discord-meta {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--c-ink-2);
+  line-height: 1.3;
+}
+
+.cc-discord-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--c-ink-3);
+  flex: none;
+}
+
+.cc-discord-meta.is-live .cc-discord-dot {
+  background: var(--c-ok);
+}
+
+.cc-discord-meta.is-warn {
+  color: var(--c-warn);
+}
+
+.cc-discord-meta.is-warn .cc-discord-dot {
+  background: var(--c-warn);
+}
+
+.cc-discord-desc {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--c-ink-2);
+}
+
+.cc-discord-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+/* Settings Discord custom app form */
+.cc-discord-custom {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 13px 16px 15px;
+  border-top: 1px solid var(--c-line);
+}
+
+.cc-discord-guide {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--c-ink-2);
+}
+
+.cc-discord-redirect {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 5px;
+}
+
+.cc-discord-redirect code {
+  padding: 3px 7px;
+  border: 1px solid var(--c-line);
+  border-radius: 6px;
+  background: var(--c-surface-2);
+  font-size: 11.5px;
+  color: var(--c-ink-1);
+  user-select: all;
+}
+
+.cc-discord-fields {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 10px;
+}
+
+.cc-discord-field {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  min-width: 0;
+}
+
+.cc-discord-custom-actions {
+  display: flex;
+  justify-content: flex-end;
+}
+
+/* Settings About Plaque */
+.cc-about-hero {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 16px;
+  flex-wrap: wrap;
+}
+
+.cc-about-brand {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+.cc-about-meta h3 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--c-ink-1);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.cc-about-meta p {
+  margin: 3px 0 0;
+  font-size: 12.5px;
+  color: var(--c-ink-2);
+}
+
+/* Weather location drawer results */
+.cc-place-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 10px 12px;
+  border-radius: var(--c-r-s);
+  border: 1px solid var(--c-line);
+  background: var(--c-surface-1);
+}
+
+.cc-place-row.is-active {
+  border-color: var(--c-accent);
+  background: var(--c-surface-2);
+}
+
+.cc-place-btn {
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  background: transparent;
+  color: var(--c-ink-1);
+  text-align: left;
+  cursor: pointer;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.cc-place-name {
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.cc-place-sub {
+  font-size: 11.5px;
+  color: var(--c-ink-3);
+}
+

@@ -305,17 +305,19 @@ export function Settings() {
 
   const sensorLabel = !sensorStatus
     ? t("settings.cpuSensorStatusLoading")
-    : sensorStatus.state === "running"
-      ? !sensorStatus.driverInstalled
-        ? t("settings.cpuSensorStatusNoDriver")
-        : sensorStatus.outdated
-          ? t("settings.cpuSensorStatusOutdated")
-          : t("settings.cpuSensorStatusRunning")
-      : sensorStatus.state === "stopped"
-        ? t("settings.cpuSensorStatusStopped")
-        : sensorStatus.elevatedFallback
-          ? t("settings.cpuSensorStatusElevated")
-          : t("settings.cpuSensorStatusNotInstalled");
+    : sensorStatus.state === "unsupported"
+      ? t("settings.cpuSensorStatusUnsupported")
+      : sensorStatus.state === "running"
+        ? !sensorStatus.driverInstalled
+          ? t("settings.cpuSensorStatusNoDriver")
+          : sensorStatus.outdated
+            ? t("settings.cpuSensorStatusOutdated")
+            : t("settings.cpuSensorStatusRunning")
+        : sensorStatus.state === "stopped"
+          ? t("settings.cpuSensorStatusStopped")
+          : sensorStatus.elevatedFallback
+            ? t("settings.cpuSensorStatusElevated")
+            : t("settings.cpuSensorStatusNotInstalled");
 
   const sensorHelp = !sensorStatus
     ? t("settings.cpuSensorHelpNotInstalled")
