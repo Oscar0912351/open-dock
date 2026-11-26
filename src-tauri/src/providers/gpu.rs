@@ -20,7 +20,6 @@ use windows::{
                 CallNtPowerInformation, GetSystemPowerStatus, ProcessorInformation,
                 PROCESSOR_POWER_INFORMATION, SYSTEM_POWER_STATUS,
             },
-            Registry::{RegGetValueW, HKEY_LOCAL_MACHINE, RRF_RT_REG_DWORD, RRF_RT_REG_SZ},
         },
     },
 };
@@ -61,12 +60,9 @@ pub struct GpuTickData {
 
 pub struct HardwareSampler {
     query: Option<PDH_HQUERY>,
-    c_cpu_utility: Option<PDH_HCOUNTER>,
     c_cpu_total: Option<PDH_HCOUNTER>,
     c_cpu_fallback: Option<PDH_HCOUNTER>,
     c_cpu_per_core: Option<PDH_HCOUNTER>,
-    cpu_utility_health: CpuUtilityHealth,
-    tm_time_based: bool,
     c_gpu_engine: Option<PDH_HCOUNTER>,
     c_vram: Option<PDH_HCOUNTER>,
     c_disk_read: Option<PDH_HCOUNTER>,
@@ -156,7 +152,6 @@ impl HardwareSampler {
 
         let (
             query_opt,
-            c_cpu_utility,
             c_cpu_total,
             c_cpu_fallback,
             c_cpu_per_core,
@@ -169,17 +164,12 @@ impl HardwareSampler {
             c_cpu_freq_base,
             baseline_collected,
         ) = if open_status == ERROR_SUCCESS.0 {
-            let c_cpu_utility = add_counter(
-                query,
-                w!("\\Processor Information(_Total)\\% Processor Utility"),
-                "CPU Utility",
-            );
             let c_cpu_total = add_counter(
                 query,
                 w!("\\Processor Information(_Total)\\% Processor Time"),
                 "CPU Total",
             );
-            let c_cpu_fallback = if c_cpu_utility.is_none() && c_cpu_total.is_none() {
+            let c_cpu_fallback = if c_cpu_total.is_none() {
                 add_counter(
                     query,
                     w!("\\Processor(_Total)\\% Processor Time"),
@@ -237,7 +227,6 @@ impl HardwareSampler {
 
             (
                 Some(query),
-                c_cpu_utility,
                 c_cpu_total,
                 c_cpu_fallback,
                 c_cpu_per_core,
@@ -252,7 +241,7 @@ impl HardwareSampler {
             )
         } else {
             log::warn!(target: "provider:system", "PdhOpenQueryW fejlede med kode 0x{open_status:08x}");
-            (None, None, None, None, None, None, None, None, None, None, None, None, false)
+            (None, None, None, None, None, None, None, None, None, None, None, false)
         };
 
         let caps = SystemCaps {
@@ -267,10 +256,7 @@ impl HardwareSampler {
 
         Self {
             query: query_opt,
-            c_cpu_utility,
             c_cpu_total,
-            cpu_utility_health: CpuUtilityHealth::default(),
-            tm_time_based: task_manager_uses_time_based_cpu(),
             c_cpu_fallback,
             c_cpu_per_core,
             c_gpu_engine,
@@ -321,16 +307,9 @@ impl HardwareSampler {
                             .map(|v| v.round() as u32)
                     });
 
-                    let cpu_utility = self.c_cpu_utility.and_then(sample_scalar_counter);
                     let cpu_time = self.c_cpu_total.and_then(sample_scalar_counter);
                     let cpu_fallback = self.c_cpu_fallback.and_then(sample_scalar_counter);
-                    out.cpu_usage = self.cpu_utility_health.select(
-                        cpu_utility,
-                        cpu_time,
-                        cpu_perf,
-                        cpu_fallback,
-                        self.tm_time_based,
-                    );
+                    out.cpu_usage = select_cpu_usage(cpu_time, cpu_fallback);
 
                     if let Some(counter) = self.c_cpu_per_core {
                         if let Some(raw_items) =
@@ -400,136 +379,11 @@ impl HardwareSampler {
     }
 }
 
-#[derive(Debug, Default)]
-struct CpuUtilityHealth {
-    pinned: bool,
-    pinned_streak: u8,
-    healthy_streak: u8,
-}
-
-impl CpuUtilityHealth {
-    fn select(
-        &mut self,
-        utility: Option<f64>,
-        time: Option<f64>,
-        perf: Option<f64>,
-        fallback: Option<f64>,
-        prefer_time: bool,
-    ) -> Option<f32> {
-        let valid = |v: Option<f64>| v.filter(|x| x.is_finite() && *x >= 0.0);
-        let u = valid(utility);
-        let t = valid(time);
-        let p = valid(perf).filter(|x| *x > 10.0);
-        let f = valid(fallback);
-
-        if prefer_time {
-            return t.or(f).or(u).map(|v| (v as f32).clamp(0.0, 100.0));
-        }
-
-        let pinned_now = match (u, t, p) {
-            (Some(u), Some(t), Some(p)) => {
-                let tol = (p * 0.03).max(2.0);
-                (u - p).abs() <= tol && t < 90.0
-            }
-            _ => false,
-        };
-
-        let clearly_healthy = match (u, p) {
-            (Some(u), Some(p)) => u < p * 0.90,
-            _ => false,
-        };
-
-        if pinned_now {
-            self.healthy_streak = 0;
-            self.pinned_streak = self.pinned_streak.saturating_add(1);
-            if !self.pinned && self.pinned_streak >= 2 {
-                self.pinned = true;
-                log::info!(
-                    target: "provider:system",
-                    "PDH % Processor Utility følger % Processor Performance uden idle-states — skifter til % Processor Time"
-                );
-            }
-        } else if clearly_healthy {
-            self.pinned_streak = 0;
-            self.healthy_streak = self.healthy_streak.saturating_add(1);
-            if self.pinned && self.healthy_streak >= 2 {
-                self.pinned = false;
-            }
-        } else {
-            self.pinned_streak = 0;
-            self.healthy_streak = 0;
-        }
-
-        let chosen = if self.pinned || pinned_now {
-            t.or(f).or(u)
-        } else {
-            u.or(t).or(f)
-        };
-        chosen.map(|v| (v as f32).clamp(0.0, 100.0))
-    }
-}
-
-fn registry_dword(value: &str) -> Option<u32> {
-    use std::os::windows::ffi::OsStrExt;
-    let wide: Vec<u16> = std::ffi::OsStr::new(value)
-        .encode_wide()
-        .chain(std::iter::once(0))
-        .collect();
-    let mut data = 0u32;
-    let mut size = std::mem::size_of::<u32>() as u32;
-    let status = unsafe {
-        RegGetValueW(
-            HKEY_LOCAL_MACHINE,
-            w!("SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion"),
-            PCWSTR::from_raw(wide.as_ptr()),
-            RRF_RT_REG_DWORD,
-            None,
-            Some(&mut data as *mut u32 as *mut core::ffi::c_void),
-            Some(&mut size),
-        )
-    };
-    (status == ERROR_SUCCESS).then_some(data)
-}
-
-fn registry_string(value: &str) -> Option<String> {
-    use std::os::windows::ffi::OsStrExt;
-    let wide: Vec<u16> = std::ffi::OsStr::new(value)
-        .encode_wide()
-        .chain(std::iter::once(0))
-        .collect();
-    let mut buf = [0u16; 32];
-    let mut size = (buf.len() * 2) as u32;
-    let status = unsafe {
-        RegGetValueW(
-            HKEY_LOCAL_MACHINE,
-            w!("SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion"),
-            PCWSTR::from_raw(wide.as_ptr()),
-            RRF_RT_REG_SZ,
-            None,
-            Some(buf.as_mut_ptr() as *mut core::ffi::c_void),
-            Some(&mut size),
-        )
-    };
-    if status != ERROR_SUCCESS || size < 2 {
-        return None;
-    }
-    let len = ((size as usize) / 2).saturating_sub(1).min(buf.len());
-    Some(String::from_utf16_lossy(&buf[..len]))
-}
-
-fn task_manager_time_based_for_build(build: u32, ubr: u32) -> bool {
-    build > 26100 || (build == 26100 && ubr >= 4061)
-}
-
-fn task_manager_uses_time_based_cpu() -> bool {
-    let build = registry_string("CurrentBuildNumber").and_then(|s| s.parse::<u32>().ok());
-    let ubr = registry_dword("UBR").unwrap_or(0);
-    match build {
-        Some(build) => task_manager_time_based_for_build(build, ubr),
-        // Ukendt build på en Windows-version vi ikke kan identificere: brug moderne,
-        // kerneforbrugsbaseret semantik fremfor legacy Utility-tallet.
-        None => true,
-    }
+fn select_cpu_usage(time: Option<f64>, fallback: Option<f64>) -> Option<f32> {
+    let valid = |v: Option<f64>| v.filter(|x| x.is_finite() && *x >= 0.0);
+    valid(time)
+        .or(valid(fallback))
+        .map(|v| (v as f32).clamp(0.0, 100.0))
 }
 
 fn processor_nominal_frequency_mhz() -> Option<u32> {
@@ -993,55 +847,15 @@ mod tests {
     }
 
     #[test]
-    fn cpu_utility_health_uses_utility_when_cstates_work_and_time_when_pinned() {
-        let mut normal = super::CpuUtilityHealth::default();
-        // Normal PC (C-states ON): Utility tracks actual work (48%) even when Time under-reports (18%)
-        assert_eq!(
-            normal.select(Some(48.0), Some(18.0), Some(120.0), None, false),
-            Some(48.0)
-        );
-        // Turbo-boosted heavy load (Utility 117%, Perf 180%, Time 65%): not pinned, clamped to 100
-        assert_eq!(
-            normal.select(Some(117.0), Some(65.0), Some(180.0), None, false),
-            Some(100.0)
-        );
-        // Genuine 100% all-core load (Time 99.5%, Utility == Perf 118%): not flagged as pinned
-        assert_eq!(
-            normal.select(Some(118.0), Some(99.5), Some(118.0), None, false),
-            Some(100.0)
-        );
-        assert!(!normal.pinned);
-
-        // C-states disabled PC (like Ryzen with C1=C2=C3=0): Utility == Perf (113.8%) while Time is 22.6%
-        let mut no_cstates = super::CpuUtilityHealth::default();
-        assert_eq!(
-            no_cstates.select(Some(113.8), Some(22.6), Some(113.8), None, false),
-            Some(22.6)
-        );
-        assert_eq!(
-            no_cstates.select(Some(113.4), Some(26.8), Some(113.4), None, false),
-            Some(26.8)
-        );
-        assert!(no_cstates.pinned);
-        // Stays on Time even when real load rises to 95%
-        assert_eq!(
-            no_cstates.select(Some(110.0), Some(95.0), Some(110.0), None, false),
-            Some(95.0)
-        );
-    }
-
-    #[test]
-    fn newer_windows_always_prefers_time_based_task_manager_cpu() {
-        let mut modern = super::CpuUtilityHealth::default();
-        assert_eq!(
-            modern.select(Some(112.0), Some(39.0), Some(112.0), None, true),
-            Some(39.0)
-        );
-        assert!(!modern.pinned);
-        assert!(super::task_manager_time_based_for_build(26100, 4061));
-        assert!(super::task_manager_time_based_for_build(26200, 0));
-        assert!(!super::task_manager_time_based_for_build(26100, 4060));
-        assert!(!super::task_manager_time_based_for_build(22631, 5335));
-        assert!(!super::task_manager_time_based_for_build(19045, 6000));
+    fn cpu_usage_is_time_based_with_fallback_and_clamped() {
+        assert_eq!(super::select_cpu_usage(Some(39.0), None), Some(39.0));
+        assert_eq!(super::select_cpu_usage(Some(39.0), Some(80.0)), Some(39.0));
+        assert_eq!(super::select_cpu_usage(None, Some(22.5)), Some(22.5));
+        assert_eq!(super::select_cpu_usage(Some(f64::NAN), Some(22.5)), Some(22.5));
+        assert_eq!(super::select_cpu_usage(Some(-1.0), Some(22.5)), Some(22.5));
+        assert_eq!(super::select_cpu_usage(Some(100.4), None), Some(100.0));
+        assert_eq!(super::select_cpu_usage(Some(0.0), None), Some(0.0));
+        assert_eq!(super::select_cpu_usage(None, None), None);
+        assert_eq!(super::select_cpu_usage(Some(f64::INFINITY), None), None);
     }
 }

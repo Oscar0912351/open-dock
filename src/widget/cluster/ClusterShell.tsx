@@ -20,6 +20,8 @@ import {
 } from "../kinds/agents/Agents";
 import { computeDiscordExpandedHeight } from "../kinds/discord/Discord";
 import { resolveNowPlayingSettings } from "../kinds/nowPlaying/NowPlaying";
+import { computeTimerExpandedHeight } from "../kinds/timer/Timer";
+import { useClusterTimers } from "../kinds/timer/useTimers";
 import { useSystemHistory } from "../kinds/system/useSystemHistory";
 import { resolveWeatherSettings } from "../kinds/weather/Weather";
 import type { ClusterFrameInfo } from "../WidgetShell";
@@ -44,6 +46,9 @@ interface ClusterShellProps {
   liveBackdrop?: boolean;
   locations: Location[];
   preview?: boolean;
+  /** Om musen er over widget-vinduet (Rust hover-poll) — driver
+      showOnHover-moduler. */
+  clusterHover?: boolean;
   /** Preview-only: render every module compact so the card shows the full config. */
   previewShowAll?: boolean;
   onClusterFrameChange: (frame: ClusterFrameInfo | null) => void;
@@ -90,6 +95,7 @@ export function ClusterShell({
   liveBackdrop = false,
   locations,
   preview = false,
+  clusterHover = false,
   previewShowAll = false,
   onClusterFrameChange,
   onAmbientChange,
@@ -136,16 +142,42 @@ export function ClusterShell({
 
   const [manualExpandedId, setManualExpandedId] = useState<string | null>(null);
 
-  // Timer-moduler rapporterer pin-tilstand via shared.timerPin; klyngen er
-  // pinnet når mindst én timer-modul er det (finished eller fokuseret input).
-  const timerPinsRef = useRef(new Set<string>());
-  const [anyTimerPinned, setAnyTimerPinned] = useState(false);
-  const reportTimerPin = useCallback((moduleId: string, pinned: boolean) => {
-    const pins = timerPinsRef.current;
-    if (pinned) pins.add(moduleId);
-    else pins.delete(moduleId);
-    setAnyTimerPinned(pins.size > 0);
+  // Timer-snapshots hentes her i shell (ikke i selve modulet), så de er
+  // levende selv når timer-modulet er hidden — finished timere skal kunne
+  // pinne klyngen og auto-udvide modulet uanset synlighed.
+  const timerModuleIds = useMemo(
+    () => cluster.modules.filter((m) => m.kind === "timer").map((m) => m.id),
+    [cluster.modules],
+  );
+  const { snapshots: timerSnapshots, nowMs: timerNowMs } = useClusterTimers(
+    timerModuleIds,
+    !preview && timerModuleIds.length > 0,
+  );
+
+  // Moduler med aktivt input (timer/note) rapporterer fokus via
+  // shared.onModuleFocus — et showOnHover-modul kollapser ikke mens der skrives.
+  const focusedRef = useRef(new Set<string>());
+  const [focusedModuleIds, setFocusedModuleIds] = useState<ReadonlySet<string>>(() => new Set());
+  const reportModuleFocus = useCallback((moduleId: string, focused: boolean) => {
+    const set = focusedRef.current;
+    if (focused) set.add(moduleId);
+    else set.delete(moduleId);
+    setFocusedModuleIds(new Set(set));
   }, []);
+
+  const timerFinishedModuleIds = useMemo(() => {
+    const finished = new Set<string>();
+    for (const id of timerModuleIds) {
+      const snap = timerSnapshots.get(id);
+      if (snap?.items.some((item) => item.status === "finished")) finished.add(id);
+    }
+    return finished;
+  }, [timerModuleIds, timerSnapshots]);
+
+  // Klyngen er pinnet ("vis kun når musen er over") når en timer er færdig
+  // eller et timer-input har fokus.
+  const anyTimerPinned =
+    timerFinishedModuleIds.size > 0 || timerModuleIds.some((id) => focusedModuleIds.has(id));
   useEffect(() => {
     onPinVisibleChange?.(anyTimerPinned);
   }, [anyTimerPinned, onPinVisibleChange]);
@@ -204,6 +236,33 @@ export function ClusterShell({
     onExit: clearDiscordManualExpansion,
   });
 
+  // Hover: driver showOnHover-moduler. Edit-mode tæller som hover så
+  // indholdet kan redigeres. Når hover ophører ryddes en manuel udvidelse
+  // af et ufokuseret showOnHover-modul, så det kan glide tilbage i hidden.
+  const clearShowOnHoverManual = useCallback(() => {
+    setManualExpandedId((prev) =>
+      prev &&
+      cluster.modules.some((m) => m.id === prev && m.autoRule === "showOnHover") &&
+      !focusedRef.current.has(prev)
+        ? null
+        : prev,
+    );
+  }, [cluster.modules]);
+
+  const hoverActive = useHysteresisSignal({
+    input: !preview && (clusterHover || editMode),
+    apply: applyTransition,
+    onExit: clearShowOnHoverManual,
+  });
+
+  // En nyligt færdig timer tager udvidelsespladsen rent: ryd manuel
+  // udvidelse så timeren selv står som expanded.
+  useHysteresisSignal({
+    input: timerFinishedModuleIds.size > 0,
+    apply: applyTransition,
+    onEnter: clearManualExpansion,
+  });
+
   const [agentsNowMs, setAgentsNowMs] = useState(() => Date.now());
   const rawAgentsSessions = agents.data?.sessions;
   const hasTimedAgents = Boolean(
@@ -231,6 +290,9 @@ export function ClusterShell({
           systemHighLoad: hasSystem && systemHighLoad,
           agentsActive: hasAgents && agentsActive,
           discordInCall: hasDiscord && discordInCall,
+          clusterHover: hoverActive,
+          focusedModuleIds,
+          timerFinishedModuleIds,
         },
         manualExpandedId,
         cluster.resizeBehavior,
@@ -248,6 +310,9 @@ export function ClusterShell({
       agentsActive,
       hasDiscord,
       discordInCall,
+      hoverActive,
+      focusedModuleIds,
+      timerFinishedModuleIds,
       manualExpandedId,
       cluster.resizeBehavior,
       isPillBar,
@@ -289,10 +354,13 @@ export function ClusterShell({
         map.set(mod.id, computeAgentsExpandedHeight(visible));
       } else if (mod.kind === "discord") {
         map.set(mod.id, computeDiscordExpandedHeight(discordSnapshot));
+      } else if (mod.kind === "timer") {
+        const items = timerSnapshots.get(mod.id)?.items ?? [];
+        map.set(mod.id, computeTimerExpandedHeight(items, focusedModuleIds.has(mod.id)));
       }
     }
     return map;
-  }, [cluster.modules, modes, rawAgentsSessions, agentsNowMs, discordSnapshot]);
+  }, [cluster.modules, modes, rawAgentsSessions, agentsNowMs, discordSnapshot, timerSnapshots, focusedModuleIds]);
 
   const visibleModuleCount = useMemo(
     () =>
@@ -327,11 +395,17 @@ export function ClusterShell({
 
   // 2-trins udvid/kollaps-håndtryk mod Win32 (plan/04b §2.1)
   const [boxHeightU, setBoxHeightU] = useState<number>(initialIdleHeight);
+  const boxHeightRef = useRef<number>(initialIdleHeight);
   const [transitionKind, setTransitionKind] = useState<"expand" | "collapse" | "idle">("idle");
   const winHeightRef = useRef<number>(initialIdleHeight);
   const collapseTimerRef = useRef<number | null>(null);
   const pendingCollapseTargetRef = useRef<number | null>(null);
   const resizeSeqRef = useRef(0);
+
+  const updateBoxHeight = useCallback((nextH: number) => {
+    boxHeightRef.current = nextH;
+    setBoxHeightU(nextH);
+  }, []);
 
   const commitWinSize = useCallback(
     (nextH: number) => {
@@ -375,18 +449,21 @@ export function ClusterShell({
   useEffect(() => {
     if (preview) {
       winHeightRef.current = targetHeightU;
+      boxHeightRef.current = targetHeightU;
       return;
     }
 
     if (cluster.resizeBehavior === "fixed") {
       if (winHeightRef.current !== targetHeightU) {
+        boxHeightRef.current = targetHeightU;
         commitWinSize(targetHeightU);
       }
       return;
     }
 
     const currentWinH = winHeightRef.current;
-    if (targetHeightU === currentWinH && boxHeightU === targetHeightU) {
+    const currentBoxH = boxHeightRef.current;
+    if (targetHeightU === currentWinH && currentBoxH === targetHeightU) {
       return;
     }
 
@@ -399,7 +476,7 @@ export function ClusterShell({
     if (targetHeightU > currentWinH) {
       // Udvidelse: udvid Win32-vindue FØR CSS-animation
       const seq = ++resizeSeqRef.current;
-      const fromH = boxHeightU;
+      const fromH = currentBoxH;
       winHeightRef.current = targetHeightU;
       const frame = window.requestAnimationFrame(() => {
         setTransitionKind("expand");
@@ -411,7 +488,7 @@ export function ClusterShell({
           .catch(() => {})
           .finally(() => {
             if (resizeSeqRef.current === seq) {
-              setBoxHeightU(targetHeightU);
+              updateBoxHeight(targetHeightU);
             }
           });
         return () => window.cancelAnimationFrame(frame);
@@ -422,7 +499,7 @@ export function ClusterShell({
         .catch(() => {})
         .finally(() => {
           if (resizeSeqRef.current === seq) {
-            setBoxHeightU(targetHeightU);
+            updateBoxHeight(targetHeightU);
             if (liveBackdrop && Math.abs(fromH - targetHeightU) >= 0.25) {
               void ipc
                 .widgetAnimateBackdropBox(instance.id, fromH, targetHeightU, cluster.anchor, 340)
@@ -438,16 +515,16 @@ export function ClusterShell({
       if (shouldReduceMotion(motion)) {
         const frame = window.requestAnimationFrame(() => {
           setTransitionKind("idle");
-          setBoxHeightU(targetHeightU);
+          updateBoxHeight(targetHeightU);
           commitWinSize(targetHeightU);
         });
         return () => window.cancelAnimationFrame(frame);
       }
 
-      const fromH = boxHeightU;
+      const fromH = currentBoxH;
       const frame = window.requestAnimationFrame(() => {
         setTransitionKind("collapse");
-        setBoxHeightU(targetHeightU);
+        updateBoxHeight(targetHeightU);
         pendingCollapseTargetRef.current = targetHeightU;
         if (liveBackdrop && Math.abs(fromH - targetHeightU) >= 0.25) {
           void ipc
@@ -465,10 +542,10 @@ export function ClusterShell({
     }
 
     // Hvis currentWinH allerede matcher (fx gen-afbrudt kollaps), sæt boxHeight direkte
-    const fromH = boxHeightU;
+    const fromH = currentBoxH;
     const frame = window.requestAnimationFrame(() => {
       setTransitionKind("expand");
-      setBoxHeightU(targetHeightU);
+      updateBoxHeight(targetHeightU);
       if (liveBackdrop && !shouldReduceMotion(motion) && Math.abs(fromH - targetHeightU) >= 0.25) {
         void ipc
           .widgetAnimateBackdropBox(instance.id, fromH, targetHeightU, cluster.anchor, 340)
@@ -476,7 +553,7 @@ export function ClusterShell({
       }
     });
     return () => window.cancelAnimationFrame(frame);
-  }, [targetHeightU, cluster.resizeBehavior, cluster.width, cluster.anchor, instance.id, motion, commitWinSize, boxHeightU, preview, liveBackdrop]);
+  }, [targetHeightU, cluster.resizeBehavior, cluster.width, cluster.anchor, instance.id, motion, commitWinSize, updateBoxHeight, preview, liveBackdrop]);
 
   useEffect(() => {
     return () => {
@@ -574,7 +651,9 @@ export function ClusterShell({
     discord: { status: discord.status, data: discord.data },
     agents: { status: agents.status, data: agents.data },
     agentsNowMs,
-    timerPin: reportTimerPin,
+    timerSnapshots,
+    timerNowMs,
+    onModuleFocus: reportModuleFocus,
   };
 
   if (isPillBar) {

@@ -15,10 +15,7 @@ use windows::{
     core::{PCWSTR, PWSTR},
     Win32::{
         Foundation::RECT,
-        System::Com::{
-            CoCreateInstance, CoInitializeEx, CoTaskMemFree, CoUninitialize, CLSCTX_ALL,
-            COINIT_APARTMENTTHREADED,
-        },
+        System::Com::{CoCreateInstance, CoTaskMemFree, CLSCTX_ALL},
         UI::Shell::{
             DesktopWallpaper, IDesktopWallpaper, DESKTOP_WALLPAPER_POSITION, DWPOS_CENTER,
             DWPOS_FILL, DWPOS_FIT, DWPOS_SPAN, DWPOS_STRETCH, DWPOS_TILE,
@@ -64,24 +61,7 @@ impl Drop for CoTaskStr {
     }
 }
 
-struct ComAptGuard(bool);
 
-impl ComAptGuard {
-    fn init() -> Self {
-        let hr = unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) };
-        Self(hr.is_ok())
-    }
-}
-
-impl Drop for ComAptGuard {
-    fn drop(&mut self) {
-        if self.0 {
-            unsafe {
-                CoUninitialize();
-            }
-        }
-    }
-}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct DesktopMonitorWallpaper {
@@ -146,7 +126,7 @@ pub fn shutdown() {
 }
 
 fn worker_loop(app: AppHandle, rx: mpsc::Receiver<WallpaperCmd>) {
-    let _com = ComAptGuard::init();
+    let _com = crate::util::ComAptGuard::init();
     let mut last_fingerprint: Option<ComposeFingerprint> = None;
     let mut desktop_wp: Option<IDesktopWallpaper> = None;
 

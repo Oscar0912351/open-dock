@@ -351,3 +351,78 @@ describe("Discord autoRule og dynamisk højde", () => {
     );
   });
 });
+
+describe("showOnHover", () => {
+  const hoverModules = () => [
+    mod("clock", "clock", "compact", "none"),
+    mod("timer", "timer", "hidden", "showOnHover"),
+  ];
+
+  it("er hidden når hverken hover, fokus eller færdig timer er aktiv", () => {
+    const modes = resolveModuleModes(hoverModules(), idleSignals, null, "adaptive");
+    expect(modes.get("timer")).toBe("hidden");
+  });
+
+  it("viser compact i box-klynge ved hover og kan udvides manuelt", () => {
+    const hover = resolveModuleModes(
+      hoverModules(),
+      { ...idleSignals, clusterHover: true },
+      null,
+      "adaptive",
+    );
+    expect(hover.get("timer")).toBe("compact");
+
+    const manual = resolveModuleModes(
+      hoverModules(),
+      { ...idleSignals, clusterHover: true },
+      "timer",
+      "adaptive",
+    );
+    expect(manual.get("timer")).toBe("expanded");
+    expect(manual.get("clock")).toBe("compact");
+  });
+
+  it("bliver synlig selv uden hover når modulet har fokus, og beholder manuel udvidelse", () => {
+    const focused = resolveModuleModes(
+      hoverModules(),
+      { ...idleSignals, focusedModuleIds: new Set(["timer"]) },
+      null,
+      "adaptive",
+    );
+    expect(focused.get("timer")).toBe("compact");
+
+    const focusedManual = resolveModuleModes(
+      hoverModules(),
+      { ...idleSignals, focusedModuleIds: new Set(["timer"]) },
+      "timer",
+      "adaptive",
+    );
+    expect(focusedManual.get("timer")).toBe("expanded");
+  });
+
+  it("udvider automatisk når en timer er færdig, selv uden hover", () => {
+    const finished = resolveModuleModes(
+      hoverModules(),
+      { ...idleSignals, timerFinishedModuleIds: new Set(["timer"]) },
+      null,
+      "adaptive",
+    );
+    expect(finished.get("timer")).toBe("expanded");
+  });
+
+  it("beholder ikke manuel udvidelse i box-klynge når hover ophører og ingen fokus/færdig", () => {
+    const gone = resolveModuleModes(hoverModules(), idleSignals, "timer", "adaptive");
+    expect(gone.get("timer")).toBe("hidden");
+  });
+
+  it("udvider direkte ved hover i pillBar-klynge", () => {
+    const hover = resolveModuleModes(
+      hoverModules(),
+      { ...idleSignals, clusterHover: true },
+      null,
+      "adaptive",
+      true,
+    );
+    expect(hover.get("timer")).toBe("expanded");
+  });
+});

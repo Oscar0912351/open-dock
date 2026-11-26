@@ -28,7 +28,8 @@ pub async fn cpu_sensor_status() -> Result<CpuSensorStatus, AppError> {
 }
 
 #[tauri::command]
-pub async fn cpu_sensor_install() -> Result<CpuSensorStatus, AppError> {
+pub async fn cpu_sensor_install(window: tauri::Window) -> Result<CpuSensorStatus, AppError> {
+    crate::commands::ensure_control_window(&window)?;
     tokio::task::spawn_blocking(cpu_sensor::install_service)
         .await
         .map_err(|e| AppError::Other(format!("Kunne ikke installere sensortjeneste: {e}")))?
@@ -36,7 +37,8 @@ pub async fn cpu_sensor_install() -> Result<CpuSensorStatus, AppError> {
 }
 
 #[tauri::command]
-pub async fn cpu_sensor_uninstall() -> Result<CpuSensorStatus, AppError> {
+pub async fn cpu_sensor_uninstall(window: tauri::Window) -> Result<CpuSensorStatus, AppError> {
+    crate::commands::ensure_control_window(&window)?;
     tokio::task::spawn_blocking(cpu_sensor::uninstall_service)
         .await
         .map_err(|e| AppError::Other(format!("Kunne ikke fjerne sensortjeneste: {e}")))?

@@ -46,7 +46,6 @@ use windows::{
             },
         },
         System::{
-            Com::{CoInitializeEx, CoUninitialize, COINIT_MULTITHREADED},
             Power::{GetSystemPowerStatus, SYSTEM_POWER_STATUS},
             Threading::{
                 CreateWaitableTimerExW, SetWaitableTimer, WaitForSingleObject,
@@ -151,24 +150,7 @@ pub enum EngineCmd {
     Shutdown,
 }
 
-struct ComMtaGuard(bool);
 
-impl ComMtaGuard {
-    fn init() -> Self {
-        let hr = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) };
-        Self(hr.is_ok())
-    }
-}
-
-impl Drop for ComMtaGuard {
-    fn drop(&mut self) {
-        if self.0 {
-            unsafe {
-                CoUninitialize();
-            }
-        }
-    }
-}
 
 struct WaitableTimer {
     handle: HANDLE,
@@ -543,7 +525,7 @@ pub fn spawn_engine_thread(app: AppHandle) -> Option<Sender<EngineCmd>> {
 }
 
 fn engine_loop(app: AppHandle, rx: mpsc::Receiver<EngineCmd>) {
-    let _com = ComMtaGuard::init();
+    let _com = crate::util::ComMtaGuard::init();
     let timer = WaitableTimer::new();
 
     let mut surfaces: Vec<MonitorSurface> = Vec::new();

@@ -18,12 +18,15 @@ pub fn migrate(value: serde_json::Value) -> Result<Config, String> {
     backfill_reveal_on_hover(&mut value);
     map_legacy_layers(&mut value);
     let mut config = match version {
-        1 | 2 | 3 => serde_json::from_value::<Config>(value).map_err(|error| error.to_string())?,
+        1 | 2 | 3 | 4 => serde_json::from_value::<Config>(value).map_err(|error| error.to_string())?,
         other => return Err(format!("Ukendt config-version: {other}")),
     };
 
     if version < 2 {
         migrate_v1_discord_auto_hide(&mut config);
+    }
+    if version < 4 {
+        migrate_v3_timer_show_on_hover(&mut config);
     }
 
     sanitize(&mut config);
@@ -45,6 +48,25 @@ fn migrate_v1_discord_auto_hide(config: &mut Config) {
             {
                 module.default_mode = ModuleMode::Hidden;
                 module.auto_rule = AutoRule::ExpandWhenInCall;
+            }
+        }
+    }
+}
+
+/// I v3 startede timer-moduler i klynger som `compact` + `none`, hvilket holdt
+/// en tom timer synlig konstant. I v4 vises de kun når musen er over klyngen.
+fn migrate_v3_timer_show_on_hover(config: &mut Config) {
+    for widget in &mut config.widgets {
+        let Some(cluster) = &mut widget.cluster else {
+            continue;
+        };
+        for module in &mut cluster.modules {
+            if module.kind == WidgetKind::Timer
+                && module.default_mode == ModuleMode::Compact
+                && module.auto_rule == AutoRule::None
+            {
+                module.default_mode = ModuleMode::Hidden;
+                module.auto_rule = AutoRule::ShowOnHover;
             }
         }
     }
@@ -180,5 +202,80 @@ mod tests {
         assert_eq!(widgets[2]["revealOnHover"], serde_json::json!(false));
         assert_eq!(widgets[3]["revealOnHover"], serde_json::json!(true));
         assert_eq!(widgets[4]["revealOnHover"], serde_json::json!(false));
+    }
+
+    fn timer_cluster_json(version: u32) -> serde_json::Value {
+        serde_json::json!({
+            "version": version,
+            "general": {
+                "language": "da",
+                "autostart": true,
+                "pauseOnFullscreen": true,
+                "pauseOnBattery": false,
+                "systemIntervalMs": 1000,
+                "gridSnap": true,
+                "hotkeys": { "editMode": "Ctrl+Alt+E", "toggleVisible": "Ctrl+Alt+H" }
+            },
+            "appearance": {
+                "themeId": "aurora",
+                "accent": null,
+                "glassEngine": "wallpaper",
+                "glassStrength": 1.0,
+                "radius": "round",
+                "motion": "full",
+                "autoContrast": true
+            },
+            "weather": { "locations": [] },
+            "widgets": [
+                {
+                    "id": "ba70eb6d-bf00-43dd-8cc4-69db8d6f0cba",
+                    "kind": "cluster",
+                    "size": "m",
+                    "scale": 1.0,
+                    "placement": {
+                        "monitor": {
+                            "name": "DISPLAY1",
+                            "rect": { "x": 0, "y": 0, "width": 1920, "height": 1080 }
+                        },
+                        "x": 100.0,
+                        "y": 20.0
+                    },
+                    "layer": "desktop",
+                    "clickThrough": false,
+                    "settings": {},
+                    "cluster": {
+                        "presetId": "allInOne",
+                        "width": 264,
+                        "maxHeight": 320,
+                        "resizeBehavior": "adaptive",
+                        "anchor": "top",
+                        "modules": [
+                            {
+                                "id": "1cc5ad6c-a13d-4bc7-b150-c7cd7d1668aa",
+                                "kind": "timer",
+                                "defaultMode": "compact",
+                                "autoRule": "none",
+                                "settings": {}
+                            }
+                        ]
+                    },
+                    "createdAt": 1700000000
+                }
+            ],
+            "onboarded": true
+        })
+    }
+
+    #[test]
+    fn migraterer_v3_timer_compact_til_show_on_hover_og_bevarer_v4_explicit() {
+        let v3 = migrate(timer_cluster_json(3)).unwrap();
+        let timer_v3 = &v3.widgets[0].cluster.as_ref().unwrap().modules[0];
+        assert_eq!(timer_v3.default_mode, ModuleMode::Hidden);
+        assert_eq!(timer_v3.auto_rule, AutoRule::ShowOnHover);
+
+        let v4 = migrate(timer_cluster_json(4)).unwrap();
+        let timer_v4 = &v4.widgets[0].cluster.as_ref().unwrap().modules[0];
+        assert_eq!(timer_v4.default_mode, ModuleMode::Compact);
+        assert_eq!(timer_v4.auto_rule, AutoRule::None);
     }
 }

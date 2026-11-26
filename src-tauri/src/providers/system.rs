@@ -1,19 +1,19 @@
 use std::{
     collections::VecDeque,
     sync::{
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
         Arc,
     },
-    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant},
 };
 
-use parking_lot::Mutex;
+use parking_lot::{Condvar, Mutex};
 use serde::{Deserialize, Serialize};
 use sysinfo::{CpuRefreshKind, MemoryRefreshKind, Networks, RefreshKind, System};
-use tauri::{async_runtime::JoinHandle, AppHandle, Manager};
+use tauri::{AppHandle, Manager};
 use ts_rs::TS;
 
-use crate::state::AppState;
+use crate::{state::AppState, util::unix_now_ms};
 
 use super::gpu::{compute_effective_freq_mhz, HardwareSampler, SystemCaps};
 
@@ -81,9 +81,16 @@ pub struct SystemSample {
 
 pub struct SystemProvider {
     running: AtomicBool,
-    task: Mutex<Option<JoinHandle<()>>>,
+    worker: Mutex<Option<SystemWorker>>,
     history: Arc<Mutex<VecDeque<SystemSample>>>,
     caps_cache: Arc<Mutex<Option<SystemCaps>>>,
+    pending_sampler: Arc<Mutex<Option<HardwareSampler>>>,
+    generation: Arc<AtomicU64>,
+}
+
+struct SystemWorker {
+    stop_signal: Arc<(Mutex<bool>, Condvar)>,
+    join: Option<std::thread::JoinHandle<()>>,
 }
 
 impl Default for SystemProvider {
@@ -96,9 +103,11 @@ impl SystemProvider {
     pub fn new() -> Self {
         Self {
             running: AtomicBool::new(false),
-            task: Mutex::new(None),
+            worker: Mutex::new(None),
             history: Arc::new(Mutex::new(VecDeque::with_capacity(HISTORY_CAP))),
             caps_cache: Arc::new(Mutex::new(None)),
+            pending_sampler: Arc::new(Mutex::new(None)),
+            generation: Arc::new(AtomicU64::new(0)),
         }
     }
 
@@ -107,8 +116,10 @@ impl SystemProvider {
         if let Some(caps) = cached {
             return caps;
         }
-        let fresh = HardwareSampler::new().caps.clone();
+        let sampler = HardwareSampler::new();
+        let fresh = sampler.caps.clone();
         *self.caps_cache.lock() = Some(fresh.clone());
+        *self.pending_sampler.lock() = Some(sampler);
         fresh
     }
 
@@ -124,192 +135,257 @@ impl SystemProvider {
         if self.running.swap(true, Ordering::AcqRel) {
             return;
         }
-        log::info!(target: "provider:system", "Starter system-provider");
+        log::info!(target: "provider:system", "Starter system-provider (od-system)");
 
         let app_handle = app.clone();
         let history = Arc::clone(&self.history);
         let caps_cache = Arc::clone(&self.caps_cache);
+        let pending_sampler = Arc::clone(&self.pending_sampler);
+        let stop_signal = Arc::new((Mutex::new(false), Condvar::new()));
+        let stop_thread = Arc::clone(&stop_signal);
+        let my_gen = self.generation.fetch_add(1, Ordering::AcqRel) + 1;
+        let gen_ref = Arc::clone(&self.generation);
 
-        let handle = tauri::async_runtime::spawn(async move {
-            let mut sys = match System::new_with_specifics(
-                RefreshKind::nothing()
-                    .with_cpu(CpuRefreshKind::nothing().with_frequency())
-                    .with_memory(MemoryRefreshKind::nothing().with_ram()),
-            ) {
-                Ok(system) => system,
-                Err(err) => {
-                    log::warn!(target: "provider:system", "System::new_with_specifics fejlede: {err}");
-                    return;
-                }
-            };
-
-            let mut nets = match Networks::new_with_refreshed_list() {
-                Ok(n) => Some(n),
-                Err(err) => {
-                    log::warn!(target: "provider:system", "Networks::new_with_refreshed_list fejlede: {err}");
-                    None
-                }
-            };
-
-            let base_freq_mhz = {
-                let cpus = sys.cpus();
-                if cpus.is_empty() {
-                    None
-                } else {
-                    let sum: u64 = cpus.iter().map(|c| c.frequency()).sum();
-                    let avg = (sum / cpus.len() as u64) as u32;
-                    (avg > 0).then_some(avg)
-                }
-            };
-            // Antallet af logiske CPU'er er hardwaren, ikke processens affinity-maske.
-            // available_parallelism() kan underrapportere på maskiner med processorgrupper
-            // eller begrænset affinity, og det er ikke det tal Jobliste viser.
-            let core_count = sys.cpus().len().max(1) as u32;
-
-            let mut hw = HardwareSampler::new();
-            *caps_cache.lock() = Some(hw.caps.clone());
-            let mut last_tick = Instant::now();
-            let mut first_tick = true;
-            let mut tick_count: u64 = 0;
-            let mut last_cpu_temp_c: Option<f32> = None;
-
-            loop {
-                let sleep_ms = if first_tick {
-                    250
-                } else {
-                    app_handle
-                        .state::<AppState>()
-                        .config
-                        .get()
-                        .general
-                        .system_interval_ms
-                        .max(500) as u64
-                };
-                tokio::time::sleep(Duration::from_millis(sleep_ms)).await;
-                first_tick = false;
-                tick_count = tick_count.wrapping_add(1);
-
-                sys.refresh_memory_specifics(MemoryRefreshKind::nothing().with_ram());
-                if let Some(ref mut net_list) = nets {
-                    net_list.refresh(tick_count.is_multiple_of(60));
-                }
-
-                let now = Instant::now();
-                let elapsed = (now - last_tick).as_secs_f64().max(0.1);
-                last_tick = now;
-
-                let hw_data = hw.sample();
-                let cpu_temp_c = if tick_count == 1 || tick_count.is_multiple_of(2) {
-                    let fresh = tokio::task::spawn_blocking(super::cpu_sensor::sample_celsius)
-                        .await
-                        .ok()
-                        .flatten();
-                    last_cpu_temp_c = fresh;
-                    fresh
-                } else {
-                    last_cpu_temp_c
-                };
-
-                if let Some(ref mut caps) = *caps_cache.lock() {
-                    if cpu_temp_c.is_some() {
-                        caps.cpu_temp = true;
-                    }
-                }
-
-                let Some(cpu_usage) = hw_data.cpu_usage else {
-                    continue;
-                };
-
-                let freq_mhz = compute_effective_freq_mhz(
-                    hw_data.cpu_base_mhz.or(base_freq_mhz),
-                    hw_data.cpu_perf_pct,
+        let join = std::thread::Builder::new()
+            .name("od-system".into())
+            .spawn(move || {
+                let hw = pending_sampler
+                    .lock()
+                    .take()
+                    .unwrap_or_else(HardwareSampler::new);
+                run_system_thread(
+                    app_handle,
+                    history,
+                    caps_cache,
+                    stop_thread,
+                    my_gen,
+                    gen_ref,
+                    hw,
                 );
+            })
+            .ok();
 
-                let (mut rx_bytes, mut tx_bytes) = (0u64, 0u64);
-                if let Some(ref net_list) = nets {
-                    for (iface, data) in net_list {
-                        let name = iface.to_string_lossy();
-                        if is_virtual_interface(&name) {
-                            continue;
-                        }
-                        rx_bytes = rx_bytes.saturating_add(data.received());
-                        tx_bytes = tx_bytes.saturating_add(data.transmitted());
-                    }
-                }
-
-                let gpu = if hw.caps.gpu || hw.caps.vram || hw_data.name.is_some() {
-                    if hw.caps.gpu || hw.caps.vram {
-                        Some(GpuSample {
-                            usage: hw_data.usage,
-                            vram_used_bytes: hw_data.vram_used_bytes,
-                            vram_total_bytes: hw_data.vram_total_bytes,
-                            temp_c: hw_data.temp_c,
-                            name: hw_data.name,
-                        })
-                    } else {
-                        None
-                    }
-                } else {
-                    None
-                };
-
-                let sample = SystemSample {
-                    t: unix_now_ms(),
-                    uptime_s: System::uptime().unwrap_or(0),
-                    cpu: CpuSample {
-                        usage: cpu_usage,
-                        core_count,
-                        per_core: hw_data.cpu_per_core.clone(),
-                        freq_mhz,
-                        temp_c: cpu_temp_c,
-                    },
-                    mem: MemSample {
-                        used_bytes: sys.used_memory(),
-                        total_bytes: sys.total_memory(),
-                    },
-                    gpu,
-                    net: NetSample {
-                        rx_bps: rx_bytes as f64 / elapsed,
-                        tx_bps: tx_bytes as f64 / elapsed,
-                    },
-                    disk: DiskSample {
-                        read_bps: hw_data.disk_read_bps,
-                        write_bps: hw_data.disk_write_bps,
-                        active_pct: hw_data.disk_active_pct.map(|v| v as f32),
-                    },
-                };
-
-                {
-                    let mut guard = history.lock();
-                    if guard.len() >= HISTORY_CAP {
-                        guard.pop_front();
-                    }
-                    guard.push_back(sample.clone());
-                }
-
-                super::scheduler::emit_provider(
-                    &app_handle,
-                    super::scheduler::ProviderKind::System,
-                    None,
-                    "provider://system",
-                    &sample,
-                );
-            }
-        });
-
-        *self.task.lock() = Some(handle);
+        if join.is_none() {
+            log::warn!(target: "provider:system", "Kunne ikke starte od-system-tråd");
+            self.running.store(false, Ordering::Release);
+            return;
+        }
+        *self.worker.lock() = Some(SystemWorker { stop_signal, join });
     }
 
     pub fn stop(&self) {
-        if !self.running.swap(false, Ordering::AcqRel) {
+        let was_running = self.running.swap(false, Ordering::AcqRel);
+        self.generation.fetch_add(1, Ordering::AcqRel);
+        if !was_running {
             return;
         }
         log::info!(target: "provider:system", "Stopper system-provider");
-        if let Some(handle) = self.task.lock().take() {
-            handle.abort();
+        if let Some(mut worker) = self.worker.lock().take() {
+            let (lock, cvar) = &*worker.stop_signal;
+            *lock.lock() = true;
+            cvar.notify_all();
+            if let Some(join) = worker.join.take() {
+                drop(join);
+            }
+            drop(worker);
         }
-        super::cpu_sensor::shutdown();
         self.history.lock().clear();
+    }
+}
+
+fn system_thread_active(
+    stop_signal: &Arc<(Mutex<bool>, Condvar)>,
+    gen_ref: &AtomicU64,
+    my_gen: u64,
+) -> bool {
+    !*stop_signal.0.lock() && gen_ref.load(Ordering::Acquire) == my_gen
+}
+
+fn run_system_thread(
+    app_handle: AppHandle,
+    history: Arc<Mutex<VecDeque<SystemSample>>>,
+    caps_cache: Arc<Mutex<Option<SystemCaps>>>,
+    stop_signal: Arc<(Mutex<bool>, Condvar)>,
+    my_gen: u64,
+    gen_ref: Arc<AtomicU64>,
+    mut hw: HardwareSampler,
+) {
+    let mut sys = match System::new_with_specifics(
+        RefreshKind::nothing()
+            .with_cpu(CpuRefreshKind::nothing().with_frequency())
+            .with_memory(MemoryRefreshKind::nothing().with_ram()),
+    ) {
+        Ok(system) => system,
+        Err(err) => {
+            log::warn!(target: "provider:system", "System::new_with_specifics fejlede: {err}");
+            return;
+        }
+    };
+
+    let mut nets = match Networks::new_with_refreshed_list() {
+        Ok(n) => Some(n),
+        Err(err) => {
+            log::warn!(target: "provider:system", "Networks::new_with_refreshed_list fejlede: {err}");
+            None
+        }
+    };
+
+    let base_freq_mhz = {
+        let cpus = sys.cpus();
+        if cpus.is_empty() {
+            None
+        } else {
+            let sum: u64 = cpus.iter().map(|c| c.frequency()).sum();
+            let avg = (sum / cpus.len() as u64) as u32;
+            (avg > 0).then_some(avg)
+        }
+    };
+    // Antallet af logiske CPU'er er hardwaren, ikke processens affinity-maske.
+    // available_parallelism() kan underrapportere på maskiner med processorgrupper
+    // eller begrænset affinity, og det er ikke det tal Jobliste viser.
+    let core_count = sys.cpus().len().max(1) as u32;
+
+    *caps_cache.lock() = Some(hw.caps.clone());
+    let mut last_tick = Instant::now();
+    let mut first_tick = true;
+    let mut tick_count: u64 = 0;
+    let mut last_cpu_temp_c: Option<f32> = None;
+
+    loop {
+        if !system_thread_active(&stop_signal, &gen_ref, my_gen) {
+            break;
+        }
+        let sleep_ms = if first_tick {
+            250
+        } else {
+            app_handle
+                .state::<AppState>()
+                .config
+                .read_with(|c| c.general.system_interval_ms.max(500) as u64)
+        };
+
+        {
+            let (lock, cvar) = &*stop_signal;
+            let mut stopped = lock.lock();
+            if !*stopped {
+                cvar.wait_for(&mut stopped, Duration::from_millis(sleep_ms));
+            }
+            if *stopped || gen_ref.load(Ordering::Acquire) != my_gen {
+                break;
+            }
+        }
+
+        first_tick = false;
+        tick_count = tick_count.wrapping_add(1);
+
+        sys.refresh_memory_specifics(MemoryRefreshKind::nothing().with_ram());
+        if let Some(ref mut net_list) = nets {
+            net_list.refresh(tick_count.is_multiple_of(60));
+        }
+
+        let now = Instant::now();
+        let elapsed = (now - last_tick).as_secs_f64().max(0.1);
+        last_tick = now;
+
+        let hw_data = hw.sample();
+        let cpu_temp_c = if tick_count == 1 || tick_count.is_multiple_of(2) {
+            let fresh = super::cpu_sensor::sample_celsius();
+            last_cpu_temp_c = fresh;
+            fresh
+        } else {
+            last_cpu_temp_c
+        };
+
+        if let Some(ref mut caps) = *caps_cache.lock() {
+            if cpu_temp_c.is_some() {
+                caps.cpu_temp = true;
+            }
+        }
+
+        let Some(cpu_usage) = hw_data.cpu_usage else {
+            continue;
+        };
+
+        let freq_mhz = compute_effective_freq_mhz(
+            hw_data.cpu_base_mhz.or(base_freq_mhz),
+            hw_data.cpu_perf_pct,
+        );
+
+        let (mut rx_bytes, mut tx_bytes) = (0u64, 0u64);
+        if let Some(ref net_list) = nets {
+            for (iface, data) in net_list {
+                let name = iface.to_string_lossy();
+                if is_virtual_interface(&name) {
+                    continue;
+                }
+                rx_bytes = rx_bytes.saturating_add(data.received());
+                tx_bytes = tx_bytes.saturating_add(data.transmitted());
+            }
+        }
+
+        let gpu = if hw.caps.gpu || hw.caps.vram || hw_data.name.is_some() {
+            if hw.caps.gpu || hw.caps.vram {
+                Some(GpuSample {
+                    usage: hw_data.usage,
+                    vram_used_bytes: hw_data.vram_used_bytes,
+                    vram_total_bytes: hw_data.vram_total_bytes,
+                    temp_c: hw_data.temp_c,
+                    name: hw_data.name,
+                })
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        let sample = SystemSample {
+            t: unix_now_ms(),
+            uptime_s: System::uptime().unwrap_or(0),
+            cpu: CpuSample {
+                usage: cpu_usage,
+                core_count,
+                per_core: hw_data.cpu_per_core.clone(),
+                freq_mhz,
+                temp_c: cpu_temp_c,
+            },
+            mem: MemSample {
+                used_bytes: sys.used_memory(),
+                total_bytes: sys.total_memory(),
+            },
+            gpu,
+            net: NetSample {
+                rx_bps: rx_bytes as f64 / elapsed,
+                tx_bps: tx_bytes as f64 / elapsed,
+            },
+            disk: DiskSample {
+                read_bps: hw_data.disk_read_bps,
+                write_bps: hw_data.disk_write_bps,
+                active_pct: hw_data.disk_active_pct.map(|v| v as f32),
+            },
+        };
+
+        if !system_thread_active(&stop_signal, &gen_ref, my_gen) {
+            break;
+        }
+        {
+            let mut guard = history.lock();
+            if guard.len() >= HISTORY_CAP {
+                guard.pop_front();
+            }
+            guard.push_back(sample.clone());
+        }
+
+        if !system_thread_active(&stop_signal, &gen_ref, my_gen) {
+            break;
+        }
+        super::scheduler::emit_provider(
+            &app_handle,
+            super::scheduler::ProviderKind::System,
+            None,
+            "provider://system",
+            &sample,
+        );
     }
 }
 
@@ -321,11 +397,4 @@ fn is_virtual_interface(name: &str) -> bool {
         || lower.contains("virtualbox")
         || lower.contains("vmware")
         || lower.contains("wsl")
-}
-
-fn unix_now_ms() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0)
 }

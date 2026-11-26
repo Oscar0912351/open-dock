@@ -3,6 +3,7 @@ use std::{
     fs,
     path::{Path, PathBuf},
     sync::{
+        atomic::{AtomicBool, AtomicU64, Ordering},
         mpsc::{self, RecvTimeoutError, Sender},
         Arc,
     },
@@ -15,6 +16,8 @@ use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager};
 use ts_rs::TS;
+
+use crate::util::unix_now_ms;
 use windows::{
     core::PCWSTR,
     Foundation::TypedEventHandler,
@@ -41,6 +44,7 @@ use windows::{
 
 const MAX_ART_FILES: usize = 60;
 const MAX_DURATION_CACHE_ENTRIES: usize = 128;
+const NEGATIVE_DURATION_TTL: Duration = Duration::from_secs(120);
 const GRACE_PERIOD: Duration = Duration::from_secs(2);
 const EPOCH_DIFF_100NS: i64 = 116_444_736_000_000_000;
 const TIMELINE_HYDRATE_DELAYS_MS: [u64; 4] = [250, 1_000, 3_000, 5_000];
@@ -149,10 +153,17 @@ fn sync_fallback_duration(
     gsmtc_dur_ms
 }
 
+struct CachedDuration {
+    duration_ms: Option<u64>,
+    stored_at: Instant,
+    last_used: u64,
+}
+
 #[derive(Default)]
 struct DurationLookupState {
-    resolved: HashMap<String, Option<u64>>,
+    resolved: HashMap<String, CachedDuration>,
     in_flight: HashSet<String>,
+    access_seq: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -261,10 +272,12 @@ enum Cmd {
 pub struct MediaProvider {
     runtime: Mutex<Option<MediaWorker>>,
     latest: Mutex<Option<MediaSnapshot>>,
+    generation: Arc<AtomicU64>,
 }
 
 struct MediaWorker {
     tx: Sender<Cmd>,
+    stopped: Arc<AtomicBool>,
     join: Option<JoinHandle<()>>,
 }
 
@@ -279,6 +292,7 @@ impl MediaProvider {
         Self {
             runtime: Mutex::new(None),
             latest: Mutex::new(None),
+            generation: Arc::new(AtomicU64::new(0)),
         }
     }
 
@@ -318,7 +332,11 @@ impl MediaProvider {
                         }
                         MediaAction::Seek { ms } => {
                             if current.can_seek {
-                                current.position_ms = (*ms).min(current.duration_ms.max(*ms));
+                                current.position_ms = if current.duration_ms > 0 {
+                                    (*ms).min(current.duration_ms)
+                                } else {
+                                    *ms
+                                };
                                 current.updated_at = now;
                             } else {
                                 should_emit = false;
@@ -377,26 +395,34 @@ impl MediaProvider {
         let (tx, rx) = mpsc::channel();
         let tx_clone = tx.clone();
         let app_handle = app.clone();
-        let latest_ptr = self as *const MediaProvider as usize;
-
-        // SAFETY: MediaProvider lives inside Scheduler which is managed in AppState for app lifetime,
-        // and we stop/join the thread on stop(). We still use an Arc<Mutex<Option<MediaSnapshot>>> via AppState/Scheduler instead!
-        let _ = latest_ptr;
+        let stopped = Arc::new(AtomicBool::new(false));
+        let stopped_thread = Arc::clone(&stopped);
+        let my_gen = self.generation.fetch_add(1, Ordering::AcqRel) + 1;
+        let generation = Arc::clone(&self.generation);
 
         let art_dir = crate::paths::data_root().join("art");
         let _ = fs::create_dir_all(&art_dir);
         purge_legacy_art_files(&art_dir);
 
-        let latest_snapshot_sink = app_handle.clone();
         match std::thread::Builder::new()
             .name("od-media".into())
             .spawn(move || {
-                run_media_thread(app_handle, tx_clone, rx, art_dir, preferred_source, latest_snapshot_sink);
+                run_media_thread(
+                    app_handle,
+                    tx_clone,
+                    rx,
+                    art_dir,
+                    preferred_source,
+                    stopped_thread,
+                    my_gen,
+                    generation,
+                );
             }) {
             Ok(join) => {
                 log::info!(target: "provider:media", "Starter media-provider (od-media)");
                 *guard = Some(MediaWorker {
                     tx,
+                    stopped,
                     join: Some(join),
                 });
             }
@@ -407,13 +433,16 @@ impl MediaProvider {
     }
 
     pub fn stop(&self) {
+        self.generation.fetch_add(1, Ordering::AcqRel);
         let worker = self.runtime.lock().take();
         if let Some(mut worker) = worker {
             log::info!(target: "provider:media", "Stopper media-provider");
+            worker.stopped.store(true, Ordering::Release);
             let _ = worker.tx.send(Cmd::Shutdown);
             if let Some(join) = worker.join.take() {
-                let _ = join.join();
+                drop(join);
             }
+            drop(worker);
         }
     }
 
@@ -527,7 +556,9 @@ fn run_media_thread(
     rx: mpsc::Receiver<Cmd>,
     art_dir: PathBuf,
     mut preferred_source: Option<String>,
-    _sink: AppHandle,
+    stopped: Arc<AtomicBool>,
+    my_gen: u64,
+    generation: Arc<AtomicU64>,
 ) {
     let ro_ok = unsafe { RoInitialize(RO_INIT_MULTITHREADED) }.is_ok();
 
@@ -579,6 +610,9 @@ fn run_media_thread(
     let _ = tx.send(Cmd::Rescan);
 
     loop {
+        if stopped.load(Ordering::Acquire) || generation.load(Ordering::Acquire) != my_gen {
+            break;
+        }
         let base_timeout = if lost_since.is_some() {
             Duration::from_millis(350)
         } else if last_emitted
@@ -808,7 +842,7 @@ fn run_media_thread(
                     }
 
                     if force_emit || snapshots_differ(last_emitted.as_ref(), &snapshot) {
-                        emit_snapshot(&app, &snapshot);
+                        emit_snapshot(&app, &snapshot, &stopped, &generation, my_gen);
                         last_emitted = Some(snapshot);
                     }
                 } else {
@@ -863,7 +897,7 @@ fn run_media_thread(
                     .map(|s| s.status != PlaybackStatus::None)
                     .unwrap_or(true)
                 {
-                    emit_snapshot(&app, &empty);
+                    emit_snapshot(&app, &empty, &stopped, &generation, my_gen);
                     last_emitted = Some(empty);
                 }
             }
@@ -888,9 +922,21 @@ fn run_media_thread(
     }
 }
 
-fn emit_snapshot(app: &AppHandle, snapshot: &MediaSnapshot) {
+fn emit_snapshot(
+    app: &AppHandle,
+    snapshot: &MediaSnapshot,
+    stopped: &AtomicBool,
+    generation: &AtomicU64,
+    my_gen: u64,
+) {
+    if stopped.load(Ordering::Acquire) || generation.load(Ordering::Acquire) != my_gen {
+        return;
+    }
     if let Some(scheduler) = app.try_state::<super::scheduler::Scheduler>() {
         scheduler.media().update_latest(snapshot.clone());
+        if stopped.load(Ordering::Acquire) || generation.load(Ordering::Acquire) != my_gen {
+            return;
+        }
         scheduler.emit_to_subscribers(
             super::scheduler::ProviderKind::Media,
             None,
@@ -1536,8 +1582,19 @@ fn resolve_fallback_duration_ms(
 
     {
         let mut guard = cache.lock();
-        if let Some(&cached) = guard.resolved.get(&cache_key) {
-            return cached.unwrap_or(0);
+        guard.access_seq = guard.access_seq.saturating_add(1);
+        let access_seq = guard.access_seq;
+        let mut expired_negative = false;
+        if let Some(entry) = guard.resolved.get_mut(&cache_key) {
+            if entry.duration_ms.is_none() && entry.stored_at.elapsed() >= NEGATIVE_DURATION_TTL {
+                expired_negative = true;
+            } else {
+                entry.last_used = access_seq;
+                return entry.duration_ms.unwrap_or(0);
+            }
+        }
+        if expired_negative {
+            guard.resolved.remove(&cache_key);
         }
         if guard.in_flight.contains(&cache_key) || guard.in_flight.len() >= 4 {
             return 0;
@@ -1552,10 +1609,27 @@ fn resolve_fallback_duration_ms(
         {
             let mut guard = cache_clone.lock();
             guard.in_flight.remove(&cache_key);
-            if guard.resolved.len() >= MAX_DURATION_CACHE_ENTRIES {
-                guard.resolved.clear();
+            while guard.resolved.len() >= MAX_DURATION_CACHE_ENTRIES {
+                let Some(oldest_key) = guard
+                    .resolved
+                    .iter()
+                    .min_by_key(|(_, entry)| entry.last_used)
+                    .map(|(key, _)| key.clone())
+                else {
+                    break;
+                };
+                guard.resolved.remove(&oldest_key);
             }
-            guard.resolved.insert(cache_key, result);
+            guard.access_seq = guard.access_seq.saturating_add(1);
+            let access_seq = guard.access_seq;
+            guard.resolved.insert(
+                cache_key,
+                CachedDuration {
+                    duration_ms: result,
+                    stored_at: Instant::now(),
+                    last_used: access_seq,
+                },
+            );
         }
         if result.is_some() {
             let _ = tx_clone.send(Cmd::Refresh);
@@ -1572,11 +1646,7 @@ async fn fetch_youtube_duration_ms(title: &str, artist: &str) -> Option<u64> {
         format!("{} {}", title, artist.trim())
     };
 
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(4))
-        .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) OpenDock/0.1")
-        .build()
-        .ok()?;
+    let client = crate::util::http_client();
 
     let payload = serde_json::json!({
         "context": {
@@ -1590,6 +1660,11 @@ async fn fetch_youtube_duration_ms(title: &str, artist: &str) -> Option<u64> {
 
     let resp = client
         .post("https://www.youtube.com/youtubei/v1/search?prettyPrint=false")
+        .timeout(Duration::from_secs(4))
+        .header(
+            reqwest::header::USER_AGENT,
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) OpenDock/0.1",
+        )
         .json(&payload)
         .send()
         .await
@@ -1923,12 +1998,6 @@ fn fnv1a_64_bytes(bytes: &[u8]) -> u64 {
     hash
 }
 
-fn unix_now_ms() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0)
-}
 
 #[cfg(test)]
 mod tests {

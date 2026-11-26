@@ -374,11 +374,100 @@ export const en: Messages = {
     ruleExpandWhenHighLoad: "Expand under heavy load",
     ruleExpandWhenActive: "Expand while agents work",
     ruleExpandWhenInCall: "Expand while you're in a call",
+    ruleShowOnHover: "Show on hover",
     ruleFillRemainingSpace: "Fill leftover space",
     moveUp: "Move up",
     moveDown: "Move down",
     widgetCount: "{n} widgets",
     widgetCountOne: "1 widget",
+  },
+  widgetSettings: {
+    clock: {
+      style: {
+        label: "Style",
+        options: { digital: "Digital", analog: "Analog" },
+      },
+      showSeconds: { label: "Show seconds" },
+      showDate: { label: "Show date" },
+      timezone: { label: "Time zone" },
+      label: { label: "Label", placeholder: "Local time" },
+      extraZones: { label: "Extra cities" },
+    },
+    nowPlaying: {
+      preferredSource: {
+        label: "Source",
+        options: { auto: "Automatic", spotify: "Spotify" },
+      },
+      ambient: { label: "Tint the glass from the artwork" },
+      showProgress: { label: "Show timeline" },
+      hideWhenIdle: { label: "Hide when nothing is playing" },
+    },
+    system: {
+      metrics: { label: "Measurements" },
+      primary: {
+        label: "Primary measurement",
+        options: {
+          cpu: "CPU",
+          mem: "RAM",
+          gpu: "GPU",
+          vram: "VRAM",
+          net: "Network",
+          disk: "Disk",
+        },
+      },
+      showTemps: { label: "Show temperature" },
+      unitsBits: { label: "Network in bit/s" },
+    },
+    weather: {
+      locationId: { label: "Place" },
+      unit: {
+        label: "Unit",
+        options: { c: "°C", f: "°F" },
+      },
+      chart: {
+        label: "Chart",
+        options: { hourly: "Hourly", daily: "7 days" },
+      },
+    },
+    note: {
+      title: { label: "Title", placeholder: "Note" },
+      mode: {
+        label: "Mode",
+        options: { text: "Text", checklist: "Checklist" },
+      },
+      fontSize: {
+        label: "Font",
+        options: { s: "S", m: "M", l: "L" },
+      },
+    },
+    timer: {
+      sound: {
+        label: "Sound",
+        options: { chime: "Chime", marimba: "Marimba", crystal: "Crystal" },
+      },
+      volume: { label: "Volume" },
+      notify: { label: "Notification" },
+    },
+    agents: {
+      recentWindowMin: {
+        label: "Show finished",
+        options: { active: "Active only", minutes15: "15 min", hour1: "1 hour" },
+      },
+    },
+  },
+  timezones: {
+    regions: {
+      Europe: "Europe",
+      America: "America",
+      Asia: "Asia",
+      Africa: "Africa",
+      Australia: "Australia",
+      Pacific: "Pacific",
+      Atlantic: "Atlantic",
+      Indian: "Indian Ocean",
+      Arctic: "Arctic",
+      Antarctica: "Antarctica",
+    },
   },
   form: {
     selectedCount: "{n} of {max} selected",

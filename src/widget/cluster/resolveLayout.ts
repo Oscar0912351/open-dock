@@ -8,6 +8,9 @@ export interface ClusterSignals {
   systemHighLoad: boolean;
   agentsActive: boolean;
   discordInCall: boolean;
+  clusterHover?: boolean;
+  focusedModuleIds?: ReadonlySet<string>;
+  timerFinishedModuleIds?: ReadonlySet<string>;
 }
 
 export const DEFAULT_CLUSTER_SIGNALS: ClusterSignals = {
@@ -27,7 +30,7 @@ export const MODULE_HEIGHT_U: Record<ClusterModuleKind, Record<ModuleMode, numbe
   note: { hidden: 0, compact: 32, expanded: 104 },
   discord: { hidden: 0, compact: 36, expanded: 108 },
   agents: { hidden: 0, compact: 32, expanded: 132 },
-  timer: { hidden: 0, compact: 32, expanded: 76 },
+  timer: { hidden: 0, compact: 32, expanded: 84 },
 };
 
 const FIXED_EXPANSION_ORDER: readonly ClusterModuleKind[] = [
@@ -69,6 +72,16 @@ export function resolveModuleModes(
       case "expandWhenInCall":
         mode = signals.discordInCall ? "expanded" : "hidden";
         break;
+      case "showOnHover": {
+        if (signals.timerFinishedModuleIds?.has(mod.id)) {
+          mode = "expanded";
+        } else if (signals.clusterHover || signals.focusedModuleIds?.has(mod.id)) {
+          mode = allowHiddenManual ? "expanded" : "compact";
+        } else {
+          mode = "hidden";
+        }
+        break;
+      }
       case "none":
       case "fillRemainingSpace":
         break;

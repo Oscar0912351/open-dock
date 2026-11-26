@@ -19,7 +19,7 @@ use tauri::{AppHandle, Manager};
 
 use crate::{
     config::schema::{
-        Config, MonitorWallpaper, MonitorWallpaperPatch, SizeF, WallpaperConfig,
+        Config, MonitorWallpaper, MonitorWallpaperPatch, WallpaperConfig,
         WallpaperEngineSettingsPatch, WallpaperFit, WallpaperKind,
     },
     desktop::monitors::{list_tauri_monitors, MonitorInfo},
@@ -104,23 +104,7 @@ fn collect_monitors(app: &AppHandle) -> Vec<MonitorInfo> {
     }
     list_tauri_monitors(app)
         .into_iter()
-        .map(|m| {
-            let scale = m.scale.max(0.5);
-            MonitorInfo {
-                name: m.name,
-                rect: m.rect,
-                work_area: m.work_area,
-                scale: m.scale,
-                logical_size: SizeF {
-                    width: m.rect.width as f64 / scale,
-                    height: m.rect.height as f64 / scale,
-                },
-                plate_path: String::new(),
-                glass_plate_path: String::new(),
-                avg_luma: 0.15,
-                is_primary: m.is_primary,
-            }
-        })
+        .map(|m| MonitorInfo::from_snapshot(&m))
         .collect()
 }
 

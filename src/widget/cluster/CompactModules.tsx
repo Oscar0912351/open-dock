@@ -37,6 +37,7 @@ import type { ModuleMode } from "../../shared/bindings/ModuleMode";
 import type { SystemCaps } from "../../shared/bindings/SystemCaps";
 import type { SystemSample } from "../../shared/bindings/SystemSample";
 import type { ThemeId } from "../../shared/bindings/ThemeId";
+import type { TimerListSnapshot } from "../../shared/bindings/TimerListSnapshot";
 import type { WeatherSnapshot } from "../../shared/bindings/WeatherSnapshot";
 import {
   formatBytes,
@@ -50,7 +51,7 @@ import {
   formatTime,
   timeZoneCity,
 } from "../../shared/format";
-import { t } from "../../shared/i18n";
+import { t, useLocale } from "../../shared/i18n";
 import { WeatherIcon } from "../../shared/icons/WeatherSprite";
 import { ipc, toAssetUrl } from "../../shared/ipc";
 import { resolveWmo } from "../../shared/wmo";
@@ -89,12 +90,16 @@ import { useLiveMediaPosition } from "../kinds/nowPlaying/useLiveMediaPosition";
 import { formatCountdown, formatOvertime } from "../kinds/timer/formatDuration";
 import { sortTimers } from "../kinds/timer/sortTimers";
 import {
+  chipLabel,
+  Chips,
+  errorMessage,
+  releaseTimerFocus,
   TimerInput,
   TimerRow,
   timerItemTitle,
   timerRestMs,
 } from "../kinds/timer/Timer";
-import { useTimers } from "../kinds/timer/useTimers";
+import { cleanTimerLabel, parseTimerInput } from "../kinds/timer/parseTimerInput";
 import "../kinds/timer/timer.css";
 import { Sparkline } from "../kinds/system/Sparkline";
 import { resolveSystemSettings } from "../kinds/system/System";
@@ -117,9 +122,13 @@ export interface ClusterModuleSharedData {
   discord: { status: string; data: DiscordSnapshot | null };
   agents: { status: string; data: AgentsSnapshot | null };
   agentsNowMs: number;
-  /** Timer-moduler rapporterer pin-tilstand hit; shell aggregerer til
-      onPinVisibleChange ("vis kun når musen er over"). */
-  timerPin?: (moduleId: string, pinned: boolean) => void;
+  /** Timer-snapshots pr. timer-modul-id — hentes i shell så de er levende
+      selv når modulet er hidden (pin-regler og auto-udvidelse ved ring). */
+  timerSnapshots?: ReadonlyMap<string, TimerListSnapshot>;
+  timerNowMs?: number;
+  /** Moduler med aktivt input rapporterer fokus hit, så et showOnHover-modul
+      ikke kollapser mens brugeren skriver. */
+  onModuleFocus?: (moduleId: string, focused: boolean) => void;
 }
 
 interface ModuleCardProps {
@@ -146,7 +155,9 @@ const TimerClusterMod = memo(function TimerClusterMod({
   widgetId,
   editMode,
   preview,
-  timerPin,
+  snapshot,
+  nowMs,
+  onModuleFocus,
   onToggleExpand,
 }: {
   mod: ClusterModule;
@@ -154,27 +165,43 @@ const TimerClusterMod = memo(function TimerClusterMod({
   widgetId: string;
   editMode: boolean;
   preview?: boolean;
-  timerPin?: (moduleId: string, pinned: boolean) => void;
+  snapshot: TimerListSnapshot | null;
+  nowMs: number;
+  onModuleFocus?: (moduleId: string, focused: boolean) => void;
   onToggleExpand: (id: string) => void;
 }) {
+  useLocale();
   const onClick = (e: MouseEvent<HTMLDivElement>) => {
     if (!shouldIgnoreExpand(e)) onToggleExpand(mod.id);
   };
-  const { snapshot, nowMs } = useTimers(preview ? null : mod.id, !preview);
   const items = useMemo(() => snapshot?.items ?? [], [snapshot]);
   const sorted = useMemo(() => sortTimers(items), [items]);
   const next = sorted[0];
   const [inputText, setInputText] = useState("");
   const [inputEditing, setInputEditing] = useState(false);
+  const [addError, setAddError] = useState<string | null>(null);
   const interactive = !editMode && !preview;
   const full = items.length >= 8;
 
-  // Pin til "vis kun når musen er over": finished timer eller fokuseret input.
-  const pinned = Boolean(next?.status === "finished") || inputEditing;
+  // Fokus rapporteres til shell, så et showOnHover-modul ikke kollapser
+  // mens brugeren skriver (og klyngen forbliver pinnet synlig).
   useEffect(() => {
-    timerPin?.(mod.id, pinned);
-  }, [timerPin, mod.id, pinned]);
-  useEffect(() => () => timerPin?.(mod.id, false), [timerPin, mod.id]);
+    onModuleFocus?.(mod.id, inputEditing);
+  }, [onModuleFocus, mod.id, inputEditing]);
+  useEffect(() => () => onModuleFocus?.(mod.id, false), [onModuleFocus, mod.id]);
+
+  const startPreset = (minutes: number) => {
+    if (!interactive || full) return;
+    const parsed = parseTimerInput(inputText, new Date());
+    const label = parsed ? parsed.label : cleanTimerLabel(inputText);
+    void ipc
+      .timerAdd(mod.id, label, minutes * 60_000)
+      .then(() => {
+        setInputText("");
+        releaseTimerFocus();
+      })
+      .catch((e) => setAddError(errorMessage(e)));
+  };
 
   if (mode === "compact") {
     const finished = next?.status === "finished";
@@ -215,8 +242,9 @@ const TimerClusterMod = memo(function TimerClusterMod({
     );
   }
 
-  // Expanded (76u): næste TimerRow med handlinger + input (focusable via
-  // widget-vinduets id — samme mønster som NoteClusterMod).
+  // Expanded: input øverst, derefter op til 3 rækker + "+n flere" — eller
+  // hurtig-preset-chips når der ingen timere er. Højden beregnes i shell
+  // (computeTimerExpandedHeight) så intet klippes.
   const finished = next?.status === "finished";
   return (
     <div
@@ -225,32 +253,56 @@ const TimerClusterMod = memo(function TimerClusterMod({
       onClick={onClick}
     >
       <div className="col g6 tm-cluster-exp">
-        {next ? (
-          <TimerRow
-            timerId={mod.id}
-            item={next}
-            nowMs={nowMs}
-            size="c"
-            interactive={interactive}
-          />
-        ) : (
-          <span className="micro">{t("timer.empty")}</span>
-        )}
         <TimerInput
           value={inputText}
-          onValueChange={setInputText}
+          onValueChange={(text) => {
+            setInputText(text);
+            setAddError(null);
+          }}
           timerId={mod.id}
           focusId={widgetId}
-          placeholder={full ? t("timer.full") : t("timer.placeholderShort")}
+          placeholder={full ? t("timer.full") : t("timer.placeholder")}
           disabled={!interactive || full}
           showHint
+          error={addError}
           onEditingChange={setInputEditing}
         />
+        {sorted.length > 0 ? (
+          <>
+            {sorted.slice(0, 3).map((item) => (
+              <TimerRow
+                key={item.id}
+                timerId={mod.id}
+                item={item}
+                nowMs={nowMs}
+                size="c"
+                interactive={interactive}
+              />
+            ))}
+            {sorted.length > 3 && (
+              <span className="micro tm-more">{t("timer.more", { n: sorted.length - 3 })}</span>
+            )}
+          </>
+        ) : (
+          <Chips className="tm-suggest">
+            {[1, 3, 5, 10, 15, 30].map((minutes) => (
+              <button
+                key={`p${minutes}`}
+                type="button"
+                className="tm-chipbtn"
+                disabled={!interactive || full}
+                onMouseDown={(e) => e.preventDefault()}
+                onClick={() => startPreset(minutes)}
+              >
+                {chipLabel(minutes)}
+              </button>
+            ))}
+          </Chips>
+        )}
       </div>
     </div>
   );
 });
-
 function HintBadge({ label }: { label: string }) {
   return (
     <span className="micro c-hint">
@@ -344,7 +396,9 @@ export function ClusterModuleView({ mod, mode, shared, onToggleExpand }: ModuleC
           widgetId={shared.widgetId}
           editMode={shared.editMode}
           preview={shared.preview}
-          timerPin={shared.timerPin}
+          snapshot={shared.timerSnapshots?.get(mod.id) ?? null}
+          nowMs={shared.timerNowMs ?? Date.now()}
+          onModuleFocus={shared.onModuleFocus}
           onToggleExpand={onToggleExpand}
         />
       );
@@ -356,6 +410,7 @@ export function ClusterModuleView({ mod, mode, shared, onToggleExpand }: ModuleC
           widgetId={shared.widgetId}
           editMode={shared.editMode}
           preview={shared.preview}
+          onModuleFocus={shared.onModuleFocus}
           onToggleExpand={onToggleExpand}
         />
       );
@@ -377,6 +432,7 @@ const ClockClusterMod = memo(function ClockClusterMod({
   preview?: boolean;
   onToggleExpand: (id: string) => void;
 }) {
+  useLocale();
   const onClick = (e: MouseEvent<HTMLDivElement>) => {
     if (!shouldIgnoreExpand(e)) onToggleExpand(mod.id);
   };
@@ -453,6 +509,7 @@ const MediaClusterMod = memo(function MediaClusterMod({
   preview?: boolean;
   onToggleExpand: (id: string) => void;
 }) {
+  useLocale();
   const onClick = (e: MouseEvent<HTMLDivElement>) => {
     if (!shouldIgnoreExpand(e)) onToggleExpand(mod.id);
   };
@@ -770,6 +827,7 @@ const SystemClusterMod = memo(function SystemClusterMod({
   preview?: boolean;
   onToggleExpand: (id: string) => void;
 }) {
+  useLocale();
   const onClick = (e: MouseEvent<HTMLDivElement>) => {
     if (!shouldIgnoreExpand(e)) onToggleExpand(mod.id);
   };
@@ -919,6 +977,7 @@ const WeatherClusterMod = memo(function WeatherClusterMod({
   preview?: boolean;
   onToggleExpand: (id: string) => void;
 }) {
+  useLocale();
   const onClick = (e: MouseEvent<HTMLDivElement>) => {
     if (!shouldIgnoreExpand(e)) onToggleExpand(mod.id);
   };
@@ -1023,6 +1082,7 @@ const DiscordClusterMod = memo(function DiscordClusterMod({
   preview?: boolean;
   onToggleExpand: (id: string) => void;
 }) {
+  useLocale();
   const onClick = (e: MouseEvent<HTMLDivElement>) => {
     if (!shouldIgnoreExpand(e)) onToggleExpand(mod.id);
   };
@@ -1152,6 +1212,7 @@ const AgentsClusterMod = memo(function AgentsClusterMod({
   preview?: boolean;
   onToggleExpand: (id: string) => void;
 }) {
+  useLocale();
   const onClick = (e: MouseEvent<HTMLDivElement>) => {
     if (!shouldIgnoreExpand(e)) onToggleExpand(mod.id);
   };
@@ -1289,6 +1350,7 @@ const NoteClusterMod = memo(function NoteClusterMod({
   widgetId,
   editMode,
   preview,
+  onModuleFocus,
   onToggleExpand,
 }: {
   mod: ClusterModule;
@@ -1296,8 +1358,10 @@ const NoteClusterMod = memo(function NoteClusterMod({
   widgetId: string;
   editMode: boolean;
   preview?: boolean;
+  onModuleFocus?: (moduleId: string, focused: boolean) => void;
   onToggleExpand: (id: string) => void;
 }) {
+  useLocale();
   const onClick = (e: MouseEvent<HTMLDivElement>) => {
     if (!shouldIgnoreExpand(e)) onToggleExpand(mod.id);
   };
@@ -1371,6 +1435,7 @@ const NoteClusterMod = memo(function NoteClusterMod({
   const enterEditing = () => {
     if (editMode || preview) return;
     void ipc.widgetSetFocusable(widgetId, true).catch(() => {});
+    onModuleFocus?.(mod.id, true);
   };
 
   const exitEditing = () => {
@@ -1378,7 +1443,10 @@ const NoteClusterMod = memo(function NoteClusterMod({
     if (!preview) {
       void ipc.widgetSetFocusable(widgetId, false).catch(() => {});
     }
+    onModuleFocus?.(mod.id, false);
   };
+
+  useEffect(() => () => onModuleFocus?.(mod.id, false), [onModuleFocus, mod.id]);
 
   const handleKeyDown = (e: KeyboardEvent<HTMLElement>) => {
     if (e.key === "Escape") {

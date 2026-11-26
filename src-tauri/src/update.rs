@@ -3,7 +3,7 @@ use std::{
     path::{Path, PathBuf},
     process::Command,
     sync::atomic::{AtomicBool, Ordering},
-    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant},
 };
 
 use base64::{engine::general_purpose::STANDARD as B64, Engine as _};
@@ -19,11 +19,11 @@ use crate::{
     config::schema::{ControlTheme, Language},
     error::AppError,
     state::AppState,
+    util::unix_now_s,
 };
 
 const MANIFEST_URL: &str =
     "https://github.com/Oscar0912351/open-dock/releases/latest/download/latest.json";
-const USER_AGENT: &str = "Open-Dock/0.1";
 const STARTUP_CHECK_DELAY: Duration = Duration::from_secs(15);
 /// Installeren er lille nok til at downloade på under et sekund — hold
 /// download-staten synlig lidt, så indikatoren ikke blinker forbi uset.
@@ -119,26 +119,6 @@ fn local_build_id() -> Option<i64> {
         .filter(|id| *id > 0)
 }
 
-fn client() -> Client {
-    Client::builder()
-        .timeout(Duration::from_secs(15))
-        .user_agent(USER_AGENT)
-        .build()
-        .unwrap_or_else(|_| Client::new())
-}
-
-/// Downloads må ikke dø på en samlet request-timeout — en stor fil på en sløv
-/// forbindelse bruger længere tid end manifestet. Begræns i stedet connect-tid
-/// og stilstand mellem chunks, så fremskridt altid kan nå i mål.
-fn download_client() -> Client {
-    Client::builder()
-        .connect_timeout(Duration::from_secs(15))
-        .read_timeout(Duration::from_secs(30))
-        .user_agent(USER_AGENT)
-        .build()
-        .unwrap_or_else(|_| Client::new())
-}
-
 async fn fetch_manifest(client: &Client) -> Result<ReleaseManifest, AppError> {
     let response = client
         .get(MANIFEST_URL)
@@ -173,7 +153,7 @@ pub async fn check() -> Result<UpdateStatus, AppError> {
         });
     };
 
-    let manifest = fetch_manifest(&client()).await?;
+    let manifest = fetch_manifest(crate::util::http_client()).await?;
     let state = if manifest.build_id > build_id {
         UpdateCheckState::Available
     } else {
@@ -297,7 +277,7 @@ async fn download_installer(app: &AppHandle, manifest: &ReleaseManifest) -> Resu
         }
     }
 
-    let mut response = download_client()
+    let mut response = crate::util::http_download_client()
         .get(&manifest.url)
         .send()
         .await
@@ -484,7 +464,7 @@ pub async fn install(app: &AppHandle) -> Result<(), AppError> {
         let (installer, manifest) = match staged {
             Some((_, path)) if path.exists() => (path, cached_manifest),
             _ => {
-                let manifest = fetch_manifest(&client()).await?;
+                let manifest = fetch_manifest(crate::util::http_client()).await?;
                 let path = download_installer(app, &manifest).await?;
                 (path, Some(manifest))
             }
@@ -531,20 +511,38 @@ fn spawn_silent_install(installer: &Path, meta: &SplashMeta) -> Result<(), AppEr
         None => app_exe.clone(),
     };
 
-    let temp_dir = std::env::temp_dir();
-    let splash_path = temp_dir.join("open-dock-update-splash.ps1");
-    let stage_path = temp_dir.join("open-dock-update-stage.txt");
-    let script_path = temp_dir.join("open-dock-update.ps1");
+    let update_root = crate::paths::data_root().join("update");
+    cleanup_stale_update_runs(&update_root);
+    let run_dir = update_root.join(uuid::Uuid::new_v4().to_string());
+    fs::create_dir_all(&run_dir).map_err(|err| {
+        AppError::Other(format!("Kunne ikke oprette opdateringsmappe: {err}"))
+    })?;
+    let splash_path = run_dir.join("splash.ps1");
+    let stage_path = run_dir.join("stage.txt");
+    let script_path = run_dir.join("run.ps1");
     // Stage-filen skal findes før splashen starter, så dens første poll
     // læser "closing" frem for at falde tilbage på default.
-    fs::write(&stage_path, "closing")
-        .map_err(|err| AppError::Other(format!("Kunne ikke skrive opdateringsstatus: {err}")))?;
+    if let Err(err) = write_new_file(&stage_path, "closing") {
+        let _ = fs::remove_dir_all(&run_dir);
+        return Err(err);
+    }
     let splash = build_splash_script(&stage_path, meta);
-    fs::write(&splash_path, splash)
-        .map_err(|err| AppError::Other(format!("Kunne ikke skrive opdateringsscript: {err}")))?;
-    let script = update_script(installer, &relaunch, std::process::id(), &stage_path);
-    fs::write(&script_path, script)
-        .map_err(|err| AppError::Other(format!("Kunne ikke skrive opdateringsscript: {err}")))?;
+    if let Err(err) = write_new_file(&splash_path, &splash) {
+        let _ = fs::remove_dir_all(&run_dir);
+        return Err(err);
+    }
+    let script = update_script(
+        installer,
+        &relaunch,
+        std::process::id(),
+        &stage_path,
+        &splash_path,
+        &run_dir,
+    );
+    if let Err(err) = write_new_file(&script_path, &script) {
+        let _ = fs::remove_dir_all(&run_dir);
+        return Err(err);
+    }
 
     log::info!(
         target: "update",
@@ -583,14 +581,47 @@ fn spawn_silent_install(installer: &Path, meta: &SplashMeta) -> Result<(), AppEr
         if let Some(child) = splash_child.as_mut() {
             let _ = child.kill();
         }
-        let _ = fs::remove_file(&stage_path);
-        let _ = fs::remove_file(&splash_path);
-        let _ = fs::remove_file(&script_path);
+        let _ = fs::remove_dir_all(&run_dir);
         return Err(AppError::Other(format!(
             "Kunne ikke starte installationsprogrammet: {err}"
         )));
     }
     Ok(())
+}
+
+fn cleanup_stale_update_runs(update_root: &Path) {
+    let Ok(entries) = fs::read_dir(update_root) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        let stale = entry
+            .metadata()
+            .and_then(|metadata| metadata.modified())
+            .ok()
+            .and_then(|modified| modified.elapsed().ok())
+            .is_some_and(|age| age > Duration::from_secs(24 * 60 * 60));
+        if stale {
+            if let Err(error) = fs::remove_dir_all(&path) {
+                log::warn!(target: "update", "Kunne ikke rydde gammel opdateringsmappe {:?}: {error}", path);
+            }
+        }
+    }
+}
+
+fn write_new_file(path: &Path, content: &str) -> Result<(), AppError> {
+    use std::io::Write;
+
+    let mut file = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
+        .map_err(|err| AppError::Other(format!("Kunne ikke skrive opdateringsscript: {err}")))?;
+    file.write_all(content.as_bytes())
+        .map_err(|err| AppError::Other(format!("Kunne ikke skrive opdateringsscript: {err}")))
 }
 
 fn ps_escape(value: &str) -> String {
@@ -624,13 +655,17 @@ fn update_script(
     relaunch: &Path,
     app_pid: u32,
     stage: &Path,
+    splash: &Path,
+    run_dir: &Path,
 ) -> String {
     let esc = |p: &Path| ps_escape(&p.display().to_string());
     let body = UPDATE_SCRIPT
         .replace("__APP_PID__", &app_pid.to_string())
         .replace("__INSTALLER__", &esc(installer))
         .replace("__RELAUNCH__", &esc(relaunch))
-        .replace("__STAGE_FILE__", &esc(stage));
+        .replace("__STAGE_FILE__", &esc(stage))
+        .replace("__SPLASH_SCRIPT__", &esc(splash))
+        .replace("__RUN_DIR__", &esc(run_dir));
     format!("\u{feff}{body}")
 }
 
@@ -638,532 +673,9 @@ fn update_script(
 /// app-ikonets form med Studio dot-grid, tre svævende bento-brikker og én
 /// hårfin fremgangslinje. Kører som sin egen powershell-proces med 3-min
 /// sikkerhedsnet.
-const SPLASH_SCRIPT: &str = r##"$ErrorActionPreference = 'SilentlyContinue'
-Add-Type -AssemblyName PresentationFramework,PresentationCore,WindowsBase
+const SPLASH_SCRIPT: &str = include_str!("update_splash.ps1");
 
-$stageFile    = '__STAGE_FILE__'
-$theme        = '__THEME__'
-$lang         = '__LANG__'
-$versionBadge = '__VERSION_BADGE__'
-$isLight      = ($theme -eq 'light')
-$isEn         = ($lang -eq 'en')
-$allowMotion  = $true
-try { $allowMotion = [bool][System.Windows.SystemParameters]::ClientAreaAnimation } catch {}
-
-function Make-Color([string]$hex) {
-    [System.Windows.Media.ColorConverter]::ConvertFromString($hex)
-}
-function Make-Brush([string]$hex) {
-    $b = New-Object System.Windows.Media.SolidColorBrush (Make-Color $hex)
-    $b.Freeze()
-    $b
-}
-function Make-Linear([string]$from, [string]$to, [double]$x1, [double]$y1, [double]$x2, [double]$y2) {
-    $g = New-Object System.Windows.Media.LinearGradientBrush
-    $g.StartPoint = New-Object System.Windows.Point($x1, $y1)
-    $g.EndPoint   = New-Object System.Windows.Point($x2, $y2)
-    $null = $g.GradientStops.Add((New-Object System.Windows.Media.GradientStop((Make-Color $from), 0.0)))
-    $null = $g.GradientStops.Add((New-Object System.Windows.Media.GradientStop((Make-Color $to), 1.0)))
-    $g.Freeze()
-    $g
-}
-
-$copy = if ($isEn) {
-    @{
-        Title       = 'Updating Open Dock'
-        Closing     = 'Closing…'
-        Installing  = 'Installing…'
-        Relaunching = 'Relaunching…'
-        Done        = 'Starting…'
-    }
-} else {
-    @{
-        Title       = 'Opdaterer Open Dock'
-        Closing     = 'Lukker…'
-        Installing  = 'Installerer…'
-        Relaunching = 'Starter igen…'
-        Done        = 'Åbner…'
-    }
-}
-
-$xaml = @'
-<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
-        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Width="316" Height="324"
-        WindowStyle="None" ResizeMode="NoResize"
-        AllowsTransparency="True" Background="Transparent"
-        Topmost="True" ShowInTaskbar="False"
-        WindowStartupLocation="CenterScreen"
-        UseLayoutRounding="True" SnapsToDevicePixels="True"
-        TextOptions.TextFormattingMode="Ideal"
-        TextOptions.TextRenderingMode="ClearType">
-  <Grid x:Name="RootMotion" Margin="28" Opacity="0" RenderTransformOrigin="0.5,0.5">
-    <Grid.RenderTransform>
-      <TransformGroup>
-        <ScaleTransform x:Name="RootScale" ScaleX="0.96" ScaleY="0.96"/>
-        <TranslateTransform x:Name="RootTranslate" Y="6"/>
-      </TransformGroup>
-    </Grid.RenderTransform>
-
-    <!-- Adskilt skygge-plade så al grafik og tekst forbliver knivskarp -->
-    <Border x:Name="ShadowPlate" CornerRadius="28" IsHitTestVisible="False">
-      <Border.Effect>
-        <DropShadowEffect x:Name="CardShadow" Color="#000000" Direction="270"
-                          ShadowDepth="12" BlurRadius="34" Opacity="0.65"/>
-      </Border.Effect>
-    </Border>
-
-    <!-- Hovedflade: samme silhuet som Open Dock app-ikonet -->
-    <Border x:Name="Card" CornerRadius="28" BorderThickness="1">
-      <Grid x:Name="CardInner">
-        <!-- Diskret Open Dock Studio dot-grid bag mærket -->
-        <Rectangle x:Name="DotGrid" IsHitTestVisible="False"/>
-
-        <!-- Meget rolig top-refleksion -->
-        <Border x:Name="TopGlow" IsHitTestVisible="False"/>
-
-        <!-- 1px specular top-kant -->
-        <Rectangle x:Name="TopSpecular" Height="1" VerticalAlignment="Top"
-                   Margin="30,0,30,0" IsHitTestVisible="False"/>
-
-        <!-- Ét diskret entrance-sheen -->
-        <Rectangle x:Name="Sheen" Width="110" HorizontalAlignment="Left"
-                   IsHitTestVisible="False" Opacity="0">
-          <Rectangle.RenderTransform>
-            <TransformGroup>
-              <SkewTransform AngleX="-22"/>
-              <TranslateTransform x:Name="SheenX" X="-160"/>
-            </TransformGroup>
-          </Rectangle.RenderTransform>
-        </Rectangle>
-
-        <!-- Centreret indhold -->
-        <Grid Margin="28,42,28,22">
-          <Grid.RowDefinitions>
-            <RowDefinition Height="*"/>
-            <RowDefinition Height="Auto"/>
-            <RowDefinition Height="Auto"/>
-            <RowDefinition Height="Auto"/>
-          </Grid.RowDefinitions>
-
-          <!-- Open Dock 3-panel bento-mærke, fritstående og levende -->
-          <Canvas Grid.Row="0" Width="68" Height="66"
-                  HorizontalAlignment="Center" VerticalAlignment="Center">
-            <Rectangle x:Name="TileA" Canvas.Left="0" Canvas.Top="0"
-                       Width="24.5" Height="29" RadiusX="7" RadiusY="7">
-              <Rectangle.RenderTransform>
-                <TranslateTransform x:Name="TileAY" Y="0"/>
-              </Rectangle.RenderTransform>
-            </Rectangle>
-            <Rectangle x:Name="TileB" Canvas.Left="31.5" Canvas.Top="0"
-                       Width="36.5" Height="29" RadiusX="7" RadiusY="7">
-              <Rectangle.RenderTransform>
-                <TranslateTransform x:Name="TileBY" Y="0"/>
-              </Rectangle.RenderTransform>
-            </Rectangle>
-            <Rectangle x:Name="TileC" Canvas.Left="0" Canvas.Top="36"
-                       Width="68" Height="30" RadiusX="7" RadiusY="7">
-              <Rectangle.RenderTransform>
-                <TranslateTransform x:Name="TileCY" Y="0"/>
-              </Rectangle.RenderTransform>
-            </Rectangle>
-          </Canvas>
-
-          <!-- Titel og én rolig statuslinje -->
-          <StackPanel Grid.Row="1" Margin="0,24,0,0" HorizontalAlignment="Center">
-            <TextBlock x:Name="TitleText"
-                       FontFamily="Segoe UI Variable Display, Segoe UI"
-                       FontSize="14.5" FontWeight="SemiBold"
-                       HorizontalAlignment="Center"/>
-            <TextBlock x:Name="StageText" Margin="0,5,0,0"
-                       FontFamily="Segoe UI Variable Text, Segoe UI"
-                       FontSize="12" HorizontalAlignment="Center"/>
-          </StackPanel>
-
-          <!-- Hårfin 2.5px fremgangslinje -->
-          <Grid x:Name="TrackHost" Grid.Row="2" Width="148" Height="2.5"
-                Margin="0,22,0,0" HorizontalAlignment="Center">
-            <Border x:Name="TrackBg" CornerRadius="1.25"/>
-            <Border x:Name="TrackFill" HorizontalAlignment="Left" Width="14" CornerRadius="1.25"/>
-          </Grid>
-
-          <!-- Ren versionstekst uden ramme eller pill -->
-          <TextBlock x:Name="VersionText" Grid.Row="3" Margin="0,14,0,0"
-                     FontFamily="Segoe UI Variable Text, Segoe UI"
-                     FontSize="10.5" HorizontalAlignment="Center"/>
-        </Grid>
-      </Grid>
-    </Border>
-  </Grid>
-</Window>
-'@
-
-$reader = New-Object System.Xml.XmlNodeReader ([xml]$xaml)
-$win = [System.Windows.Markup.XamlReader]::Load($reader)
-
-function El([string]$name) { $win.FindName($name) }
-
-$rootMotion    = El 'RootMotion'
-$rootScale     = El 'RootScale'
-$rootTranslate = El 'RootTranslate'
-$shadowPlate   = El 'ShadowPlate'
-$cardShadow    = El 'CardShadow'
-$card          = El 'Card'
-$cardInner     = El 'CardInner'
-$dotGrid       = El 'DotGrid'
-$topGlow       = El 'TopGlow'
-$topSpecular   = El 'TopSpecular'
-$sheen         = El 'Sheen'
-$sheenX        = El 'SheenX'
-$tileA         = El 'TileA'
-$tileB         = El 'TileB'
-$tileC         = El 'TileC'
-$tileAY        = El 'TileAY'
-$tileBY        = El 'TileBY'
-$tileCY        = El 'TileCY'
-$titleText     = El 'TitleText'
-$stageText     = El 'StageText'
-$trackHost     = El 'TrackHost'
-$trackBg       = El 'TrackBg'
-$trackFill     = El 'TrackFill'
-$versionText   = El 'VersionText'
-
-if ($isLight) {
-    $pal = @{
-        CardBg      = Make-Linear '#FDFFFFFF' '#FBF5F5F7' 0 0 0 1
-        ShadowBg    = Make-Brush '#FFF8F8FA'
-        ShadowOp    = 0.16
-        ShadowBlur  = 28.0
-        ShadowDepth = 9.0
-        CardBorder  = Make-Brush '#1609090B'
-        TileFill    = Make-Brush '#FF09090B'
-        Ink1        = Make-Brush '#FF09090B'
-        Ink2        = Make-Brush '#FF62626C'
-        Ink3        = Make-Brush '#FF9E9EA8'
-        TrackBg     = Make-Brush '#1609090B'
-        TrackFill   = Make-Brush '#FF09090B'
-        DotHex      = '#1809090B'
-        GlowHex     = '#0809090B'
-        SpecHex     = '#E6FFFFFF'
-        SheenHex    = '#1AFFFFFF'
-    }
-} else {
-    $pal = @{
-        CardBg      = Make-Linear '#FA0D0D11' '#FC070709' 0 0 0 1
-        ShadowBg    = Make-Brush '#FF070709'
-        ShadowOp    = 0.66
-        ShadowBlur  = 34.0
-        ShadowDepth = 12.0
-        CardBorder  = Make-Brush '#1CFFFFFF'
-        TileFill    = Make-Brush '#FFF4F4F6'
-        Ink1        = Make-Brush '#FFF4F4F6'
-        Ink2        = Make-Brush '#FF868692'
-        Ink3        = Make-Brush '#FF4C4C56'
-        TrackBg     = Make-Brush '#18FFFFFF'
-        TrackFill   = Make-Brush '#FFF4F4F6'
-        DotHex      = '#22FFFFFF'
-        GlowHex     = '#0CFFFFFF'
-        SpecHex     = '#38FFFFFF'
-        SheenHex    = '#12FFFFFF'
-    }
-}
-
-$shadowPlate.Background = $pal.ShadowBg
-$cardShadow.Opacity     = $pal.ShadowOp
-$cardShadow.BlurRadius  = $pal.ShadowBlur
-$cardShadow.ShadowDepth = $pal.ShadowDepth
-
-$card.Background  = $pal.CardBg
-$card.BorderBrush = $pal.CardBorder
-
-$tileA.Fill = $pal.TileFill
-$tileB.Fill = $pal.TileFill
-$tileC.Fill = $pal.TileFill
-
-# Studio dot-grid med blød radial maske centreret bag brikkerne
-$dotGeom = New-Object System.Windows.Media.EllipseGeometry((New-Object System.Windows.Point(8, 8)), 0.75, 0.75)
-$dotDrawing = New-Object System.Windows.Media.GeometryDrawing((Make-Brush $pal.DotHex), $null, $dotGeom)
-$dotBrush = New-Object System.Windows.Media.DrawingBrush($dotDrawing)
-$dotBrush.Viewbox       = New-Object System.Windows.Rect(0, 0, 16, 16)
-$dotBrush.ViewboxUnits  = [System.Windows.Media.BrushMappingMode]::Absolute
-$dotBrush.Viewport      = New-Object System.Windows.Rect(0, 0, 16, 16)
-$dotBrush.ViewportUnits = [System.Windows.Media.BrushMappingMode]::Absolute
-$dotBrush.TileMode      = [System.Windows.Media.TileMode]::Tile
-$dotBrush.Freeze()
-$dotGrid.Fill = $dotBrush
-
-$dotMask = New-Object System.Windows.Media.RadialGradientBrush
-$dotMask.GradientOrigin = New-Object System.Windows.Point(0.5, 0.36)
-$dotMask.Center         = New-Object System.Windows.Point(0.5, 0.36)
-$dotMask.RadiusX        = 0.52
-$dotMask.RadiusY        = 0.46
-$null = $dotMask.GradientStops.Add((New-Object System.Windows.Media.GradientStop((Make-Color '#FFFFFFFF'), 0.0)))
-$null = $dotMask.GradientStops.Add((New-Object System.Windows.Media.GradientStop((Make-Color '#00FFFFFF'), 1.0)))
-$dotMask.Freeze()
-$dotGrid.OpacityMask = $dotMask
-
-# Subtil top-glød
-$glow = New-Object System.Windows.Media.RadialGradientBrush
-$glow.GradientOrigin = New-Object System.Windows.Point(0.5, 0.0)
-$glow.Center         = New-Object System.Windows.Point(0.5, 0.0)
-$glow.RadiusX        = 0.75
-$glow.RadiusY        = 0.55
-$null = $glow.GradientStops.Add((New-Object System.Windows.Media.GradientStop((Make-Color $pal.GlowHex), 0.0)))
-$null = $glow.GradientStops.Add((New-Object System.Windows.Media.GradientStop((Make-Color '#00FFFFFF'), 1.0)))
-$glow.Freeze()
-$topGlow.Background = $glow
-
-function Make-SpecBrush([string]$midHex) {
-    $b = New-Object System.Windows.Media.LinearGradientBrush
-    $b.StartPoint = New-Object System.Windows.Point(0, 0.5)
-    $b.EndPoint   = New-Object System.Windows.Point(1, 0.5)
-    $null = $b.GradientStops.Add((New-Object System.Windows.Media.GradientStop((Make-Color '#00FFFFFF'), 0.0)))
-    $null = $b.GradientStops.Add((New-Object System.Windows.Media.GradientStop((Make-Color $midHex), 0.5)))
-    $null = $b.GradientStops.Add((New-Object System.Windows.Media.GradientStop((Make-Color '#00FFFFFF'), 1.0)))
-    $b.Freeze()
-    $b
-}
-$topSpecular.Fill = Make-SpecBrush $pal.SpecHex
-$sheen.Fill       = Make-SpecBrush $pal.SheenHex
-
-$titleText.Text         = $copy.Title
-$titleText.Foreground   = $pal.Ink1
-$stageText.Foreground   = $pal.Ink2
-$versionText.Foreground = $pal.Ink3
-if ([string]::IsNullOrWhiteSpace($versionBadge)) {
-    $versionText.Visibility = [System.Windows.Visibility]::Collapsed
-} else {
-    $versionText.Text = $versionBadge
-}
-
-$trackBg.Background   = $pal.TrackBg
-$trackFill.Background = $pal.TrackFill
-
-$cardInner.Add_SizeChanged({
-    $rect = New-Object System.Windows.Rect(0, 0, $cardInner.ActualWidth, $cardInner.ActualHeight)
-    $cardInner.Clip = New-Object System.Windows.Media.RectangleGeometry($rect, 27, 27)
-})
-$trackHost.Add_SizeChanged({
-    $rect = New-Object System.Windows.Rect(0, 0, $trackHost.ActualWidth, $trackHost.ActualHeight)
-    $trackHost.Clip = New-Object System.Windows.Media.RectangleGeometry($rect, 1.25, 1.25)
-})
-
-$win.Add_MouseLeftButtonDown({
-    try { $win.DragMove() } catch {}
-})
-
-$easeOut = New-Object System.Windows.Media.Animation.CubicEase
-$easeOut.EasingMode = [System.Windows.Media.Animation.EasingMode]::EaseOut
-$easeInOut = New-Object System.Windows.Media.Animation.SineEase
-$easeInOut.EasingMode = [System.Windows.Media.Animation.EasingMode]::EaseInOut
-
-$script:currentStage = ''
-$script:progressFrac = 0.08
-$script:closingOut   = $false
-
-function Animate-Fill([double]$frac, [int]$ms) {
-    $script:progressFrac = $frac
-    $w = $trackHost.ActualWidth
-    if ($w -le 0) { $w = 148.0 }
-    $targetW = [Math]::Max(8.0, $w * $frac)
-    if (-not $allowMotion -or $ms -le 0) {
-        $trackFill.BeginAnimation([System.Windows.FrameworkElement]::WidthProperty, $null)
-        $trackFill.Width = $targetW
-        return
-    }
-    $anim = New-Object System.Windows.Media.Animation.DoubleAnimation
-    $anim.To = $targetW
-    $anim.Duration = [System.Windows.Duration]::new([TimeSpan]::FromMilliseconds($ms))
-    $anim.EasingFunction = $easeOut
-    $trackFill.BeginAnimation([System.Windows.FrameworkElement]::WidthProperty, $anim)
-}
-
-function Start-AmbientAnimations {
-    if (-not $allowMotion) { return }
-
-    # De 3 brikker løfter sig og ånder stille i sekvens
-    $tiles  = @($tileA, $tileB, $tileC)
-    $shifts = @($tileAY, $tileBY, $tileCY)
-    for ($i = 0; $i -lt 3; $i++) {
-        $op = New-Object System.Windows.Media.Animation.DoubleAnimation
-        $op.From = 1.0
-        $op.To   = 0.54
-        $op.BeginTime = [TimeSpan]::FromMilliseconds($i * 250)
-        $op.Duration  = [System.Windows.Duration]::new([TimeSpan]::FromMilliseconds(950))
-        $op.AutoReverse = $true
-        $op.RepeatBehavior = [System.Windows.Media.Animation.RepeatBehavior]::Forever
-        $op.EasingFunction = $easeInOut
-        $tiles[$i].BeginAnimation([System.Windows.UIElement]::OpacityProperty, $op)
-
-        $dy = New-Object System.Windows.Media.Animation.DoubleAnimation
-        $dy.From = 0.0
-        $dy.To   = -3.0
-        $dy.BeginTime = [TimeSpan]::FromMilliseconds($i * 250)
-        $dy.Duration  = [System.Windows.Duration]::new([TimeSpan]::FromMilliseconds(950))
-        $dy.AutoReverse = $true
-        $dy.RepeatBehavior = [System.Windows.Media.Animation.RepeatBehavior]::Forever
-        $dy.EasingFunction = $easeInOut
-        $shifts[$i].BeginAnimation([System.Windows.Media.TranslateTransform]::YProperty, $dy)
-    }
-
-    # Ét enkelt stille lys-sheen ved entrance
-    $sheen.Opacity = 1.0
-    $sh = New-Object System.Windows.Media.Animation.DoubleAnimation
-    $sh.From = -160.0
-    $sh.To   = 420.0
-    $sh.BeginTime = [TimeSpan]::FromMilliseconds(160)
-    $sh.Duration  = [System.Windows.Duration]::new([TimeSpan]::FromMilliseconds(850))
-    $sh.EasingFunction = $easeOut
-    $sheenX.BeginAnimation([System.Windows.Media.TranslateTransform]::XProperty, $sh)
-}
-
-function Apply-Stage([string]$stage) {
-    $norm = ($stage -replace '\s+', '').ToLowerInvariant()
-    if ([string]::IsNullOrEmpty($norm)) { $norm = 'closing' }
-    if ($norm -eq $script:currentStage) { return }
-    $script:currentStage = $norm
-
-    switch ($norm) {
-        'closing' {
-            $stageText.Text = $copy.Closing
-            Animate-Fill 0.22 460
-        }
-        'installing' {
-            $stageText.Text = $copy.Installing
-            Animate-Fill 0.62 900
-        }
-        'relaunching' {
-            $stageText.Text = $copy.Relaunching
-            Animate-Fill 0.90 480
-        }
-        'done' {
-            $stageText.Text = $copy.Done
-            Animate-Fill 1.0 200
-
-            foreach ($t in @($tileA, $tileB, $tileC)) {
-                $t.BeginAnimation([System.Windows.UIElement]::OpacityProperty, $null)
-                $t.Opacity = 1.0
-            }
-            foreach ($s in @($tileAY, $tileBY, $tileCY)) {
-                $s.BeginAnimation([System.Windows.Media.TranslateTransform]::YProperty, $null)
-                $s.Y = 0.0
-            }
-
-            if (-not $script:closingOut) {
-                $script:closingOut = $true
-                $closeDelay = New-Object System.Windows.Threading.DispatcherTimer
-                $closeDelay.Interval = [TimeSpan]::FromMilliseconds(320)
-                $closeDelay.Add_Tick({
-                    $closeDelay.Stop()
-                    if (-not $allowMotion) {
-                        $win.Close()
-                        return
-                    }
-                    $fadeOut = New-Object System.Windows.Media.Animation.DoubleAnimation(1.0, 0.0, [TimeSpan]::FromMilliseconds(220))
-                    $fadeOut.EasingFunction = $easeOut
-                    $fadeOut.Add_Completed({ $win.Close() })
-                    $scaleOut = New-Object System.Windows.Media.Animation.DoubleAnimation(1.0, 0.96, [TimeSpan]::FromMilliseconds(220))
-                    $scaleOut.EasingFunction = $easeOut
-                    $rootMotion.BeginAnimation([System.Windows.UIElement]::OpacityProperty, $fadeOut)
-                    $rootScale.BeginAnimation([System.Windows.Media.ScaleTransform]::ScaleXProperty, $scaleOut)
-                    $rootScale.BeginAnimation([System.Windows.Media.ScaleTransform]::ScaleYProperty, $scaleOut)
-                })
-                $closeDelay.Start()
-            }
-        }
-        default {
-            $stageText.Text = $copy.Installing
-            Animate-Fill 0.55 700
-        }
-    }
-}
-
-$win.Add_Loaded({
-    if ($allowMotion) {
-        $op = New-Object System.Windows.Media.Animation.DoubleAnimation(0.0, 1.0, [TimeSpan]::FromMilliseconds(260))
-        $op.EasingFunction = $easeOut
-        $ty = New-Object System.Windows.Media.Animation.DoubleAnimation(6.0, 0.0, [TimeSpan]::FromMilliseconds(320))
-        $ty.EasingFunction = $easeOut
-        $sc = New-Object System.Windows.Media.Animation.DoubleAnimation(0.96, 1.0, [TimeSpan]::FromMilliseconds(320))
-        $sc.EasingFunction = $easeOut
-        $rootMotion.BeginAnimation([System.Windows.UIElement]::OpacityProperty, $op)
-        $rootTranslate.BeginAnimation([System.Windows.Media.TranslateTransform]::YProperty, $ty)
-        $rootScale.BeginAnimation([System.Windows.Media.ScaleTransform]::ScaleXProperty, $sc)
-        $rootScale.BeginAnimation([System.Windows.Media.ScaleTransform]::ScaleYProperty, $sc)
-    } else {
-        $rootMotion.Opacity = 1.0
-        $rootTranslate.Y    = 0.0
-        $rootScale.ScaleX   = 1.0
-        $rootScale.ScaleY   = 1.0
-    }
-
-    Start-AmbientAnimations
-
-    $initial = 'closing'
-    if (Test-Path -LiteralPath $stageFile) {
-        try { $initial = [System.IO.File]::ReadAllText($stageFile) } catch {}
-    }
-    Apply-Stage $initial
-})
-
-$poll = New-Object System.Windows.Threading.DispatcherTimer
-$poll.Interval = [TimeSpan]::FromMilliseconds(180)
-$poll.Add_Tick({
-    if (Test-Path -LiteralPath $stageFile) {
-        try {
-            $txt = [System.IO.File]::ReadAllText($stageFile)
-            Apply-Stage $txt
-        } catch {}
-    }
-    if ($script:currentStage -eq 'installing' -and $script:progressFrac -lt 0.84) {
-        $next = [Math]::Min(0.84, $script:progressFrac + 0.008)
-        Animate-Fill $next 220
-    }
-})
-$poll.Start()
-
-$life = New-Object System.Windows.Threading.DispatcherTimer
-$life.Interval = [TimeSpan]::FromMinutes(3)
-$life.Add_Tick({ $win.Close() })
-$life.Start()
-
-$null = $win.ShowDialog()
-"##;
-
-const UPDATE_SCRIPT: &str = r#"$ErrorActionPreference = 'SilentlyContinue'
-$installer = '__INSTALLER__'
-$relaunch  = '__RELAUNCH__'
-$splashPs1 = Join-Path $env:TEMP 'open-dock-update-splash.ps1'
-$stageFile = '__STAGE_FILE__'
-$appPid    = __APP_PID__
-
-function Set-Stage([string]$name) {
-    try { [System.IO.File]::WriteAllText($stageFile, $name) } catch {}
-}
-
-try { Wait-Process -Id $appPid -Timeout 15 } catch {}
-Start-Sleep -Milliseconds 450
-
-Set-Stage 'installing'
-$iproc = $null
-try { $iproc = Start-Process -FilePath $installer -ArgumentList '/S' -PassThru } catch {}
-if ($iproc) {
-    # En hængt installer må aldrig efterlade statusboksen evigt — dræb efter 3 min.
-    try { if (-not $iproc.WaitForExit(180000)) { Stop-Process -Id $iproc.Id -Force } } catch {}
-}
-
-Set-Stage 'relaunching'
-Start-Sleep -Milliseconds 250
-try { Start-Process -FilePath $relaunch } catch {}
-
-Set-Stage 'done'
-# Splashen lukker sig selv på 'done' (plus 3 min selvdestruktion som net) —
-# giv dens 180 ms-poll tid til at nå at læse stadiet før filen fjernes.
-Start-Sleep -Milliseconds 800
-try { Remove-Item -LiteralPath $stageFile -Force } catch {}
-try { Remove-Item -LiteralPath $splashPs1 -Force } catch {}
-try { Remove-Item -LiteralPath $PSCommandPath -Force } catch {}
-"#;
+const UPDATE_SCRIPT: &str = include_str!("update_runner.ps1");
 
 /// Kører ét opdateringstjek kort efter opstart (kun release-builds med build-id).
 /// Nye builds downloades automatisk; notifikationen kommer først når filen er
@@ -1199,13 +711,6 @@ fn notify_ready(app: &AppHandle, remote_version: &str) {
     if let Err(err) = result {
         log::warn!(target: "update", "Kunne ikke vise opdateringsnotifikation: {err}");
     }
-}
-
-fn unix_now_s() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0)
 }
 
 #[cfg(test)]

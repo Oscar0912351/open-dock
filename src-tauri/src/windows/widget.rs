@@ -35,8 +35,7 @@ pub fn spawn_all(app: &AppHandle) -> Result<(), AppError> {
     let mut order: Vec<(usize, i32, i32, Uuid)> = config
         .widgets
         .iter()
-        .enumerate()
-        .map(|(idx, widget)| {
+        .map(|widget| {
             let mon_rank = monitors
                 .iter()
                 .position(|m| m.name == widget.placement.monitor.name)
@@ -44,8 +43,7 @@ pub fn spawn_all(app: &AppHandle) -> Result<(), AppError> {
                 .unwrap_or(99);
             let y_ord = (widget.placement.y * 10.0).round() as i32;
             let x_ord = (widget.placement.x * 10.0).round() as i32;
-            (mon_rank, y_ord, x_ord, widget.id.max(Uuid::nil()))
-                .tap_debug_order(idx)
+            (mon_rank, y_ord, x_ord, widget.id)
         })
         .collect();
 
@@ -68,16 +66,6 @@ pub fn spawn_all(app: &AppHandle) -> Result<(), AppError> {
         }
     }
     Ok(())
-}
-
-trait TupleOrderExt {
-    fn tap_debug_order(self, _idx: usize) -> Self;
-}
-
-impl TupleOrderExt for (usize, i32, i32, Uuid) {
-    fn tap_debug_order(self, _idx: usize) -> Self {
-        self
-    }
 }
 
 pub fn spawn_one(app: &AppHandle, instance: &WidgetInstance) -> Result<(), AppError> {
@@ -294,6 +282,18 @@ pub fn ready(app: &AppHandle, id: &str) -> Result<WidgetBoot, AppError> {
         show_without_activation(&window)?;
     }
 
+    let hover_inside = !edit_mode && crate::desktop::hover::is_cursor_inside_widget(app, &label);
+    if instance.reveal_on_hover
+        || instance.cluster.as_ref().is_some_and(|cluster| {
+            cluster
+                .modules
+                .iter()
+                .any(|module| module.auto_rule == crate::config::schema::AutoRule::ShowOnHover)
+        })
+    {
+        crate::desktop::hover::poke();
+    }
+
     let placement = monitors::compute_widget_placement(id, &window, &monitor_entries);
     let monitor = placement
         .as_ref()
@@ -318,6 +318,7 @@ pub fn ready(app: &AppHandle, id: &str) -> Result<WidgetBoot, AppError> {
         placement,
         start_delay_ms,
         edit_mode,
+        hover_inside,
         paused: state.paused.load(Ordering::Acquire),
         game_overlay_active: game_overlay,
     })

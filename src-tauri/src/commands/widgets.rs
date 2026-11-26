@@ -147,14 +147,7 @@ pub fn remove_widget_by_id(app: &AppHandle, id: Uuid) -> Result<WidgetInstance, 
             }
         }
     }
-    if !timer_ids.is_empty() {
-        if let Some(timers) = app.try_state::<crate::providers::timer::TimerManager>() {
-            for timer_id in timer_ids {
-                timers.remove(timer_id);
-            }
-        }
-    }
-    if !note_ids.is_empty() {
+    if !note_ids.is_empty() || !timer_ids.is_empty() {
         let app_handle = app.clone();
         let removed_id = removed.id;
         let notes_dir = state.config.notes_dir();
@@ -172,6 +165,13 @@ pub fn remove_widget_by_id(app: &AppHandle, id: Uuid) -> Result<WidgetInstance, 
                     let note_file = notes_dir.join(format!("{note_id}.txt"));
                     if note_file.exists() {
                         let _ = std::fs::remove_file(note_file);
+                    }
+                }
+                if !timer_ids.is_empty() {
+                    if let Some(timers) = app_handle.try_state::<crate::providers::timer::TimerManager>() {
+                        for timer_id in timer_ids {
+                            timers.remove(timer_id);
+                        }
                     }
                 }
             }

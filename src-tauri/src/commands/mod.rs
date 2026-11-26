@@ -11,3 +11,17 @@ pub mod update;
 pub mod wallpaper;
 pub mod weather;
 pub mod widgets;
+
+pub fn ensure_control_window(window: &tauri::Window) -> Result<(), crate::error::AppError> {
+    if window.label() != "control" {
+        log::warn!(
+            target: "security",
+            "Afviste kontrolcenter-kommando fra vinduet '{}'",
+            window.label()
+        );
+        return Err(crate::error::AppError::Other(
+            "Handlingen kan kun udføres fra kontrolcentret.".into(),
+        ));
+    }
+    Ok(())
+}

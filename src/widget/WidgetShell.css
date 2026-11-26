@@ -43,7 +43,7 @@
   transform: scaleY(var(--h, 0.35));
 }
 @supports (corner-shape: squircle) {
-  .widget { corner-shape: squircle; border-radius: calc(var(--r-widget) * 1.5); }
+  .widget { corner-shape: squircle; border-radius: calc(var(--r-widget) * var(--squircle-mult)); }
   .widget::before { corner-shape: squircle; }
   .size-pill.radius-extra .widget,
   .size-pill.radius-extra .widget::before {

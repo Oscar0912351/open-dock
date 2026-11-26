@@ -78,7 +78,7 @@ function formatEndTime(ms: number): string {
     .replaceAll(".", ":");
 }
 
-function errorMessage(error: unknown): string {
+export function errorMessage(error: unknown): string {
   if (typeof error === "object" && error !== null && "message" in error) {
     const message = (error as { message: unknown }).message;
     if (typeof message === "string" && message) return message;
@@ -86,8 +86,36 @@ function errorMessage(error: unknown): string {
   return String(error);
 }
 
-function chipLabel(minutes: number): string {
+export function chipLabel(minutes: number): string {
   return minutes === 60 ? "1t" : `${minutes}m`;
+}
+
+/** Frigiver input-fokus efter chip-klik/Enter, så tastaturet igen går til
+    brugerens andre apps (blur → leaveEditing → widgetSetFocusable(false)). */
+export function releaseTimerFocus() {
+  const active = document.activeElement;
+  if (active instanceof HTMLElement && active !== document.body) active.blur();
+}
+
+/** Dynamisk højde (u) for et udvidet timer-modul i en klynge: input øverst,
+    op til 3 rækker (færdige er højere) plus "+n flere"-linje. Bruges af
+    ClusterShells heightOverrides så indholdet aldrig klippes. */
+export function computeTimerExpandedHeight(
+  items: readonly TimerItem[],
+  isEditing: boolean,
+): number {
+  const pad = 16;
+  const input = 22 + (isEditing ? 14 : 0);
+  const gap = 6;
+  if (items.length === 0) {
+    return Math.max(84, pad + input + gap + 22);
+  }
+  const sorted = sortTimers(items);
+  const shown = sorted.slice(0, 3);
+  let bodyH = shown.reduce((sum, item) => sum + (item.status === "finished" ? 40 : 26), 0);
+  bodyH += (shown.length - 1) * gap;
+  if (items.length > 3) bodyH += gap + 12;
+  return Math.max(84, pad + input + gap + bodyH);
 }
 
 function recentChipLabel(recent: RecentTimer): string {
@@ -282,7 +310,7 @@ export function TimerInput({
 
 /* ── Chips: én linje, højre kant fader ud når der er mere indhold ──── */
 
-function Chips({ className = "", children }: { className?: string; children: ReactNode }) {
+export function Chips({ className = "", children }: { className?: string; children: ReactNode }) {
   const ref = useRef<HTMLDivElement>(null);
   const [fade, setFade] = useState(false);
   useLayoutEffect(() => {

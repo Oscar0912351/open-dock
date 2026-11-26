@@ -9,7 +9,8 @@ import {
   type ReactNode,
   type RefObject,
 } from "react";
-import { t } from "../shared/i18n";
+import { t, useLocale } from "../shared/i18n";
+import widgetGeometry from "../shared/widgetGeometry.json";
 import type { GlassEngine } from "../shared/bindings/GlassEngine";
 import type { MotionPreset } from "../shared/bindings/MotionPreset";
 import type { RadiusPreset } from "../shared/bindings/RadiusPreset";
@@ -23,24 +24,11 @@ import "./WidgetShell.css";
 export type ShellSize = WidgetSize;
 export type ShellTheme = ThemeId;
 
-export const WIDGET_SIZES: Record<WidgetSize, { width: number; height: number; paddingX: number; paddingY: number }> = {
-  pill: { width: 204, height: 48, paddingX: 12, paddingY: 8 },
-  s: { width: 132, height: 132, paddingX: 14, paddingY: 14 },
-  m: { width: 276, height: 132, paddingX: 14, paddingY: 14 },
-  l: { width: 276, height: 276, paddingX: 16, paddingY: 16 },
-};
+export const WIDGET_SIZES: Record<WidgetSize, { width: number; height: number; paddingX: number; paddingY: number }> = widgetGeometry.sizes;
 
-const RADII: Record<RadiusPreset, Record<WidgetSize, number>> = {
-  soft: { pill: 8, s: 10, m: 10, l: 12 },
-  round: { pill: 14, s: 22, m: 22, l: 26 },
-  extra: { pill: 24, s: 36, m: 36, l: 42 },
-};
+const RADII: Record<RadiusPreset, Record<WidgetSize, number>> = widgetGeometry.radii;
 
-const CLUSTER_RADII: Record<RadiusPreset, number> = {
-  soft: 10,
-  round: 22,
-  extra: 34,
-};
+const CLUSTER_RADII: Record<RadiusPreset, number> = widgetGeometry.clusterRadii;
 
 export function computeScrimAlpha(
   theme: ThemeId,
@@ -104,6 +92,7 @@ interface WidgetShellProps {
   clusterFrame?: ClusterFrameInfo | null;
   rootRef?: RefObject<HTMLDivElement | null>;
   plateRef?: RefObject<HTMLDivElement | null>;
+  scrimRef?: RefObject<HTMLDivElement | null>;
   onContextMenu?: (event: MouseEvent<HTMLDivElement>) => void;
   children: ReactNode;
 }
@@ -137,13 +126,21 @@ export function WidgetShell({
   clusterFrame = null,
   rootRef,
   plateRef,
+  scrimRef,
   onContextMenu,
   children,
 }: WidgetShellProps) {
+  useLocale();
   const contentRef = useRef<HTMLDivElement>(null);
+  const fallbackScrimRef = useRef<HTMLDivElement>(null);
+  const effectiveScrimRef = scrimRef ?? fallbackScrimRef;
   const dimensions = WIDGET_SIZES[size];
   const rBase = clusterFrame ? CLUSTER_RADII[radius] : RADII[radius][size];
   const scrimAlpha = computeScrimAlpha(theme, glass?.luma ?? 0.15, autoContrast);
+
+  useLayoutEffect(() => {
+    effectiveScrimRef.current?.style.setProperty("--scrim-a", scrimAlpha.toFixed(4));
+  }, [scrimAlpha, effectiveScrimRef]);
 
   useLayoutEffect(() => {
     const content = contentRef.current;
@@ -164,11 +161,12 @@ export function WidgetShell({
     "--base-h": baseH,
     "--box-h": baseH,
     "--r-base": rBase,
+    "--r-mult": theme === "laerk" ? widgetGeometry.laerkRadiusMultiplier : 1,
+    "--squircle-mult": widgetGeometry.squircleMultiplier,
     "--px": px,
     "--py": py,
     "--gs": Math.min(1.4, Math.max(0.6, glassStrength)),
     "--t0": `${startDelayMs}ms`,
-    "--scrim-a": scrimAlpha.toFixed(4),
   };
   if (clusterFrame) {
     style["--cluster-dur"] = clusterFrame.transitionKind === "collapse" ? "280ms" : "340ms";
@@ -341,7 +339,7 @@ export function WidgetShell({
             <div ref={plateRef} className="glass-plate" aria-hidden="true" />
           </div>
         )}
-        <div className="glass-scrim" aria-hidden="true" />
+        <div ref={effectiveScrimRef} className="glass-scrim" aria-hidden="true" />
         <div
           className={`glass-ambient${ambientColor ? " has-ambient" : ""}`}
           aria-hidden="true"

@@ -79,7 +79,6 @@ use windows::{
                 DXGI_USAGE_RENDER_TARGET_OUTPUT,
             },
         },
-        System::Com::{CoInitializeEx, CoUninitialize, COINIT_MULTITHREADED},
     },
 };
 use windows_numerics::Vector2;
@@ -651,24 +650,6 @@ pub fn shutdown_all() {
     }
 }
 
-struct ComMtaGuard(bool);
-
-impl ComMtaGuard {
-    fn init() -> Self {
-        let hr = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) };
-        Self(hr.is_ok())
-    }
-}
-
-impl Drop for ComMtaGuard {
-    fn drop(&mut self) {
-        if self.0 {
-            unsafe {
-                CoUninitialize();
-            }
-        }
-    }
-}
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct MonitorColorInfo {
@@ -1740,7 +1721,7 @@ fn redraw_wait_ms(
 }
 
 fn monitor_worker_loop(ctrl: Arc<WorkerControl>) {
-    let _com = ComMtaGuard::init();
+    let _com = crate::util::ComMtaGuard::init();
 
     let mut pipeline = match MonitorGpuPipeline::create(ctrl.mon_key) {
         Ok(p) => p,
@@ -2453,7 +2434,7 @@ mod tests {
             Direct3D11::{D3D11_CPU_ACCESS_READ, D3D11_MAP_READ, D3D11_SUBRESOURCE_DATA, D3D11_USAGE_STAGING},
         };
 
-        let _com = ComMtaGuard::init();
+        let _com = crate::util::ComMtaGuard::init();
         let levels = [D3D_FEATURE_LEVEL_11_0];
         let mut device: Option<ID3D11Device> = None;
         let mut context: Option<ID3D11DeviceContext> = None;

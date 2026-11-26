@@ -1,13 +1,15 @@
 use std::{
     path::{Path, PathBuf},
     sync::{LazyLock, OnceLock},
-    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant},
 };
 
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use ts_rs::TS;
+
+use crate::util::unix_now_ms;
 
 static RESOURCE_DIR: OnceLock<PathBuf> = OnceLock::new();
 static STATE: LazyLock<Mutex<SensorState>> = LazyLock::new(|| Mutex::new(SensorState::default()));
@@ -70,12 +72,6 @@ struct SensorState {
     last_status: Option<String>,
 }
 
-fn unix_now_ms() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0)
-}
 
 fn unavailable(status: &str) -> Value {
     json!({ "status": status, "celsius": null })

@@ -371,11 +371,100 @@ export const da = {
     ruleExpandWhenHighLoad: "Udvid ved høj belastning",
     ruleExpandWhenActive: "Udvid når agenter er i gang",
     ruleExpandWhenInCall: "Udvid når du er i call",
+    ruleShowOnHover: "Vis når musen er over",
     ruleFillRemainingSpace: "Udfyld ledig plads",
     moveUp: "Flyt op",
     moveDown: "Flyt ned",
     widgetCount: "{n} widgets",
     widgetCountOne: "1 widget",
+  },
+  widgetSettings: {
+    clock: {
+      style: {
+        label: "Stil",
+        options: { digital: "Digital", analog: "Analog" },
+      },
+      showSeconds: { label: "Vis sekunder" },
+      showDate: { label: "Vis dato" },
+      timezone: { label: "Tidszone" },
+      label: { label: "Etiket", placeholder: "Lokal tid" },
+      extraZones: { label: "Ekstra byer" },
+    },
+    nowPlaying: {
+      preferredSource: {
+        label: "Kilde",
+        options: { auto: "Automatisk", spotify: "Spotify" },
+      },
+      ambient: { label: "Farv glasset efter cover" },
+      showProgress: { label: "Vis tidslinje" },
+      hideWhenIdle: { label: "Skjul når intet spiller" },
+    },
+    system: {
+      metrics: { label: "Målinger" },
+      primary: {
+        label: "Hovedmåling",
+        options: {
+          cpu: "CPU",
+          mem: "RAM",
+          gpu: "GPU",
+          vram: "VRAM",
+          net: "Netværk",
+          disk: "Disk",
+        },
+      },
+      showTemps: { label: "Vis temperatur" },
+      unitsBits: { label: "Netværk i bit/s" },
+    },
+    weather: {
+      locationId: { label: "Sted" },
+      unit: {
+        label: "Enhed",
+        options: { c: "°C", f: "°F" },
+      },
+      chart: {
+        label: "Graf",
+        options: { hourly: "Time for time", daily: "7 dage" },
+      },
+    },
+    note: {
+      title: { label: "Titel", placeholder: "Note" },
+      mode: {
+        label: "Tilstand",
+        options: { text: "Tekst", checklist: "Tjekliste" },
+      },
+      fontSize: {
+        label: "Skrift",
+        options: { s: "S", m: "M", l: "L" },
+      },
+    },
+    timer: {
+      sound: {
+        label: "Lyd",
+        options: { chime: "Klokke", marimba: "Marimba", crystal: "Krystal" },
+      },
+      volume: { label: "Lydstyrke" },
+      notify: { label: "Notifikation" },
+    },
+    agents: {
+      recentWindowMin: {
+        label: "Vis afsluttede",
+        options: { active: "Kun aktive", minutes15: "15 min", hour1: "1 time" },
+      },
+    },
+  },
+  timezones: {
+    regions: {
+      Europe: "Europa",
+      America: "Amerika",
+      Asia: "Asien",
+      Africa: "Afrika",
+      Australia: "Australien",
+      Pacific: "Stillehavet",
+      Atlantic: "Atlanterhavet",
+      Indian: "Indiske Ocean",
+      Arctic: "Arktis",
+      Antarctica: "Antarktis",
+    },
   },
   form: {
     selectedCount: "{n} af {max} valgt",

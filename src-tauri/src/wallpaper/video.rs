@@ -31,10 +31,7 @@ use windows::{
             MF_MEDIA_ENGINE_EVENT_ERROR, MF_MEDIA_ENGINE_EVENT_FIRSTFRAMEREADY,
             MF_MEDIA_ENGINE_EVENT_LOADEDDATA, MF_MEDIA_ENGINE_VIDEO_OUTPUT_FORMAT, MF_VERSION,
         },
-        System::Com::{
-            CoCreateInstance, CoInitializeEx, CoUninitialize, CLSCTX_INPROC_SERVER,
-            COINIT_MULTITHREADED,
-        },
+        System::Com::{CoCreateInstance, CLSCTX_INPROC_SERVER},
     },
 };
 
@@ -416,31 +413,14 @@ impl Drop for ZeroCopyVideoPlayer {
     }
 }
 
-struct ComMtaGuard(bool);
 
-impl ComMtaGuard {
-    fn init() -> Self {
-        let hr = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) };
-        Self(hr.is_ok())
-    }
-}
-
-impl Drop for ComMtaGuard {
-    fn drop(&mut self) {
-        if self.0 {
-            unsafe {
-                CoUninitialize();
-            }
-        }
-    }
-}
 
 pub fn extract_video_poster(
     video_path: &Path,
     thumb_out: &Path,
     poster_out: Option<&Path>,
 ) -> Result<(u32, u32), AppError> {
-    let _com = ComMtaGuard::init();
+    let _com = crate::util::ComMtaGuard::init();
     let (device, context) = create_video_offscreen_device()?;
     let player = ZeroCopyVideoPlayer::new(&device, video_path, true, 1.0)?;
 

@@ -1,9 +1,10 @@
 import { ArrowDown, ArrowUp, CheckSquare, DotsSixVertical, Plus, Square, Trash, X } from "@phosphor-icons/react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { GeoResult } from "../../shared/bindings/GeoResult";
+import type { Location } from "../../shared/bindings/Location";
 import type { SystemCaps } from "../../shared/bindings/SystemCaps";
 import type { WidgetSize } from "../../shared/bindings/WidgetSize";
-import { t } from "../../shared/i18n";
+import { translate, useLocale, useT, type Locale } from "../../shared/i18n";
 import { ipc } from "../../shared/ipc";
 import { WIDGET_REGISTRY, type FreeWidgetKind, type WidgetSettingField } from "../../widget/registry";
 import { useControlStore } from "../store";
@@ -21,13 +22,15 @@ interface SettingsFormProps {
   onPatch: (patch: Record<string, unknown>) => void;
 }
 
-const ALL_METRICS: ReadonlyArray<{ id: string; label: string }> = [
-  { id: "cpu", label: "CPU" },
-  { id: "mem", label: "RAM" },
-  { id: "gpu", label: "GPU" },
-  { id: "vram", label: "VRAM" },
-  { id: "net", label: "Netværk" },
-  { id: "disk", label: "Disk" },
+const EMPTY_LOCATIONS: Location[] = [];
+
+const ALL_METRICS: ReadonlyArray<{ id: string }> = [
+  { id: "cpu" },
+  { id: "mem" },
+  { id: "gpu" },
+  { id: "vram" },
+  { id: "net" },
+  { id: "disk" },
 ];
 
 const METRICS_MAX_BY_SIZE: Record<WidgetSize, number> = {
@@ -35,19 +38,6 @@ const METRICS_MAX_BY_SIZE: Record<WidgetSize, number> = {
   s: 2,
   m: 4,
   l: 5,
-};
-
-const REGION_DA: Record<string, string> = {
-  Europe: "Europa",
-  America: "Amerika",
-  Asia: "Asien",
-  Africa: "Afrika",
-  Australia: "Australien",
-  Pacific: "Stillehavet",
-  Atlantic: "Atlanterhavet",
-  Indian: "Indiske Ocean",
-  Arctic: "Arktis",
-  Antarctica: "Antarktis",
 };
 
 function formatTimezoneOffset(zone: string, now: Date): string {
@@ -63,18 +53,21 @@ function formatTimezoneOffset(zone: string, now: Date): string {
   }
 }
 
-function formatTimezoneLabel(zone: string, now: Date): string {
+function formatTimezoneLabel(zone: string, now: Date, locale: Locale): string {
   const parts = zone.split("/");
-  const region = REGION_DA[parts[0] ?? ""] ?? parts[0];
+  const regionKey = `timezones.regions.${parts[0] ?? ""}`;
+  const translatedRegion = translate(locale, regionKey);
+  const region = translatedRegion === regionKey ? parts[0] : translatedRegion;
   const rest = parts.slice(1).join("/").replaceAll("_", " ");
   const cityText = rest ? `${region}/${rest}` : zone;
   const off = formatTimezoneOffset(zone, now);
   return `${cityText} (${off})`;
 }
 
-let cachedTzOptions: SelectOption<string>[] | null = null;
-function getTimezoneOptions(): SelectOption<string>[] {
-  if (cachedTzOptions) return cachedTzOptions;
+const cachedTzOptions: Partial<Record<Locale, SelectOption<string>[]>> = {};
+function getTimezoneOptions(locale: Locale): SelectOption<string>[] {
+  const cached = cachedTzOptions[locale];
+  if (cached) return cached;
   const now = new Date();
   let zones: string[] = [];
   try {
@@ -97,16 +90,18 @@ function getTimezoneOptions(): SelectOption<string>[] {
       "Australia/Sydney",
     ];
   }
-  cachedTzOptions = zones.map((zone) => ({
+  const options = zones.map((zone) => ({
     value: zone,
-    label: formatTimezoneLabel(zone, now),
+    label: formatTimezoneLabel(zone, now, locale),
   }));
-  return cachedTzOptions;
+  cachedTzOptions[locale] = options;
+  return options;
 }
 
 export function SettingsForm({ kind, size, settings, onPatch }: SettingsFormProps) {
+  useLocale();
   const meta = WIDGET_REGISTRY[kind];
-  const locations = useControlStore((s) => s.config?.weather.locations ?? []);
+  const locations = useControlStore((s) => s.config?.weather.locations ?? EMPTY_LOCATIONS);
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [systemCaps, setSystemCaps] = useState<SystemCaps | null>(null);
 
@@ -178,8 +173,17 @@ function SettingFieldControl({
   onPatch: (patch: Record<string, unknown>) => void;
   onOpenPlaceDrawer: () => void;
 }) {
-  const tzOptions = useMemo(() => getTimezoneOptions(), []);
+  const locale = useLocale();
+  const tr = useT();
+  const tzOptions = useMemo(() => getTimezoneOptions(locale), [locale]);
   const val = settings[field.key];
+  const fieldLabel = tr(field.labelKey);
+  const fieldHelp = "helpKey" in field && field.helpKey ? tr(field.helpKey) : undefined;
+  const fieldPlaceholder = field.type === "text" && field.placeholderKey ? tr(field.placeholderKey) : undefined;
+  const fieldOptions =
+    field.type === "segmented" || field.type === "select"
+      ? field.options.map((opt) => ({ value: opt.value, label: tr(opt.labelKey) }))
+      : [];
 
   switch (field.type) {
     case "switch": {
@@ -193,18 +197,18 @@ function SettingFieldControl({
       return (
         <div className="cc-insp-field">
           <div className="cc-insp-field-head">
-            <span className="cc-field-label">{field.label}</span>
+            <span className="cc-field-label">{fieldLabel}</span>
             <Switch
               checked={checked}
               disabled={tempUnsupported}
-              ariaLabel={field.label}
+              ariaLabel={fieldLabel}
               onChange={(next) => onPatch({ [field.key]: next })}
             />
           </div>
           {tempUnsupported ? (
-            <span className="cc-field-help">{t("form.noTemperatureSensor")}</span>
+            <span className="cc-field-help">{tr("form.noTemperatureSensor")}</span>
           ) : (
-            field.help && <span className="cc-field-help">{field.help}</span>
+            fieldHelp && <span className="cc-field-help">{fieldHelp}</span>
           )}
         </div>
       );
@@ -214,15 +218,15 @@ function SettingFieldControl({
       const current = typeof val === "string" ? val : (field.options[0]?.value ?? "");
       return (
         <div className="cc-insp-field">
-          <span className="cc-field-label">{field.label}</span>
+          <span className="cc-field-label">{fieldLabel}</span>
           <Segmented
             fullWidth
-            options={field.options}
+            options={fieldOptions}
             value={current}
-            ariaLabel={field.label}
+            ariaLabel={fieldLabel}
             onChange={(next) => onPatch({ [field.key]: next })}
           />
-          {field.help && <span className="cc-field-help">{field.help}</span>}
+          {fieldHelp && <span className="cc-field-help">{fieldHelp}</span>}
         </div>
       );
     }
@@ -231,14 +235,14 @@ function SettingFieldControl({
       const current = typeof val === "string" ? val : (field.options[0]?.value ?? "");
       return (
         <div className="cc-insp-field">
-          <span className="cc-field-label">{field.label}</span>
+          <span className="cc-field-label">{fieldLabel}</span>
           <Select
-            options={field.options}
+            options={fieldOptions}
             value={current}
-            ariaLabel={field.label}
+            ariaLabel={fieldLabel}
             onChange={(next) => onPatch({ [field.key]: next })}
           />
-          {field.help && <span className="cc-field-help">{field.help}</span>}
+          {fieldHelp && <span className="cc-field-help">{fieldHelp}</span>}
         </div>
       );
     }
@@ -247,13 +251,13 @@ function SettingFieldControl({
       const num = typeof val === "number" && Number.isFinite(val) ? val : field.min;
       return (
         <div className="cc-insp-field">
-          <span className="cc-field-label">{field.label}</span>
+          <span className="cc-field-label">{fieldLabel}</span>
           <Slider
             value={num}
             min={field.min}
             max={field.max}
             step={field.step}
-            ariaLabel={field.label}
+            ariaLabel={fieldLabel}
             formatValue={(v) => (field.unit ? `${v} ${field.unit}` : String(v))}
             onChange={(next) => onPatch({ [field.key]: next })}
           />
@@ -264,9 +268,9 @@ function SettingFieldControl({
     case "text": {
       return (
         <DebouncedTextField
-          label={field.label}
+          label={fieldLabel}
           value={typeof val === "string" ? val : ""}
-          placeholder={field.placeholder}
+          placeholder={fieldPlaceholder}
           maxLength={field.maxLength}
           onChange={(next) => onPatch({ [field.key]: next })}
         />
@@ -276,18 +280,18 @@ function SettingFieldControl({
     case "timezone": {
       const current = typeof val === "string" ? val : "";
       const options: SelectOption<string>[] = [
-        { value: "", label: t("clock.local") },
+        { value: "", label: tr("clock.local") },
         ...tzOptions,
       ];
       return (
         <div className="cc-insp-field">
-          <span className="cc-field-label">{field.label}</span>
+          <span className="cc-field-label">{fieldLabel}</span>
           <Select
             searchable
-            searchPlaceholder={t("form.searchTimezone")}
+            searchPlaceholder={tr("form.searchTimezone")}
             options={options}
             value={current}
-            ariaLabel={field.label}
+            ariaLabel={fieldLabel}
             onChange={(next) => onPatch({ [field.key]: next || null })}
           />
         </div>
@@ -302,7 +306,7 @@ function SettingFieldControl({
       return (
         <div className="cc-insp-field">
           <div className="cc-insp-field-head">
-            <span className="cc-field-label">{field.label}</span>
+            <span className="cc-field-label">{fieldLabel}</span>
             <span className="cc-field-help">{zones.length} / 3</span>
           </div>
           {zones.length > 0 && (
@@ -310,12 +314,12 @@ function SettingFieldControl({
               {zones.map((z, idx) => (
                 <div key={z} className="cc-sort-chip">
                   <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                    {formatTimezoneLabel(z, new Date())}
+                    {formatTimezoneLabel(z, new Date(), locale)}
                   </span>
                   <button
                     type="button"
                     className="cc-iconbtn is-danger"
-                    aria-label={t("window.close")}
+                    aria-label={tr("window.close")}
                     onClick={() =>
                       onPatch({ [field.key]: zones.filter((_, i) => i !== idx) })
                     }
@@ -329,11 +333,11 @@ function SettingFieldControl({
           {zones.length < 3 && (
             <Select
               searchable
-              searchPlaceholder={t("form.searchTimezone")}
-              placeholder={t("form.addZone")}
+              searchPlaceholder={tr("form.searchTimezone")}
+              placeholder={tr("form.addZone")}
               options={available}
               value=""
-              ariaLabel={t("form.addZone")}
+              ariaLabel={tr("form.addZone")}
               onChange={(next) => {
                 if (next && !zones.includes(next)) {
                   onPatch({ [field.key]: [...zones, next].slice(0, 3) });
@@ -355,21 +359,21 @@ function SettingFieldControl({
               label: loc.name,
               help: [loc.admin, loc.country].filter(Boolean).join(", "),
             }))
-          : [{ value: "", label: t("form.noLocations") }];
+          : [{ value: "", label: tr("form.noLocations") }];
 
       return (
         <div className="cc-insp-field">
           <div className="cc-insp-field-head">
-            <span className="cc-field-label">{field.label}</span>
+            <span className="cc-field-label">{fieldLabel}</span>
             <button type="button" className="cc-link-btn" onClick={onOpenPlaceDrawer}>
-              {t("weather.addPlace")}
+              {tr("weather.addPlace")}
             </button>
           </div>
           <Select
             options={options}
             value={activeId}
             disabled={locations.length === 0}
-            ariaLabel={field.label}
+            ariaLabel={fieldLabel}
             onChange={(next) => onPatch({ [field.key]: next || null })}
           />
         </div>
@@ -383,7 +387,7 @@ function SettingFieldControl({
       const maxCount = METRICS_MAX_BY_SIZE[size] ?? 4;
       return (
         <MetricsMultiSort
-          label={field.label}
+          label={fieldLabel}
           selected={selected}
           maxCount={maxCount}
           systemCaps={systemCaps}
@@ -460,6 +464,7 @@ function MetricsMultiSort({
   systemCaps: SystemCaps | null;
   onChange: (next: string[]) => void;
 }) {
+  const tr = useT();
   const [dragIdx, setDragIdx] = useState<number | null>(null);
 
   const orderedIds = useMemo(() => {
@@ -493,13 +498,13 @@ function MetricsMultiSort({
       <div className="cc-insp-field-head">
         <span className="cc-field-label">{label}</span>
         <span className="cc-field-help">
-          {t("form.selectedCount", { n: Math.min(selected.length, maxCount), max: maxCount })}
+          {tr("form.selectedCount", { n: Math.min(selected.length, maxCount), max: maxCount })}
         </span>
       </div>
       <div className="cc-sort-list">
         {orderedIds.map((id, idx) => {
           const checked = activeSet.has(id);
-          const metricLabel = ALL_METRICS.find((m) => m.id === id)?.label ?? id;
+          const metricLabel = tr(`widgetSettings.system.primary.options.${id}`);
           const unsupported =
             systemCaps !== null &&
             ((id === "gpu" && !systemCaps.gpu) ||
@@ -531,7 +536,7 @@ function MetricsMultiSort({
                   className="cc-iconbtn"
                   style={{ width: 24, height: 24 }}
                   aria-label={metricLabel}
-                  title={unsupported ? t("form.metricUnsupported") : undefined}
+                  title={unsupported ? tr("form.metricUnsupported") : undefined}
                   onClick={() => toggle(id)}
                 >
                   {checked ? (
@@ -550,7 +555,7 @@ function MetricsMultiSort({
                     className="cc-iconbtn"
                     style={{ width: 24, height: 24 }}
                     disabled={idx === 0}
-                    aria-label={t("desktop.moveUp")}
+                    aria-label={tr("desktop.moveUp")}
                     onClick={() => move(idx, idx - 1)}
                   >
                     <ArrowUp size={12} />
@@ -560,7 +565,7 @@ function MetricsMultiSort({
                     className="cc-iconbtn"
                     style={{ width: 24, height: 24 }}
                     disabled={idx >= selected.length - 1}
-                    aria-label={t("desktop.moveDown")}
+                    aria-label={tr("desktop.moveDown")}
                     onClick={() => move(idx, idx + 1)}
                   >
                     <ArrowDown size={12} />
@@ -586,7 +591,8 @@ function WeatherSearchDrawer({
   onSelectLocation: (locationId: string) => void;
   onClose: () => void;
 }) {
-  const locations = useControlStore((s) => s.config?.weather.locations ?? []);
+  const tr = useT();
+  const locations = useControlStore((s) => s.config?.weather.locations ?? EMPTY_LOCATIONS);
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<GeoResult[]>([]);
   const [searching, setSearching] = useState(false);
@@ -653,21 +659,21 @@ function WeatherSearchDrawer({
   };
 
   return (
-    <Drawer open={open} title={t("weather.addPlace")} onClose={handleClose}>
+    <Drawer open={open} title={tr("weather.addPlace")} onClose={handleClose}>
       <Input
         autoFocus
         type="text"
         value={query}
-        placeholder={t("weather.searchPh")}
+        placeholder={tr("weather.searchPh")}
         onChange={(e) => handleQueryChange(e.target.value)}
       />
 
       {query.trim().length < 2 ? (
-        <span className="cc-field-help">{t("form.searchPlacesHint")}</span>
+        <span className="cc-field-help">{tr("form.searchPlacesHint")}</span>
       ) : searching ? (
-        <span className="cc-field-help">{t("form.searching")}</span>
+        <span className="cc-field-help">{tr("form.searching")}</span>
       ) : results.length === 0 ? (
-        <span className="cc-field-help">{t("form.noSearchResults")}</span>
+        <span className="cc-field-help">{tr("form.noSearchResults")}</span>
       ) : (
         <div className="cc-sort-list">
           {results.map((geo) => {
@@ -694,7 +700,7 @@ function WeatherSearchDrawer({
       {locations.length > 0 && (
         <>
           <div className="cc-section-label" style={{ marginTop: 8 }}>
-            {t("desktop.secContent")}
+            {tr("desktop.secContent")}
           </div>
           <div className="cc-sort-list">
             {locations.map((loc) => (
@@ -715,7 +721,7 @@ function WeatherSearchDrawer({
                 <button
                   type="button"
                   className="cc-iconbtn is-danger"
-                  aria-label={t("form.removePlace")}
+                  aria-label={tr("form.removePlace")}
                   onClick={() => void ipc.weatherLocationRemove(loc.id)}
                 >
                   <Trash size={14} aria-hidden="true" />

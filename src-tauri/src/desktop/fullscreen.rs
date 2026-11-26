@@ -1,6 +1,6 @@
 use std::{
     sync::{
-        atomic::Ordering,
+        atomic::{AtomicBool, Ordering},
         Arc, LazyLock,
     },
     time::Duration,
@@ -59,12 +59,19 @@ pub fn hwnd_covered_by_fullscreen(hwnd: HWND, target: Option<FullscreenTarget>) 
 }
 
 static CHECK_NOTIFY: LazyLock<Arc<Notify>> = LazyLock::new(|| Arc::new(Notify::new()));
+static STOPPED: AtomicBool = AtomicBool::new(false);
 
 pub fn trigger_check() {
     CHECK_NOTIFY.notify_one();
 }
 
+pub fn shutdown() {
+    STOPPED.store(true, Ordering::Release);
+    CHECK_NOTIFY.notify_one();
+}
+
 pub fn start(app: AppHandle) {
+    STOPPED.store(false, Ordering::Release);
     tauri::async_runtime::spawn(async move {
         let notify = Arc::clone(&CHECK_NOTIFY);
         let mut last_fullscreen = false;
@@ -72,6 +79,9 @@ pub fn start(app: AppHandle) {
         let mut last_sync_key: Option<(Option<FullscreenTarget>, bool)> = None;
 
         loop {
+            if STOPPED.load(Ordering::Acquire) {
+                break;
+            }
             let sleep_dur = if last_sync_key.map(|k| k.1).unwrap_or(false) {
                 Duration::from_secs(2)
             } else {
@@ -80,16 +90,26 @@ pub fn start(app: AppHandle) {
             tokio::select! {
                 _ = tokio::time::sleep(sleep_dur) => {}
                 _ = notify.notified() => {
+                    if STOPPED.load(Ordering::Acquire) {
+                        break;
+                    }
                     tokio::time::sleep(Duration::from_millis(120)).await;
                 }
             }
+            if STOPPED.load(Ordering::Acquire) {
+                break;
+            }
 
             let state = app.state::<AppState>();
-            let config = state.config.get();
+            let (has_top_widgets, has_widgets) = state.config.read_with(|cfg| {
+                (
+                    cfg.widgets.iter().any(|w| w.layer == Layer::Top),
+                    !cfg.widgets.is_empty(),
+                )
+            });
             let edit_mode = state.edit_mode.load(Ordering::Acquire);
             let has_live_wallpaper = state.wallpaper_status.read().active_surfaces > 0;
-            let has_top_widgets = config.widgets.iter().any(|w| w.layer == Layer::Top);
-            let need_fullscreen_check = !config.widgets.is_empty() || has_live_wallpaper;
+            let need_fullscreen_check = has_widgets || has_live_wallpaper;
 
             let is_fullscreen = if need_fullscreen_check {
                 !showdesktop::foreground_is_desktop()

@@ -6,7 +6,7 @@ use uuid::Uuid;
 
 use crate::error::AppError;
 
-pub const CONFIG_VERSION: u32 = 3;
+pub const CONFIG_VERSION: u32 = 4;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum PatchValue<T> {
@@ -309,12 +309,7 @@ impl WidgetKind {
 
 impl WidgetSize {
     pub fn base_size(self) -> (f64, f64) {
-        match self {
-            Self::Pill => (204.0, 48.0),
-            Self::S => (132.0, 132.0),
-            Self::M => (276.0, 132.0),
-            Self::L => (276.0, 276.0),
-        }
+        super::geometry::widget_base_size(self)
     }
 }
 
@@ -475,6 +470,7 @@ pub enum AutoRule {
     ExpandWhenActive,
     ExpandWhenInCall,
     FillRemainingSpace,
+    ShowOnHover,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -536,7 +532,7 @@ impl ClusterConfig {
             (WidgetKind::Agents, ModuleMode::Compact) => 32.0,
             (WidgetKind::Agents, ModuleMode::Expanded) => 132.0,
             (WidgetKind::Timer, ModuleMode::Compact) => 32.0,
-            (WidgetKind::Timer, ModuleMode::Expanded) => 76.0,
+            (WidgetKind::Timer, ModuleMode::Expanded) => 84.0,
             (WidgetKind::Cluster, _) => 48.0,
         }
     }
@@ -554,7 +550,8 @@ impl ClusterConfig {
             .map(|m| match m.auto_rule {
                 AutoRule::ExpandWhenPlaying
                 | AutoRule::CollapseWhenIdle
-                | AutoRule::ExpandWhenInCall => ModuleMode::Hidden,
+                | AutoRule::ExpandWhenInCall
+                | AutoRule::ShowOnHover => ModuleMode::Hidden,
                 AutoRule::ExpandWhenHighLoad | AutoRule::ExpandWhenActive => ModuleMode::Compact,
                 AutoRule::None | AutoRule::FillRemainingSpace => {
                     m.default_mode

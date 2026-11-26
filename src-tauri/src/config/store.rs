@@ -18,8 +18,8 @@ use super::{defaults, migrate, schema::{Config, CONFIG_VERSION}};
 
 const CONFIG_FILE: &str = "config.json";
 const BACKUP_FILE: &str = "config.bak.json";
-const TEMP_FILE: &str = "config.json.tmp";
 const SAVE_DEBOUNCE_MS: u64 = 300;
+static TEMP_SEQ: AtomicU64 = AtomicU64::new(0);
 pub const RESTORED_BACKUP_MESSAGE: &str =
     "Dit layout kunne ikke indlæses. Vi har gendannet den seneste sikkerhedskopi.";
 pub const RESTORED_DEFAULTS_MESSAGE: &str =
@@ -30,6 +30,7 @@ pub struct ConfigStore {
     config: RwLock<Config>,
     app: Option<AppHandle>,
     save_seq: AtomicU64,
+    write_lock: Mutex<()>,
     backed_up_session: AtomicBool,
     had_valid_file_on_load: AtomicBool,
     restore_notice: Mutex<Option<String>>,
@@ -106,6 +107,7 @@ impl ConfigStore {
             config: RwLock::new(config),
             app,
             save_seq: AtomicU64::new(0),
+            write_lock: Mutex::new(()),
             backed_up_session: AtomicBool::new(restored_from_backup),
             had_valid_file_on_load: AtomicBool::new(had_valid),
             restore_notice: Mutex::new(restore_notice),
@@ -114,6 +116,10 @@ impl ConfigStore {
 
     pub fn get(&self) -> Config {
         self.config.read().clone()
+    }
+
+    pub fn read_with<R>(&self, f: impl FnOnce(&Config) -> R) -> R {
+        f(&self.config.read())
     }
 
     pub fn notes_dir(&self) -> PathBuf {
@@ -132,24 +138,43 @@ impl ConfigStore {
     where
         F: FnOnce(&mut Config) -> Result<R, AppError>,
     {
-        let (result, snapshot) = {
-            let mut guard = self.config.write();
-            let mut candidate = guard.clone();
-            let result = f(&mut candidate)?;
-            migrate::sanitize(&mut candidate);
-            *guard = candidate.clone();
-            (result, candidate)
-        };
-
+        let (result, snapshot) = self.apply_mutation(f)?;
         self.schedule_save();
+        self.notify_changed(&snapshot);
+        Ok(result)
+    }
+
+    pub fn mutate_and_flush<F, R>(self: &Arc<Self>, f: F) -> Result<R, AppError>
+    where
+        F: FnOnce(&mut Config) -> Result<R, AppError>,
+    {
+        let (result, snapshot) = self.apply_mutation(f)?;
+        self.save_seq.fetch_add(1, Ordering::AcqRel);
+        self.flush()?;
+        self.notify_changed(&snapshot);
+        Ok(result)
+    }
+
+    fn apply_mutation<F, R>(&self, f: F) -> Result<(R, Config), AppError>
+    where
+        F: FnOnce(&mut Config) -> Result<R, AppError>,
+    {
+        let mut guard = self.config.write();
+        let mut candidate = guard.clone();
+        let result = f(&mut candidate)?;
+        migrate::sanitize(&mut candidate);
+        *guard = candidate.clone();
+        Ok((result, candidate))
+    }
+
+    fn notify_changed(&self, snapshot: &Config) {
         crate::desktop::hover::poke();
         if let Some(app) = &self.app {
-            if let Err(error) = app.emit("config://changed", &snapshot) {
+            if let Err(error) = app.emit("config://changed", snapshot) {
                 log::warn!("Kunne ikke sende config://changed: {error}");
             }
             crate::tray::sync(app);
         }
-        Ok(result)
     }
 
     pub fn update_placement_quiet(self: &Arc<Self>, id: uuid::Uuid, x: f64, y: f64) {
@@ -170,6 +195,7 @@ impl ConfigStore {
     }
 
     pub fn flush(&self) -> Result<(), AppError> {
+        let _write_guard = self.write_lock.lock();
         let config_path = self.dir.join(CONFIG_FILE);
         let backup_path = self.dir.join(BACKUP_FILE);
 
@@ -198,11 +224,16 @@ impl ConfigStore {
             let store = Arc::clone(self);
             handle.spawn(async move {
                 tokio::time::sleep(Duration::from_millis(SAVE_DEBOUNCE_MS)).await;
-                if store.save_seq.load(Ordering::Acquire) == seq {
-                    if let Err(error) = store.flush() {
-                        log::error!("Kunne ikke gemme konfiguration: {error:?}");
-                    }
+                if store.save_seq.load(Ordering::Acquire) != seq {
+                    return;
                 }
+                tokio::task::spawn_blocking(move || {
+                    if store.save_seq.load(Ordering::Acquire) == seq {
+                        if let Err(error) = store.flush() {
+                            log::error!("Kunne ikke gemme konfiguration: {error:?}");
+                        }
+                    }
+                });
             });
         } else if let Err(error) = self.flush() {
             log::error!("Kunne ikke gemme konfiguration synkront: {error:?}");
@@ -228,12 +259,27 @@ fn read_config_file(path: &Path) -> Result<Option<(Config, bool)>, String> {
 
 fn write_atomic(dir: &Path, config: &Config) -> Result<(), AppError> {
     fs::create_dir_all(dir).map_err(AppError::ConfigWrite)?;
-    let tmp_path = dir.join(TEMP_FILE);
+    let seq = TEMP_SEQ.fetch_add(1, Ordering::Relaxed);
+    let tmp_path = dir.join(format!("config.{}.{}.tmp", std::process::id(), seq));
     let final_path = dir.join(CONFIG_FILE);
     let json = serde_json::to_string_pretty(config)
         .map_err(|error| AppError::Other(format!("JSON-serialisering fejlede: {error}")))?;
-    fs::write(&tmp_path, json).map_err(AppError::ConfigWrite)?;
-    fs::rename(&tmp_path, &final_path).map_err(AppError::ConfigWrite)?;
+
+    if let Err(error) = fs::write(&tmp_path, json) {
+        let _ = fs::remove_file(&tmp_path);
+        return Err(AppError::ConfigWrite(error));
+    }
+
+    if fs::rename(&tmp_path, &final_path).is_err() {
+        std::thread::sleep(Duration::from_millis(15));
+        if fs::rename(&tmp_path, &final_path).is_err() {
+            if let Err(error) = fs::copy(&tmp_path, &final_path) {
+                let _ = fs::remove_file(&tmp_path);
+                return Err(AppError::ConfigWrite(error));
+            }
+        }
+    }
+    let _ = fs::remove_file(&tmp_path);
     Ok(())
 }
 
@@ -251,6 +297,16 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    fn assert_no_tmp_files(dir: &Path) {
+        let leftovers: Vec<PathBuf> = fs::read_dir(dir)
+            .unwrap()
+            .flatten()
+            .map(|entry| entry.path())
+            .filter(|path| path.extension().and_then(|ext| ext.to_str()) == Some("tmp"))
+            .collect();
+        assert!(leftovers.is_empty(), "tmp-filer efterladt: {leftovers:?}");
     }
 
     #[test]
@@ -306,7 +362,7 @@ mod tests {
             assert_eq!(store.get().widgets.len(), 2);
             assert!(dir.join(CONFIG_FILE).exists());
             assert!(dir.join(BACKUP_FILE).exists());
-            assert!(!dir.join(TEMP_FILE).exists());
+            assert_no_tmp_files(&dir);
         }
 
         // Corrupt primary config.json by hand while keeping valid backup from prior session save
@@ -324,6 +380,78 @@ mod tests {
             recovered.peek_restore_notice().as_deref(),
             Some(RESTORED_BACKUP_MESSAGE)
         );
+        assert_no_tmp_files(&dir);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn read_with_reads_without_cloning_config() {
+        let dir = temp_config_dir("read_with");
+        let store = Arc::new(ConfigStore::load_from_dir(dir.clone(), None, None));
+        let widget_id = store
+            .mutate(|cfg| {
+                let widget = defaults::default_widget(WidgetKind::Clock, None);
+                let id = widget.id;
+                cfg.widgets.push(widget);
+                Ok(id)
+            })
+            .unwrap();
+
+        let count = store.read_with(|cfg| cfg.widgets.len());
+        let first_id = store.read_with(|cfg| cfg.widgets.first().map(|w| w.id));
+        assert_eq!(count, 1);
+        assert_eq!(first_id, Some(widget_id));
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn mutate_and_flush_writes_valid_config_immediately() {
+        let dir = temp_config_dir("mutate_flush");
+        let store = Arc::new(ConfigStore::load_from_dir(dir.clone(), None, None));
+        store
+            .mutate_and_flush(|cfg| {
+                cfg.widgets.push(defaults::default_widget(WidgetKind::Clock, None));
+                Ok(())
+            })
+            .unwrap();
+
+        let raw = fs::read_to_string(dir.join(CONFIG_FILE)).unwrap();
+        let json: serde_json::Value = serde_json::from_str(&raw).unwrap();
+        assert_eq!(json["widgets"].as_array().map(Vec::len), Some(1));
+        assert_eq!(store.get().widgets.len(), 1);
+        assert_no_tmp_files(&dir);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn parallel_flush_is_serialized_and_leaves_valid_config() {
+        let dir = temp_config_dir("parallel_flush");
+        let store = Arc::new(ConfigStore::load_from_dir(dir.clone(), None, None));
+        store
+            .mutate(|cfg| {
+                cfg.widgets.push(defaults::default_widget(WidgetKind::Clock, None));
+                Ok(())
+            })
+            .unwrap();
+
+        std::thread::scope(|scope| {
+            let mut handles = Vec::new();
+            for _ in 0..8 {
+                let store = Arc::clone(&store);
+                handles.push(scope.spawn(move || store.flush()));
+            }
+            for handle in handles {
+                handle.join().unwrap().unwrap();
+            }
+        });
+
+        let raw = fs::read_to_string(dir.join(CONFIG_FILE)).unwrap();
+        let json: serde_json::Value = serde_json::from_str(&raw).unwrap();
+        assert_eq!(json["widgets"].as_array().map(Vec::len), Some(1));
+        assert_no_tmp_files(&dir);
 
         let _ = fs::remove_dir_all(&dir);
     }
@@ -453,7 +581,7 @@ mod tests {
         fs::write(dir.join(CONFIG_FILE), make_cluster_json(1)).unwrap();
         let migrated = ConfigStore::load_from_dir(dir.clone(), None, None);
         let cfg = migrated.get();
-        assert_eq!(cfg.version, 3);
+        assert_eq!(cfg.version, 4);
         let disc = &cfg.widgets[0].cluster.as_ref().unwrap().modules[1];
         assert_eq!(disc.default_mode, ModuleMode::Hidden);
         assert_eq!(disc.auto_rule, AutoRule::ExpandWhenInCall);
@@ -461,7 +589,7 @@ mod tests {
         // Bekræft at den migrerede version blev skrevet til disken.
         let disk_raw = fs::read_to_string(dir.join(CONFIG_FILE)).unwrap();
         let disk_val: serde_json::Value = serde_json::from_str(&disk_raw).unwrap();
-        assert_eq!(disk_val.get("version").and_then(|v| v.as_u64()), Some(3));
+        assert_eq!(disk_val.get("version").and_then(|v| v.as_u64()), Some(4));
 
         // En eksplicit v2-konfiguration må bevare brugerens valg (`compact` + `none`).
         fs::write(dir.join(CONFIG_FILE), make_cluster_json(2)).unwrap();

@@ -83,3 +83,92 @@ export function useTimers(id: string | null, enabled = true): TimerListData {
 
   return { snapshot, nowMs };
 }
+
+export interface ClusterTimerData {
+  snapshots: ReadonlyMap<string, TimerListSnapshot>;
+  nowMs: number;
+}
+
+/**
+ * Samler timer-snapshots for alle timer-moduler i en klynge, så
+ * `timerFinishedModuleIds` og pin-regler virker selv når modulet er hidden.
+ * Én lytter på `timer://state` filtrerer efter id-sættet; klokken tikker
+ * kun mens mindst én timer på tværs af snapshots kører eller er færdig.
+ */
+export function useClusterTimers(ids: readonly string[], enabled: boolean): ClusterTimerData {
+  const [snapshots, setSnapshots] = useState<ReadonlyMap<string, TimerListSnapshot>>(new Map());
+  const [nowMs, setNowMs] = useState(() => Date.now());
+  const idsKey = ids.join(",");
+
+  useEffect(() => {
+    if (!enabled) return;
+    const idList = idsKey.split(",").filter((x) => x.length > 0);
+    if (idList.length === 0) return;
+    const idSet = new Set(idList);
+    let active = true;
+    let dispose: (() => void) | null = null;
+
+    for (const id of idList) {
+      ipc
+        .timerGet(id)
+        .then((initial) => {
+          if (!active) return;
+          setSnapshots((prev) => {
+            const next = new Map(prev);
+            next.set(id, initial);
+            return next;
+          });
+        })
+        .catch(() => {});
+    }
+
+    on.timerState((next) => {
+      if (!active || !idSet.has(next.widgetId)) return;
+      setSnapshots((prev) => {
+        const copy = new Map(prev);
+        copy.set(next.widgetId, next);
+        return copy;
+      });
+      setNowMs(Date.now());
+    })
+      .then((un) => {
+        if (active) dispose = un;
+        else un();
+      })
+      .catch(() => {});
+
+    return () => {
+      active = false;
+      dispose?.();
+    };
+  }, [idsKey, enabled]);
+
+  const ticking = [...snapshots.values()].some((snap) =>
+    snap.items.some((item) => item.status === "running" || item.status === "finished"),
+  );
+
+  useEffect(() => {
+    if (!ticking) return;
+    let timer = 0;
+    const schedule = () => {
+      const delay = 1000 - (Date.now() % 1000) + 30;
+      timer = window.setTimeout(() => {
+        if (!document.hidden) {
+          setNowMs(Date.now());
+        }
+        schedule();
+      }, delay);
+    };
+    const onVis = () => {
+      if (!document.hidden) setNowMs(Date.now());
+    };
+    schedule();
+    document.addEventListener("visibilitychange", onVis);
+    return () => {
+      window.clearTimeout(timer);
+      document.removeEventListener("visibilitychange", onVis);
+    };
+  }, [ticking]);
+
+  return { snapshots, nowMs };
+}

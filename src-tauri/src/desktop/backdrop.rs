@@ -68,7 +68,12 @@ use windows::{
 use windows_core::implement;
 use windows_numerics::Vector2;
 
-use crate::config::schema::{Layer, RadiusPreset, ThemeId, VerticalAnchor, WidgetSize};
+use crate::config::{
+    geometry::{
+        cluster_radius_base, laerk_radius_multiplier, squircle_multiplier, widget_radius_base,
+    },
+    schema::{Layer, RadiusPreset, ThemeId, VerticalAnchor, WidgetSize},
+};
 
 use super::{
     backdrop_capture::{self, CaptureTargetSpec, SendSwapChain},
@@ -165,27 +170,13 @@ pub fn compute_corner_geometry(
     squircle_supported: bool,
 ) -> (f32, bool) {
     let r_base = if spec.is_cluster {
-        match spec.radius {
-            RadiusPreset::Soft => 10.0_f32,
-            RadiusPreset::Round => 22.0_f32,
-            RadiusPreset::Extra => 34.0_f32,
-        }
+        cluster_radius_base(spec.radius)
     } else {
-        match (spec.radius, spec.size) {
-            (RadiusPreset::Soft, WidgetSize::Pill) => 8.0,
-            (RadiusPreset::Soft, WidgetSize::S | WidgetSize::M) => 10.0,
-            (RadiusPreset::Soft, WidgetSize::L) => 12.0,
-            (RadiusPreset::Round, WidgetSize::Pill) => 14.0,
-            (RadiusPreset::Round, WidgetSize::S | WidgetSize::M) => 22.0,
-            (RadiusPreset::Round, WidgetSize::L) => 26.0,
-            (RadiusPreset::Extra, WidgetSize::Pill) => 24.0,
-            (RadiusPreset::Extra, WidgetSize::S | WidgetSize::M) => 36.0,
-            (RadiusPreset::Extra, WidgetSize::L) => 42.0,
-        }
+        widget_radius_base(spec.radius, spec.size)
     };
 
     let r_mult = match spec.theme {
-        ThemeId::Laerk => 0.72_f32,
+        ThemeId::Laerk => laerk_radius_multiplier(),
         ThemeId::Aurora | ThemeId::Grafit => 1.0_f32,
     };
 
@@ -196,7 +187,7 @@ pub fn compute_corner_geometry(
         !spec.is_cluster && spec.size == WidgetSize::Pill && spec.radius == RadiusPreset::Extra;
     let use_squircle = squircle_supported && !is_round_pill;
     let raw_r = if use_squircle {
-        r_widget * 1.5
+        r_widget * squircle_multiplier()
     } else {
         r_widget
     };
@@ -1736,11 +1727,7 @@ mod tests {
             radius,
             size,
             is_cluster,
-            base_width: match size {
-                WidgetSize::Pill => 204.0,
-                WidgetSize::S => 132.0,
-                _ => 276.0,
-            },
+            base_width: crate::config::geometry::widget_base_size(size).0,
             widget_scale: 1.0,
             dpi_scale: 1.0,
             layer: Layer::Top,

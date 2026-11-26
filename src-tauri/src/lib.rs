@@ -8,11 +8,11 @@ pub mod providers;
 mod state;
 mod tray;
 pub mod update;
+pub mod util;
 pub mod wallpaper;
 mod windows;
 
 use config::{
-    schema::SizeF,
     store::ConfigStore,
 };
 use desktop::monitors::{list_tauri_monitors, MonitorInfo};
@@ -21,6 +21,25 @@ use state::AppState;
 use tauri::{Manager, WindowEvent};
 use tauri_plugin_autostart::MacosLauncher;
 use tauri_plugin_log::{Target, TargetKind};
+
+pub(crate) fn shutdown_app(app: &tauri::AppHandle) {
+    static SHUTDOWN_DONE: std::sync::atomic::AtomicBool =
+        std::sync::atomic::AtomicBool::new(false);
+    if SHUTDOWN_DONE.swap(true, std::sync::atomic::Ordering::AcqRel) {
+        return;
+    }
+
+    if let Some(state) = app.try_state::<AppState>() {
+        if let Err(error) = state.config.flush() {
+            error!("Kunne ikke gemme konfiguration ved lukning: {error:?}");
+        }
+    }
+    if let Some(scheduler) = app.try_state::<providers::scheduler::Scheduler>() {
+        scheduler.shutdown();
+    }
+    desktop::shutdown();
+    providers::cpu_sensor::shutdown();
+}
 
 fn install_panic_hook() {
     let prev = std::panic::take_hook();
@@ -192,23 +211,7 @@ pub fn run() {
                 .iter()
                 .find(|m| m.is_primary)
                 .or_else(|| snapshots.first())
-                .map(|m| {
-                    let scale = m.scale.max(0.5);
-                    MonitorInfo {
-                        name: m.name.clone(),
-                        rect: m.rect,
-                        work_area: m.work_area,
-                        scale: m.scale,
-                        logical_size: SizeF {
-                            width: m.rect.width as f64 / scale,
-                            height: m.rect.height as f64 / scale,
-                        },
-                        plate_path: String::new(),
-                        glass_plate_path: String::new(),
-                        avg_luma: 0.15,
-                        is_primary: m.is_primary,
-                    }
-                });
+                .map(MonitorInfo::from_snapshot);
 
             let config_store = ConfigStore::load(app.handle(), initial_primary.as_ref());
             let initial_cfg = config_store.get();
@@ -273,13 +276,7 @@ pub fn run() {
                     }
                 }
                 tauri::RunEvent::Exit => {
-                    if let Some(state) = app_handle.try_state::<AppState>() {
-                        if let Err(error) = state.config.flush() {
-                            error!("Kunne ikke gemme konfiguration ved lukning: {error:?}");
-                        }
-                    }
-                    providers::cpu_sensor::shutdown();
-                    desktop::shutdown();
+                    shutdown_app(app_handle);
                 }
                 _ => {}
             }

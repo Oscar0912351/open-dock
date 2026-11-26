@@ -10,10 +10,7 @@ use tauri::{AppHandle, Manager};
 use windows::{
     core::{PCWSTR, PWSTR},
     Win32::{
-        System::Com::{
-            CoCreateInstance, CoInitializeEx, CoTaskMemFree, CoUninitialize, CLSCTX_ALL,
-            COINIT_APARTMENTTHREADED,
-        },
+        System::Com::{CoCreateInstance, CoTaskMemFree, CLSCTX_ALL},
         UI::Shell::{
             DesktopWallpaper, IDesktopWallpaper, DESKTOP_WALLPAPER_POSITION, DWPOS_CENTER,
             DWPOS_FILL, DWPOS_FIT, DWPOS_SPAN, DWPOS_STRETCH,
@@ -28,24 +25,7 @@ use crate::{
     state::AppState,
 };
 
-struct ComAptGuard(bool);
 
-impl ComAptGuard {
-    fn init() -> Self {
-        let hr = unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) };
-        Self(hr.is_ok())
-    }
-}
-
-impl Drop for ComAptGuard {
-    fn drop(&mut self) {
-        if self.0 {
-            unsafe {
-                CoUninitialize();
-            }
-        }
-    }
-}
 
 struct CoTaskStr(PWSTR);
 
@@ -120,7 +100,7 @@ pub fn apply_static_wallpaper(
         image_path.to_path_buf()
     };
 
-    let _com = ComAptGuard::init();
+    let _com = crate::util::ComAptGuard::init();
     let dw: IDesktopWallpaper = unsafe { CoCreateInstance(&DesktopWallpaper, None, CLSCTX_ALL)? };
 
     let _ = unsafe { dw.Enable(true) };

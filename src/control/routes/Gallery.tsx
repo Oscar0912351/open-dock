@@ -64,6 +64,7 @@ interface CustomDialogSeed {
 function customAutoRule(kind: FreeWidgetKind, shape: CustomShape): AutoRule {
   if (kind === "nowPlaying") return "expandWhenPlaying";
   if (kind === "discord") return "expandWhenInCall";
+  if (kind === "timer") return "showOnHover";
   if (shape === "box" && kind === "system") return "expandWhenHighLoad";
   if (shape === "box" && kind === "agents") return "expandWhenActive";
   if (shape === "box" && kind === "weather") return "fillRemainingSpace";
@@ -74,7 +75,7 @@ function createCustomModule(kind: FreeWidgetKind, shape: CustomShape): ClusterMo
   return {
     id: crypto.randomUUID(),
     kind,
-    defaultMode: kind === "nowPlaying" || kind === "discord" ? "hidden" : "compact",
+    defaultMode: kind === "nowPlaying" || kind === "discord" || kind === "timer" ? "hidden" : "compact",
     autoRule: customAutoRule(kind, shape),
     settings: { ...WIDGET_REGISTRY[kind].defaultSettings },
   };

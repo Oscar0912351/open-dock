@@ -10,12 +10,12 @@ pub mod wasapi;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::{
-    atomic::{AtomicBool, Ordering},
+    atomic::{AtomicBool, AtomicU64, Ordering},
     mpsc::{self, Receiver, Sender},
     Arc,
 };
 use std::thread::JoinHandle;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
@@ -23,7 +23,7 @@ use serde_json::json;
 use tauri::{AppHandle, Emitter, Manager};
 use ts_rs::TS;
 
-use crate::error::AppError;
+use crate::{error::AppError, util::unix_now_ms};
 use call_timer::CallTimer;
 use credentials::{DiscordRpcCredentials, DEFAULT_REDIRECT_URI};
 use ipc::{DiscordIpcPipe, PipeError, RawParticipant, SelfUserProfile, OP_PONG};
@@ -238,6 +238,7 @@ pub struct DiscordProvider {
     rpc_status: Arc<Mutex<DiscordRpcStatus>>,
     cmd_tx: Arc<Mutex<Option<Sender<WorkerMsg>>>>,
     auth_in_progress: Arc<AtomicBool>,
+    generation: Arc<AtomicU64>,
 }
 
 struct Worker {
@@ -262,6 +263,7 @@ impl DiscordProvider {
             rpc_status: Arc::new(Mutex::new(DiscordRpcStatus::default())),
             cmd_tx: Arc::new(Mutex::new(None)),
             auth_in_progress: Arc::new(AtomicBool::new(false)),
+            generation: Arc::new(AtomicU64::new(0)),
         }
     }
 
@@ -329,6 +331,8 @@ impl DiscordProvider {
         *self.cmd_tx.lock() = Some(tx.clone());
         let cmd_tx_ref = Arc::clone(&self.cmd_tx);
         let app_handle = app.clone();
+        let my_gen = self.generation.fetch_add(1, Ordering::AcqRel) + 1;
+        let gen_ref = Arc::clone(&self.generation);
 
         let join = std::thread::Builder::new()
             .name("od-discord".into())
@@ -354,8 +358,10 @@ impl DiscordProvider {
                         .unwrap_or("ukendt panic");
                     log::error!(target: "provider:discord", "od-discord-tråd afbrudt af panic: {msg}");
                 }
-                *cmd_tx_ref.lock() = None;
-                running_flag.store(false, Ordering::Release);
+                if gen_ref.load(Ordering::Acquire) == my_gen {
+                    *cmd_tx_ref.lock() = None;
+                    running_flag.store(false, Ordering::Release);
+                }
             })
             .ok();
 
@@ -369,7 +375,9 @@ impl DiscordProvider {
     }
 
     pub fn stop(&self) {
-        if !self.running.swap(false, Ordering::AcqRel) {
+        let was_running = self.running.swap(false, Ordering::AcqRel);
+        self.generation.fetch_add(1, Ordering::AcqRel);
+        if !was_running {
             return;
         }
         log::info!(target: "provider:discord", "Stopper discord-provider");
@@ -379,8 +387,9 @@ impl DiscordProvider {
         if let Some(mut worker) = self.worker.lock().take() {
             worker.stop.store(true, Ordering::Release);
             if let Some(join) = worker.join.take() {
-                let _ = join.join();
+                drop(join);
             }
+            drop(worker);
         }
     }
 
@@ -753,12 +762,6 @@ fn emit_rpc_status(app: &AppHandle, status: &DiscordRpcStatus) {
     }
 }
 
-fn unix_now_ms() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0)
-}
 
 fn authenticate_pipe(
     pipe: &mut DiscordIpcPipe,
@@ -1226,25 +1229,8 @@ fn try_open_and_auth_rpc(
     }
 }
 
-struct ComGuard {
-    active: bool,
-}
 
-impl ComGuard {
-    fn init() -> Self {
-        Self {
-            active: init_com(),
-        }
-    }
-}
 
-impl Drop for ComGuard {
-    fn drop(&mut self) {
-        if self.active {
-            uninit_com();
-        }
-    }
-}
 
 #[allow(clippy::too_many_arguments)]
 fn run_discord_thread(
@@ -1258,7 +1244,7 @@ fn run_discord_thread(
     tx: Sender<WorkerMsg>,
     rx: Receiver<WorkerMsg>,
 ) {
-    let _com = ComGuard::init();
+    let _com = crate::util::ComMtaGuard::init();
     let mut detector = CallDetector::default();
     let mut audio_monitor = AudioSessionMonitor::default();
     let mut call_timer = CallTimer::load(&config_dir);
@@ -1725,23 +1711,3 @@ fn process_rpc_frame(
         _ => false,
     }
 }
-
-#[cfg(windows)]
-fn init_com() -> bool {
-    use windows::Win32::System::Com::{CoInitializeEx, COINIT_MULTITHREADED};
-    unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) }.is_ok()
-}
-
-#[cfg(windows)]
-fn uninit_com() {
-    use windows::Win32::System::Com::CoUninitialize;
-    unsafe { CoUninitialize() };
-}
-
-#[cfg(not(windows))]
-fn init_com() -> bool {
-    false
-}
-
-#[cfg(not(windows))]
-fn uninit_com() {}

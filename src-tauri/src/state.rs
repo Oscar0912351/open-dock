@@ -110,6 +110,7 @@ pub struct WidgetBoot {
     pub placement: Option<WidgetPlacement>,
     pub start_delay_ms: u32,
     pub edit_mode: bool,
+    pub hover_inside: bool,
     pub paused: bool,
     pub game_overlay_active: bool,
 }
@@ -194,135 +195,20 @@ impl AppState {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{
-        config::schema::{
-            AppearancePatch, AutoRule, ClusterConfig, ClusterModule, Config, ControlTheme,
-            CustomWallpaper, General, GeneralPatch, Language, Layer, Location,
-            ModuleMode, MonitorKey, MonitorWallpaper, MonitorWallpaperPatch, MotionPreset,
-            Placement, PointF, RadiusPreset, RectF, RectI, ResizeBehavior, SizeF, ThemeId,
-            VerticalAnchor, WallpaperConfig, WallpaperEngineSettings, WallpaperEngineSettingsPatch,
-            WallpaperFit, WallpaperKind, WallpaperMood, WallpaperResolution, WeatherConfig,
-            WidgetKind, WidgetPatch, WidgetSize,
-        },
-        desktop::snap::{EditGuides, Guide, GuideAxis},
-        providers::{
-            agents::{AgentSession, AgentStatus, AgentTodoProgress, AgentsSnapshot},
-            discord::{
-                DiscordConnectionMode, DiscordParticipant, DiscordRpcStatus, DiscordSnapshot,
-                DiscordVoiceAction,
-            },
-            gpu::SystemCaps,
-            media::{MediaAction, MediaSnapshot, PlaybackStatus, RepeatMode},
-            scheduler::{ProviderKind, ProviderSnapshot},
-            system::{CpuSample, DiskSample, GpuSample, MemSample, NetSample, SystemSample},
-            timer::{RecentTimer, TimerItem, TimerListSnapshot, TimerStatus},
-            weather::{GeoResult, WeatherCurrent, WeatherDaily, WeatherHourly, WeatherSnapshot},
-        },
-        wallpaper::{
-            catalog::WallpaperItem,
-            engine::{EngineRunState, WallpaperEngineStatus},
-            quality::WindowsQualityStatus,
-        },
-    };
-    use ts_rs::TS;
 
     #[test]
-    fn export_bindings() {
-        let config = ts_rs::Config::default();
-        Language::export_all(&config).unwrap();
-        ControlTheme::export_all(&config).unwrap();
-        General::export_all(&config).unwrap();
-        GeneralPatch::export_all(&config).unwrap();
-        ThemeId::export_all(&config).unwrap();
-        GlassEngine::export_all(&config).unwrap();
-        RadiusPreset::export_all(&config).unwrap();
-        MotionPreset::export_all(&config).unwrap();
-        Layer::export_all(&config).unwrap();
-        WidgetKind::export_all(&config).unwrap();
-        WidgetSize::export_all(&config).unwrap();
-        Appearance::export_all(&config).unwrap();
-        AppearancePatch::export_all(&config).unwrap();
-        RectI::export_all(&config).unwrap();
-        RectF::export_all(&config).unwrap();
-        PointF::export_all(&config).unwrap();
-        SizeF::export_all(&config).unwrap();
-        GuideAxis::export_all(&config).unwrap();
-        Guide::export_all(&config).unwrap();
-        EditGuides::export_all(&config).unwrap();
-        EditSelected::export_all(&config).unwrap();
-        EditDragging::export_all(&config).unwrap();
-        MonitorKey::export_all(&config).unwrap();
-        Placement::export_all(&config).unwrap();
-        Location::export_all(&config).unwrap();
-        WeatherConfig::export_all(&config).unwrap();
-        WallpaperKind::export_all(&config).unwrap();
-        WallpaperMood::export_all(&config).unwrap();
-        WallpaperFit::export_all(&config).unwrap();
-        WallpaperResolution::export_all(&config).unwrap();
-        WallpaperEngineSettings::export_all(&config).unwrap();
-        WallpaperEngineSettingsPatch::export_all(&config).unwrap();
-        MonitorWallpaper::export_all(&config).unwrap();
-        MonitorWallpaperPatch::export_all(&config).unwrap();
-        CustomWallpaper::export_all(&config).unwrap();
-        WallpaperConfig::export_all(&config).unwrap();
-        WallpaperItem::export_all(&config).unwrap();
-        WindowsQualityStatus::export_all(&config).unwrap();
-        EngineRunState::export_all(&config).unwrap();
-        WallpaperEngineStatus::export_all(&config).unwrap();
-        ModuleMode::export_all(&config).unwrap();
-        AutoRule::export_all(&config).unwrap();
-        ResizeBehavior::export_all(&config).unwrap();
-        VerticalAnchor::export_all(&config).unwrap();
-        ClusterModule::export_all(&config).unwrap();
-        ClusterConfig::export_all(&config).unwrap();
-        WidgetInstance::export_all(&config).unwrap();
-        WidgetPatch::export_all(&config).unwrap();
-        Config::export_all(&config).unwrap();
-        MonitorInfo::export_all(&config).unwrap();
-        WidgetPlacement::export_all(&config).unwrap();
-        WidgetGlassState::export_all(&config).unwrap();
-        WidgetBoot::export_all(&config).unwrap();
-        PauseReason::export_all(&config).unwrap();
-        AppPaused::export_all(&config).unwrap();
-        AppStats::export_all(&config).unwrap();
-        AppVisible::export_all(&config).unwrap();
-        GameOverlayState::export_all(&config).unwrap();
-        AppStatus::export_all(&config).unwrap();
-        EditModeState::export_all(&config).unwrap();
-        ProviderKind::export_all(&config).unwrap();
-        ProviderSnapshot::export_all(&config).unwrap();
-        PlaybackStatus::export_all(&config).unwrap();
-        RepeatMode::export_all(&config).unwrap();
-        MediaSnapshot::export_all(&config).unwrap();
-        MediaAction::export_all(&config).unwrap();
-        SystemCaps::export_all(&config).unwrap();
-        CpuSample::export_all(&config).unwrap();
-        MemSample::export_all(&config).unwrap();
-        GpuSample::export_all(&config).unwrap();
-        NetSample::export_all(&config).unwrap();
-        DiskSample::export_all(&config).unwrap();
-        SystemSample::export_all(&config).unwrap();
-        WeatherCurrent::export_all(&config).unwrap();
-        WeatherHourly::export_all(&config).unwrap();
-        WeatherDaily::export_all(&config).unwrap();
-        WeatherSnapshot::export_all(&config).unwrap();
-        GeoResult::export_all(&config).unwrap();
-        DiscordConnectionMode::export_all(&config).unwrap();
-        DiscordParticipant::export_all(&config).unwrap();
-        DiscordRpcStatus::export_all(&config).unwrap();
-        DiscordVoiceAction::export_all(&config).unwrap();
-        DiscordSnapshot::export_all(&config).unwrap();
-        AgentStatus::export_all(&config).unwrap();
-        AgentTodoProgress::export_all(&config).unwrap();
-        AgentSession::export_all(&config).unwrap();
-        AgentsSnapshot::export_all(&config).unwrap();
-        TimerStatus::export_all(&config).unwrap();
-        TimerItem::export_all(&config).unwrap();
-        RecentTimer::export_all(&config).unwrap();
-        TimerListSnapshot::export_all(&config).unwrap();
-        crate::update::ReleaseManifest::export_all(&config).unwrap();
-        crate::update::UpdateCheckState::export_all(&config).unwrap();
-        crate::update::UpdateStatus::export_all(&config).unwrap();
-        crate::update::UpdateProgress::export_all(&config).unwrap();
+    fn state_ts_types_have_export_attribute() {
+        assert!(PauseReason::output_path().is_some());
+        assert!(AppPaused::output_path().is_some());
+        assert!(EditModeState::output_path().is_some());
+        assert!(EditSelected::output_path().is_some());
+        assert!(EditDragging::output_path().is_some());
+        assert!(WidgetGlassState::output_path().is_some());
+        assert!(AppStats::output_path().is_some());
+        assert!(AppVisible::output_path().is_some());
+        assert!(GameOverlayState::output_path().is_some());
+        assert!(AppStatus::output_path().is_some());
+        assert!(WidgetBoot::output_path().is_some());
+        assert!(crate::desktop::hover::WidgetHover::output_path().is_some());
     }
 }

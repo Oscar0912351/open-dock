@@ -109,7 +109,9 @@ pub fn install(app: &AppHandle) -> Result<(), AppError> {
 }
 
 pub fn shutdown() {
-    crate::providers::cpu_sensor::shutdown();
+    hover::shutdown();
+    fullscreen::shutdown();
+    monitors::shutdown();
     crate::wallpaper::shutdown();
     wallpaper::shutdown();
     showdesktop::shutdown();

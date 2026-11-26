@@ -60,6 +60,7 @@ pub enum ProviderSnapshot {
 
 pub struct Scheduler {
     subs: Mutex<HashMap<SubKey, HashMap<String, usize>>>,
+    lifecycle_lock: Mutex<()>,
     paused: AtomicBool,
     app: AppHandle,
     media: MediaProvider,
@@ -73,6 +74,7 @@ impl Scheduler {
     pub fn new(app: AppHandle) -> Self {
         Self {
             subs: Mutex::new(HashMap::new()),
+            lifecycle_lock: Mutex::new(()),
             paused: AtomicBool::new(false),
             app,
             media: MediaProvider::new(),
@@ -144,6 +146,7 @@ impl Scheduler {
         kind: ProviderKind,
         key: Option<String>,
     ) -> Option<ProviderSnapshot> {
+        let _lifecycle = self.lifecycle_lock.lock();
         let sub_key = SubKey::normalized(kind, key);
         let should_start = {
             let mut subs = self.subs.lock();
@@ -181,6 +184,7 @@ impl Scheduler {
     }
 
     pub fn unsubscribe(&self, window_label: &str, kind: ProviderKind, key: Option<String>) {
+        let _lifecycle = self.lifecycle_lock.lock();
         let sub_key = SubKey::normalized(kind, key);
         let stop_actions = {
             let mut subs = self.subs.lock();
@@ -208,6 +212,7 @@ impl Scheduler {
     }
 
     pub fn unsubscribe_window(&self, window_label: &str) {
+        let _lifecycle = self.lifecycle_lock.lock();
         let to_stop = {
             let mut subs = self.subs.lock();
             let mut removed_keys = Vec::new();
@@ -234,6 +239,7 @@ impl Scheduler {
     }
 
     pub fn set_paused(&self, paused: bool) {
+        let _lifecycle = self.lifecycle_lock.lock();
         let previous = self.paused.swap(paused, Ordering::AcqRel);
         if previous == paused {
             return;
@@ -254,6 +260,17 @@ impl Scheduler {
             }
             self.weather.resume_check();
         }
+    }
+
+    pub fn shutdown(&self) {
+        let _lifecycle = self.lifecycle_lock.lock();
+        self.paused.store(true, Ordering::Release);
+        self.subs.lock().clear();
+        self.media.stop();
+        self.system.stop();
+        self.weather.stop_all();
+        self.discord.stop();
+        self.agents.stop();
     }
 
     fn compute_stops_for_removed(

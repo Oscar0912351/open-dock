@@ -67,11 +67,8 @@ pub fn quit_app(app: &AppHandle) {
         state
             .quitting
             .store(true, std::sync::atomic::Ordering::Release);
-        if let Err(error) = state.config.flush() {
-            log::warn!(target: "cmd", "Kunne ikke gemme konfiguration før afslutning: {error:?}");
-        }
     }
-    crate::desktop::shutdown();
+    crate::shutdown_app(app);
     app.exit(0);
 }
 
@@ -219,7 +216,8 @@ pub fn app_open_folder(app: AppHandle, kind: String) -> Result<(), AppError> {
 }
 
 #[tauri::command]
-pub fn layout_export(app: AppHandle, path: String) -> Result<(), AppError> {
+pub fn layout_export(window: tauri::Window, app: AppHandle, path: String) -> Result<(), AppError> {
+    crate::commands::ensure_control_window(&window)?;
     let cfg = app.state::<AppState>().config.get();
     let json = serde_json::to_string_pretty(&cfg)
         .map_err(|err| AppError::Other(format!("JSON-serialisering fejlede: {err}")))?;
@@ -228,7 +226,12 @@ pub fn layout_export(app: AppHandle, path: String) -> Result<(), AppError> {
 }
 
 #[tauri::command]
-pub async fn layout_import(app: AppHandle, path: String) -> Result<Config, AppError> {
+pub async fn layout_import(
+    window: tauri::Window,
+    app: AppHandle,
+    path: String,
+) -> Result<Config, AppError> {
+    crate::commands::ensure_control_window(&window)?;
     let raw = fs::read_to_string(&path).map_err(AppError::ConfigWrite)?;
     let value: Value = serde_json::from_str(&raw)
         .map_err(|_| AppError::Other("Filen indeholder ikke et gyldigt Open Dock-layout.".into()))?;
@@ -244,11 +247,10 @@ pub async fn layout_import(app: AppHandle, path: String) -> Result<Config, AppEr
     wait_for_widget_windows_closed(&app).await;
     state.cluster_sizes.write().clear();
 
-    let next = state.config.mutate(|cfg| {
+    let next = state.config.mutate_and_flush(|cfg| {
         *cfg = imported;
         Ok(cfg.clone())
     })?;
-    state.config.flush()?;
 
     crate::commands::config::sync_autostart(&app, next.general.autostart);
     crate::tray::sync(&app);
@@ -263,7 +265,8 @@ pub async fn layout_import(app: AppHandle, path: String) -> Result<Config, AppEr
 }
 
 #[tauri::command]
-pub async fn app_reset(app: AppHandle) -> Result<Config, AppError> {
+pub async fn app_reset(window: tauri::Window, app: AppHandle) -> Result<Config, AppError> {
+    crate::commands::ensure_control_window(&window)?;
     let state = app.state::<AppState>();
     if state.edit_mode.load(std::sync::atomic::Ordering::Acquire) {
         drag::set_edit_mode(&app, false)?;
@@ -295,7 +298,7 @@ pub async fn app_reset(app: AppHandle) -> Result<Config, AppError> {
         .store(false, std::sync::atomic::Ordering::Release);
     let _ = app.emit("app://visible", AppVisible { visible: true });
 
-    let next = state.config.mutate(|cfg| {
+    let next = state.config.mutate_and_flush(|cfg| {
         *cfg = Config {
             version: crate::config::schema::CONFIG_VERSION,
             general: General::default(),
@@ -307,7 +310,6 @@ pub async fn app_reset(app: AppHandle) -> Result<Config, AppError> {
         };
         Ok(cfg.clone())
     })?;
-    state.config.flush()?;
     crate::commands::config::sync_autostart(&app, next.general.autostart);
     fullscreen::recompute_pause(&app);
     crate::tray::sync(&app);

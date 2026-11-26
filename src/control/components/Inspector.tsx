@@ -60,6 +60,7 @@ const CLUSTER_MODULE_CHOICES: ReadonlyArray<{
 function defaultAutoRule(kind: FreeWidgetKind, shape: ClusterShape): AutoRule {
   if (kind === "nowPlaying") return "expandWhenPlaying";
   if (kind === "discord") return "expandWhenInCall";
+  if (kind === "timer") return "showOnHover";
   if (shape === "box" && kind === "system") return "expandWhenHighLoad";
   if (shape === "box" && kind === "agents") return "expandWhenActive";
   if (shape === "box" && kind === "weather") return "fillRemainingSpace";
@@ -70,7 +71,7 @@ function createClusterModule(kind: FreeWidgetKind, shape: ClusterShape): Cluster
   return {
     id: crypto.randomUUID(),
     kind,
-    defaultMode: kind === "nowPlaying" || kind === "discord" ? "hidden" : "compact",
+    defaultMode: kind === "nowPlaying" || kind === "discord" || kind === "timer" ? "hidden" : "compact",
     autoRule: defaultAutoRule(kind, shape),
     settings: { ...WIDGET_REGISTRY[kind].defaultSettings },
   };
@@ -79,6 +80,7 @@ function createClusterModule(kind: FreeWidgetKind, shape: ClusterShape): Cluster
 function autoRulesForKind(kind: FreeWidgetKind): SelectOption<AutoRule>[] {
   const common: SelectOption<AutoRule>[] = [
     { value: "none", label: t("desktop.ruleNone") },
+    { value: "showOnHover", label: t("desktop.ruleShowOnHover") },
   ];
   switch (kind) {
     case "nowPlaying":

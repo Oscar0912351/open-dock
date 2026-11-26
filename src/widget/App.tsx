@@ -3,7 +3,7 @@ import type { Location } from "../shared/bindings/Location";
 import type { MonitorInfo } from "../shared/bindings/MonitorInfo";
 import type { WidgetBoot } from "../shared/bindings/WidgetBoot";
 import { usePaused } from "../shared/hooks/usePaused";
-import { setLocale, t, type Locale } from "../shared/i18n";
+import { setLocale, t, useLocale } from "../shared/i18n";
 import { WeatherSprite } from "../shared/icons/WeatherSprite";
 import { ipc, on, toAssetUrl } from "../shared/ipc";
 import { reportError } from "../shared/logging";
@@ -24,17 +24,15 @@ interface WidgetAppProps {
 }
 
 export function WidgetApp({ id }: WidgetAppProps) {
-  const [, setLocaleState] = useState<Locale>("da");
+  useLocale();
   const [error, setError] = useState<string | null>(() => (id ? null : t("error.widgetBoot")));
   const [boot, setBoot] = useState<WidgetBoot | null>(null);
   const [monitor, setMonitor] = useState<MonitorInfo | null>(null);
   const [locations, setLocations] = useState<Location[]>([]);
   const [ambientColor, setAmbientColor] = useState<[number, number, number] | null>(null);
   const [hiddenIdle, setHiddenIdle] = useState(false);
-  // Start som false: Rust emitter kun ved ændring, og det første event kan
-  // gå tabt hvis webview'ens lytter ikke var registreret endnu. De første
-  // 4 s er widgetten alligevel synlig (bootGrace); Rust gen-emitter
-  // tilstanden hvert ~2. s, så den rigtige tilstand når frem.
+  // Start som false indtil widgetReady returnerer Rusts målte starttilstand.
+  // De første 4 s er widgetten alligevel synlig (bootGrace).
   const [hoverInside, setHoverInside] = useState(false);
   const [bootGrace, setBootGrace] = useState(true);
   const [pinnedVisible, setPinnedVisible] = useState(false);
@@ -81,6 +79,7 @@ export function WidgetApp({ id }: WidgetAppProps) {
 
   const rootRef = useRef<HTMLDivElement>(null);
   const plateRef = useRef<HTMLDivElement>(null);
+  const scrimRef = useRef<HTMLDivElement>(null);
   const placementRef = useRef<{ monitor: string; wx: number; wy: number; luma: number } | null>(null);
   const bootRef = useRef<WidgetBoot | null>(null);
 
@@ -99,6 +98,7 @@ export function WidgetApp({ id }: WidgetAppProps) {
         setBoot(nextBoot);
         setMonitor(nextBoot.monitor);
         setPaused(nextBoot.paused);
+        setHoverInside(nextBoot.hoverInside);
         if (nextBoot.placement) {
           const initial = {
             monitor: nextBoot.placement.monitor,
@@ -122,7 +122,6 @@ export function WidgetApp({ id }: WidgetAppProps) {
         if (!active) return;
         setLocations(cfg.weather.locations);
         setLocale(cfg.general.language);
-        setLocaleState(cfg.general.language);
       })
       .catch(() => {});
 
@@ -182,15 +181,15 @@ export function WidgetApp({ id }: WidgetAppProps) {
       }
 
       const currentBoot = bootRef.current;
-      const root = rootRef.current;
-      if (root && currentBoot) {
+      const scrimNode = scrimRef.current;
+      if (draggingIdRef.current && scrimNode && currentBoot) {
         const theme = currentBoot.instance.themeOverride ?? currentBoot.appearance.themeId;
         const scrim = computeScrimAlpha(
           theme,
           placement.luma,
           currentBoot.appearance.autoContrast,
         );
-        root.style.setProperty("--scrim-a", scrim.toFixed(4));
+        scrimNode.style.setProperty("--scrim-a", scrim.toFixed(4));
       }
 
       if (prev && prev.monitor !== placement.monitor) {
@@ -257,7 +256,6 @@ export function WidgetApp({ id }: WidgetAppProps) {
       if (!active) return;
       setLocations(config.weather.locations);
       setLocale(config.general.language);
-      setLocaleState(config.general.language);
       const updated = config.widgets.find((w) => w.id === id);
       if (!updated) return;
       setBoot((prev) =>
@@ -269,17 +267,6 @@ export function WidgetApp({ id }: WidgetAppProps) {
             }
           : prev,
       );
-      const root = rootRef.current;
-      const cachedPlacement = placementRef.current;
-      if (root && cachedPlacement) {
-        const effectiveTheme = updated.themeOverride ?? config.appearance.themeId;
-        const scrim = computeScrimAlpha(
-          effectiveTheme,
-          cachedPlacement.luma,
-          config.appearance.autoContrast,
-        );
-        root.style.setProperty("--scrim-a", scrim.toFixed(4));
-      }
     }).then((dispose) => {
       if (active) unlisteners.push(dispose);
       else dispose();
@@ -503,6 +490,7 @@ export function WidgetApp({ id }: WidgetAppProps) {
       <WidgetShell
         rootRef={rootRef}
         plateRef={plateRef}
+        scrimRef={scrimRef}
         size={size}
         theme={theme}
         engine={engine}
@@ -556,6 +544,7 @@ export function WidgetApp({ id }: WidgetAppProps) {
               pausedApp={paused}
               liveBackdrop={liveBackdrop}
               locations={locations}
+              clusterHover={hoverInside}
               onClusterFrameChange={setClusterFrame}
               onAmbientChange={setAmbientColor}
               onAriaChange={setAriaLabel}

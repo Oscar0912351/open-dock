@@ -9,6 +9,7 @@ import type { WidgetInstance } from "../../shared/bindings/WidgetInstance";
 import type { WidgetKind } from "../../shared/bindings/WidgetKind";
 import type { WidgetPlacement } from "../../shared/bindings/WidgetPlacement";
 import type { WidgetSize } from "../../shared/bindings/WidgetSize";
+import { useLocale } from "../../shared/i18n";
 import { toAssetUrl } from "../../shared/ipc";
 import { ClusterShell } from "../../widget/cluster/ClusterShell";
 import { computeClusterTargetHeight, DEFAULT_CLUSTER_SIGNALS, resolveModuleModes } from "../../widget/cluster/resolveLayout";
@@ -61,6 +62,7 @@ export const WidgetPreview = memo(function WidgetPreview({
   retriggerKey,
   className = "",
 }: WidgetPreviewProps) {
+  useLocale();
   const previewKey = `${id}:${kind}`;
   const [ambientState, setAmbientState] = useState<{
     key: string;
@@ -104,7 +106,7 @@ export const WidgetPreview = memo(function WidgetPreview({
   const previewEngine: GlassEngine = appearance.glassEngine;
 
   const clockSettings = resolveClockSettings(kind === "clock" ? settings : undefined);
-  const now = useClock(kind === "clock" && clockSettings.showSeconds);
+  const now = useClock(kind === "clock" && clockSettings.showSeconds, kind === "clock");
 
   const syntheticInstance = useMemo<WidgetInstance>(() => {
     if (instance) return instance;

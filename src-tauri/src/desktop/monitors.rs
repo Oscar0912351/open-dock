@@ -1,4 +1,10 @@
-use std::time::Duration;
+use std::{
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        LazyLock,
+    },
+    time::Duration,
+};
 
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager, WebviewWindow};
@@ -25,6 +31,26 @@ pub struct MonitorInfo {
     pub glass_plate_path: String,
     pub avg_luma: f32,
     pub is_primary: bool,
+}
+
+impl MonitorInfo {
+    pub fn from_snapshot(m: &TauriMonitorSnapshot) -> Self {
+        let scale = m.scale.max(0.5);
+        Self {
+            name: m.name.clone(),
+            rect: m.rect,
+            work_area: m.work_area,
+            scale: m.scale,
+            logical_size: SizeF {
+                width: m.rect.width as f64 / scale,
+                height: m.rect.height as f64 / scale,
+            },
+            plate_path: String::new(),
+            glass_plate_path: String::new(),
+            avg_luma: 0.15,
+            is_primary: m.is_primary,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -164,14 +190,31 @@ pub fn emit_all_placements(app: &AppHandle, monitors: &[MonitorEntry]) {
     }
 }
 
+static STOPPED: AtomicBool = AtomicBool::new(false);
+static STOP_NOTIFY: LazyLock<tokio::sync::Notify> = LazyLock::new(tokio::sync::Notify::new);
+
+pub fn shutdown() {
+    STOPPED.store(true, Ordering::Release);
+    STOP_NOTIFY.notify_one();
+}
+
 pub fn start_poll(app: AppHandle) {
+    STOPPED.store(false, Ordering::Release);
     tauri::async_runtime::spawn(async move {
         let mut last_snapshot = list_tauri_monitors(&app);
         let mut poll = interval(Duration::from_secs(30));
         poll.set_missed_tick_behavior(MissedTickBehavior::Delay);
         poll.tick().await;
         loop {
-            poll.tick().await;
+            tokio::select! {
+                _ = poll.tick() => {}
+                _ = STOP_NOTIFY.notified() => {
+                    break;
+                }
+            }
+            if STOPPED.load(Ordering::Acquire) {
+                break;
+            }
             let current = list_tauri_monitors(&app);
             if current != last_snapshot {
                 last_snapshot = current;

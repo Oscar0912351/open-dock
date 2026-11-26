@@ -25,20 +25,20 @@ export type WidgetSettingField =
   | {
       key: string;
       type: "segmented" | "select";
-      label: string;
-      options: Array<{ value: string; label: string }>;
-      help?: string;
+      labelKey: string;
+      options: Array<{ value: string; labelKey: string }>;
+      helpKey?: string;
     }
   | {
       key: string;
       type: "switch";
-      label: string;
-      help?: string;
+      labelKey: string;
+      helpKey?: string;
     }
   | {
       key: string;
       type: "slider";
-      label: string;
+      labelKey: string;
       min: number;
       max: number;
       step: number;
@@ -47,15 +47,15 @@ export type WidgetSettingField =
   | {
       key: string;
       type: "text";
-      label: string;
-      placeholder?: string;
+      labelKey: string;
+      placeholderKey?: string;
       maxLength?: number;
     }
   | {
       key: string;
       type: "timezone" | "extraZones" | "metrics" | "weatherLocation";
-      label: string;
-      help?: string;
+      labelKey: string;
+      helpKey?: string;
     };
 
 export type FreeWidgetKind = Exclude<WidgetKind, "cluster">;
@@ -82,8 +82,8 @@ export interface WidgetRenderContext {
 
 export interface WidgetMeta {
   kind: FreeWidgetKind;
-  name: string;
-  description: string;
+  nameKey: string;
+  descriptionKey: string;
   allowedSizes: readonly WidgetSize[];
   defaultSize: WidgetSize;
   defaultSettings: Record<string, unknown>;
@@ -94,8 +94,8 @@ export interface WidgetMeta {
 export const WIDGET_REGISTRY: Record<FreeWidgetKind, WidgetMeta> = {
   clock: {
     kind: "clock",
-    name: "Ur",
-    description: "Tid, dato og op til tre ekstra tidszoner.",
+    nameKey: "widgets.clock.name",
+    descriptionKey: "widgets.clock.desc",
     allowedSizes: ["pill", "s", "m"],
     defaultSize: "m",
     defaultSettings: { ...defaultClockSettings },
@@ -111,23 +111,51 @@ export const WIDGET_REGISTRY: Record<FreeWidgetKind, WidgetMeta> = {
       {
         key: "style",
         type: "segmented",
-        label: "Stil",
+        labelKey: "widgetSettings.clock.style.label",
         options: [
-          { value: "digital", label: "Digital" },
-          { value: "analog", label: "Analog" },
-        ],
+          {
+            value: "digital",
+            labelKey: "widgetSettings.clock.style.options.digital"
+          },
+          {
+            value: "analog",
+            labelKey: "widgetSettings.clock.style.options.analog"
+          }
+        ]
       },
-      { key: "showSeconds", type: "switch", label: "Vis sekunder" },
-      { key: "showDate", type: "switch", label: "Vis dato" },
-      { key: "timezone", type: "timezone", label: "Tidszone" },
-      { key: "label", type: "text", label: "Etiket", placeholder: "Lokal tid", maxLength: 32 },
-      { key: "extraZones", type: "extraZones", label: "Ekstra byer" },
+      {
+        key: "showSeconds",
+        type: "switch",
+        labelKey: "widgetSettings.clock.showSeconds.label"
+      },
+      {
+        key: "showDate",
+        type: "switch",
+        labelKey: "widgetSettings.clock.showDate.label"
+      },
+      {
+        key: "timezone",
+        type: "timezone",
+        labelKey: "widgetSettings.clock.timezone.label"
+      },
+      {
+        key: "label",
+        type: "text",
+        labelKey: "widgetSettings.clock.label.label",
+        placeholderKey: "widgetSettings.clock.label.placeholder",
+        maxLength: 32
+      },
+      {
+        key: "extraZones",
+        type: "extraZones",
+        labelKey: "widgetSettings.clock.extraZones.label"
+      }
     ],
   },
   nowPlaying: {
     kind: "nowPlaying",
-    name: "Afspiller",
-    description: "Styr Spotify, browser og medieafspillere via Windows.",
+    nameKey: "widgets.nowPlaying.name",
+    descriptionKey: "widgets.nowPlaying.desc",
     allowedSizes: ["pill", "s", "m", "l"],
     defaultSize: "m",
     defaultSettings: { ...defaultNowPlayingSettings },
@@ -154,21 +182,39 @@ export const WIDGET_REGISTRY: Record<FreeWidgetKind, WidgetMeta> = {
       {
         key: "preferredSource",
         type: "select",
-        label: "Kilde",
+        labelKey: "widgetSettings.nowPlaying.preferredSource.label",
         options: [
-          { value: "auto", label: "Automatisk" },
-          { value: "Spotify", label: "Spotify" },
-        ],
+          {
+            value: "auto",
+            labelKey: "widgetSettings.nowPlaying.preferredSource.options.auto"
+          },
+          {
+            value: "Spotify",
+            labelKey: "widgetSettings.nowPlaying.preferredSource.options.spotify"
+          }
+        ]
       },
-      { key: "ambient", type: "switch", label: "Farv glasset efter cover" },
-      { key: "showProgress", type: "switch", label: "Vis tidslinje" },
-      { key: "hideWhenIdle", type: "switch", label: "Skjul når intet spiller" },
+      {
+        key: "ambient",
+        type: "switch",
+        labelKey: "widgetSettings.nowPlaying.ambient.label"
+      },
+      {
+        key: "showProgress",
+        type: "switch",
+        labelKey: "widgetSettings.nowPlaying.showProgress.label"
+      },
+      {
+        key: "hideWhenIdle",
+        type: "switch",
+        labelKey: "widgetSettings.nowPlaying.hideWhenIdle.label"
+      }
     ],
   },
   system: {
     kind: "system",
-    name: "System",
-    description: "CPU, RAM, GPU, VRAM, netværk og disk i realtid.",
+    nameKey: "widgets.system.name",
+    descriptionKey: "widgets.system.desc",
     allowedSizes: ["pill", "s", "m", "l"],
     defaultSize: "m",
     defaultSettings: { ...defaultSystemSettings },
@@ -181,28 +227,58 @@ export const WIDGET_REGISTRY: Record<FreeWidgetKind, WidgetMeta> = {
       />
     ),
     settingsSchema: [
-      { key: "metrics", type: "metrics", label: "Målinger" },
+      {
+        key: "metrics",
+        type: "metrics",
+        labelKey: "widgetSettings.system.metrics.label"
+      },
       {
         key: "primary",
         type: "select",
-        label: "Hovedmåling",
+        labelKey: "widgetSettings.system.primary.label",
         options: [
-          { value: "cpu", label: "CPU" },
-          { value: "mem", label: "RAM" },
-          { value: "gpu", label: "GPU" },
-          { value: "vram", label: "VRAM" },
-          { value: "net", label: "Netværk" },
-          { value: "disk", label: "Disk" },
-        ],
+          {
+            value: "cpu",
+            labelKey: "widgetSettings.system.primary.options.cpu"
+          },
+          {
+            value: "mem",
+            labelKey: "widgetSettings.system.primary.options.mem"
+          },
+          {
+            value: "gpu",
+            labelKey: "widgetSettings.system.primary.options.gpu"
+          },
+          {
+            value: "vram",
+            labelKey: "widgetSettings.system.primary.options.vram"
+          },
+          {
+            value: "net",
+            labelKey: "widgetSettings.system.primary.options.net"
+          },
+          {
+            value: "disk",
+            labelKey: "widgetSettings.system.primary.options.disk"
+          }
+        ]
       },
-      { key: "showTemps", type: "switch", label: "Vis temperatur" },
-      { key: "unitsBits", type: "switch", label: "Netværk i bit/s" },
+      {
+        key: "showTemps",
+        type: "switch",
+        labelKey: "widgetSettings.system.showTemps.label"
+      },
+      {
+        key: "unitsBits",
+        type: "switch",
+        labelKey: "widgetSettings.system.unitsBits.label"
+      }
     ],
   },
   weather: {
     kind: "weather",
-    name: "Vejr",
-    description: "Vejrudsigt med bølgekurve time for time eller 7 dage.",
+    nameKey: "widgets.weather.name",
+    descriptionKey: "widgets.weather.desc",
     allowedSizes: ["s", "m", "l"],
     defaultSize: "m",
     defaultSettings: { ...defaultWeatherSettings },
@@ -216,31 +292,47 @@ export const WIDGET_REGISTRY: Record<FreeWidgetKind, WidgetMeta> = {
       />
     ),
     settingsSchema: [
-      { key: "locationId", type: "weatherLocation", label: "Sted" },
+      {
+        key: "locationId",
+        type: "weatherLocation",
+        labelKey: "widgetSettings.weather.locationId.label"
+      },
       {
         key: "unit",
         type: "segmented",
-        label: "Enhed",
+        labelKey: "widgetSettings.weather.unit.label",
         options: [
-          { value: "c", label: "°C" },
-          { value: "f", label: "°F" },
-        ],
+          {
+            value: "c",
+            labelKey: "widgetSettings.weather.unit.options.c"
+          },
+          {
+            value: "f",
+            labelKey: "widgetSettings.weather.unit.options.f"
+          }
+        ]
       },
       {
         key: "chart",
         type: "segmented",
-        label: "Graf",
+        labelKey: "widgetSettings.weather.chart.label",
         options: [
-          { value: "hourly", label: "Time for time" },
-          { value: "daily", label: "7 dage" },
-        ],
-      },
+          {
+            value: "hourly",
+            labelKey: "widgetSettings.weather.chart.options.hourly"
+          },
+          {
+            value: "daily",
+            labelKey: "widgetSettings.weather.chart.options.daily"
+          }
+        ]
+      }
     ],
   },
   note: {
     kind: "note",
-    name: "Note",
-    description: "Hurtig tekst eller tjekliste gemt lokalt på din computer.",
+    nameKey: "widgets.note.name",
+    descriptionKey: "widgets.note.desc",
     allowedSizes: ["s", "m", "l"],
     defaultSize: "m",
     defaultSettings: { ...defaultNoteSettings },
@@ -254,32 +346,53 @@ export const WIDGET_REGISTRY: Record<FreeWidgetKind, WidgetMeta> = {
       />
     ),
     settingsSchema: [
-      { key: "title", type: "text", label: "Titel", placeholder: "Note", maxLength: 32 },
+      {
+        key: "title",
+        type: "text",
+        labelKey: "widgetSettings.note.title.label",
+        placeholderKey: "widgetSettings.note.title.placeholder",
+        maxLength: 32
+      },
       {
         key: "mode",
         type: "segmented",
-        label: "Tilstand",
+        labelKey: "widgetSettings.note.mode.label",
         options: [
-          { value: "text", label: "Tekst" },
-          { value: "checklist", label: "Tjekliste" },
-        ],
+          {
+            value: "text",
+            labelKey: "widgetSettings.note.mode.options.text"
+          },
+          {
+            value: "checklist",
+            labelKey: "widgetSettings.note.mode.options.checklist"
+          }
+        ]
       },
       {
         key: "fontSize",
         type: "segmented",
-        label: "Skrift",
+        labelKey: "widgetSettings.note.fontSize.label",
         options: [
-          { value: "s", label: "S" },
-          { value: "m", label: "M" },
-          { value: "l", label: "L" },
-        ],
-      },
+          {
+            value: "s",
+            labelKey: "widgetSettings.note.fontSize.options.s"
+          },
+          {
+            value: "m",
+            labelKey: "widgetSettings.note.fontSize.options.m"
+          },
+          {
+            value: "l",
+            labelKey: "widgetSettings.note.fontSize.options.l"
+          }
+        ]
+      }
     ],
   },
   timer: {
     kind: "timer",
-    name: "Timer",
-    description: "Skriv fx 'pasta 10' og få besked når tiden er gået. Flere timere ad gangen.",
+    nameKey: "widgets.timer.name",
+    descriptionKey: "widgets.timer.desc",
     allowedSizes: ["pill", "s", "m", "l"],
     defaultSize: "m",
     defaultSettings: { ...defaultTimerSettings },
@@ -298,21 +411,42 @@ export const WIDGET_REGISTRY: Record<FreeWidgetKind, WidgetMeta> = {
       {
         key: "sound",
         type: "segmented",
-        label: "Lyd",
+        labelKey: "widgetSettings.timer.sound.label",
         options: [
-          { value: "chime", label: "Klokke" },
-          { value: "marimba", label: "Marimba" },
-          { value: "crystal", label: "Krystal" },
-        ],
+          {
+            value: "chime",
+            labelKey: "widgetSettings.timer.sound.options.chime"
+          },
+          {
+            value: "marimba",
+            labelKey: "widgetSettings.timer.sound.options.marimba"
+          },
+          {
+            value: "crystal",
+            labelKey: "widgetSettings.timer.sound.options.crystal"
+          }
+        ]
       },
-      { key: "volume", type: "slider", label: "Lydstyrke", min: 0, max: 100, step: 5, unit: "%" },
-      { key: "notify", type: "switch", label: "Notifikation" },
+      {
+        key: "volume",
+        type: "slider",
+        labelKey: "widgetSettings.timer.volume.label",
+        min: 0,
+        max: 100,
+        step: 5,
+        unit: "%"
+      },
+      {
+        key: "notify",
+        type: "switch",
+        labelKey: "widgetSettings.timer.notify.label"
+      }
     ],
   },
   discord: {
     kind: "discord",
-    name: "Discord",
-    description: "Vis aktivt Discord-call med deltagere, tale-indikator og mute-styring.",
+    nameKey: "widgets.discord.name",
+    descriptionKey: "widgets.discord.desc",
     allowedSizes: ["pill", "s", "m"],
     defaultSize: "m",
     defaultSettings: {},
@@ -323,9 +457,8 @@ export const WIDGET_REGISTRY: Record<FreeWidgetKind, WidgetMeta> = {
   },
   agents: {
     kind: "agents",
-    name: "AI Agenter",
-    description:
-      "Se aktive lokale AI-agenter – Antigravity, Devin, Claude Code, Codex, Cursor m.fl.",
+    nameKey: "widgets.agents.name",
+    descriptionKey: "widgets.agents.desc",
     allowedSizes: ["s", "m", "l"],
     defaultSize: "m",
     defaultSettings: { recentWindowMin: String(defaultAgentsSettings.recentWindowMin) },
@@ -342,13 +475,22 @@ export const WIDGET_REGISTRY: Record<FreeWidgetKind, WidgetMeta> = {
       {
         key: "recentWindowMin",
         type: "segmented",
-        label: "Vis afsluttede",
+        labelKey: "widgetSettings.agents.recentWindowMin.label",
         options: [
-          { value: "0", label: "Kun aktive" },
-          { value: "15", label: "15 min" },
-          { value: "60", label: "1 time" },
-        ],
-      },
+          {
+            value: "0",
+            labelKey: "widgetSettings.agents.recentWindowMin.options.active"
+          },
+          {
+            value: "15",
+            labelKey: "widgetSettings.agents.recentWindowMin.options.minutes15"
+          },
+          {
+            value: "60",
+            labelKey: "widgetSettings.agents.recentWindowMin.options.hour1"
+          }
+        ]
+      }
     ],
   },
 };
@@ -357,8 +499,8 @@ export const WIDGET_LIST: readonly WidgetMeta[] = Object.values(WIDGET_REGISTRY)
 
 export interface ClusterPresetMeta {
   presetId: "allInOne" | "miniTrio" | "pillBar";
-  name: string;
-  description: string;
+  nameKey: string;
+  descriptionKey: string;
   boxCount: number;
   width: number;
 }
@@ -366,22 +508,22 @@ export interface ClusterPresetMeta {
 export const CLUSTER_PRESETS: readonly ClusterPresetMeta[] = [
   {
     presetId: "allInOne",
-    name: "Alt-i-én Boks",
-    description: "Ur, Vejr, System, Afspiller og Discord samlet i én adaptiv glasboks.",
+    nameKey: "cluster.presets.allInOne",
+    descriptionKey: "gallery.presetDesc.allInOne",
     boxCount: 1,
     width: 264,
   },
   {
     presetId: "miniTrio",
-    name: "Mini Trio",
-    description: "Tre ultrakompakte bokse: Tid & Vejr, Aktivitet og Ressourcer.",
+    nameKey: "cluster.presets.miniTrio",
+    descriptionKey: "gallery.presetDesc.miniTrio",
     boxCount: 3,
     width: 232,
   },
   {
     presetId: "pillBar",
-    name: "Kapsel-Bar",
-    description: "48u høj glas-pille der viser Ur, Vejr og CPU – og folder sig ud ved behov.",
+    nameKey: "cluster.presets.pillBar",
+    descriptionKey: "gallery.presetDesc.pillBar",
     boxCount: 1,
     width: 264,
   },

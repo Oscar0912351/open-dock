@@ -11,17 +11,19 @@ mod sqlite;
 use std::{
     collections::HashMap,
     sync::{
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
         Arc,
     },
     thread::JoinHandle,
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::Duration,
 };
 
 use parking_lot::{Condvar, Mutex};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager};
 use ts_rs::TS;
+
+use crate::util::unix_now_ms;
 
 pub use process::focus_agent_window;
 use process::ProcessIndex;
@@ -112,6 +114,7 @@ pub struct AgentsProvider {
     running: AtomicBool,
     worker: Mutex<Option<Worker>>,
     latest: Arc<Mutex<Option<AgentsSnapshot>>>,
+    generation: Arc<AtomicU64>,
 }
 
 struct Worker {
@@ -131,6 +134,7 @@ impl AgentsProvider {
             running: AtomicBool::new(false),
             worker: Mutex::new(None),
             latest: Arc::new(Mutex::new(None)),
+            generation: Arc::new(AtomicU64::new(0)),
         }
     }
 
@@ -147,9 +151,11 @@ impl AgentsProvider {
         let stop_thread = Arc::clone(&stop_signal);
         let latest = Arc::clone(&self.latest);
         let app_handle = app.clone();
+        let my_gen = self.generation.fetch_add(1, Ordering::AcqRel) + 1;
+        let generation = Arc::clone(&self.generation);
         let join = std::thread::Builder::new()
             .name("od-agents".into())
-            .spawn(move || run_agents_thread(app_handle, stop_thread, latest))
+            .spawn(move || run_agents_thread(app_handle, stop_thread, latest, my_gen, generation))
             .ok();
         if join.is_none() {
             log::warn!(target: "provider:agents", "Kunne ikke starte od-agents-tråd");
@@ -160,7 +166,9 @@ impl AgentsProvider {
     }
 
     pub fn stop(&self) {
-        if !self.running.swap(false, Ordering::AcqRel) {
+        let was_running = self.running.swap(false, Ordering::AcqRel);
+        self.generation.fetch_add(1, Ordering::AcqRel);
+        if !was_running {
             return;
         }
         log::info!(target: "provider:agents", "Stopper agents-provider");
@@ -169,39 +177,49 @@ impl AgentsProvider {
             *lock.lock() = true;
             cvar.notify_all();
             if let Some(join) = worker.join.take() {
-                let _ = join.join();
+                drop(join);
             }
+            drop(worker);
         }
     }
 }
 
-fn unix_now_ms() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0)
-}
 
 #[derive(Default)]
 struct SessionOrderMemory {
-    positions: HashMap<String, u64>,
+    positions: HashMap<String, (u64, i64)>,
     next: u64,
 }
 
 impl SessionOrderMemory {
-    fn apply(&mut self, sessions: &mut [AgentSession]) {
+    fn apply(&mut self, sessions: &mut [AgentSession], now_ms: i64) {
         for session in sessions.iter() {
-            if !self.positions.contains_key(&session.id) {
-                self.positions.insert(session.id.clone(), self.next);
+            if let Some((_, seen)) = self.positions.get_mut(&session.id) {
+                *seen = now_ms;
+            } else {
+                self.positions
+                    .insert(session.id.clone(), (self.next, now_ms));
                 self.next = self.next.saturating_add(1);
             }
+        }
+        if self.positions.len() > 64 {
+            self.positions
+                .retain(|_, (_, seen)| now_ms.saturating_sub(*seen) <= 30 * 60 * 1000);
         }
         sessions.sort_by(|a, b| {
             b.status_rank()
                 .cmp(&a.status_rank())
                 .then_with(|| {
-                    let a_pos = self.positions.get(&a.id).copied().unwrap_or(u64::MAX);
-                    let b_pos = self.positions.get(&b.id).copied().unwrap_or(u64::MAX);
+                    let a_pos = self
+                        .positions
+                        .get(&a.id)
+                        .map(|(pos, _)| *pos)
+                        .unwrap_or(u64::MAX);
+                    let b_pos = self
+                        .positions
+                        .get(&b.id)
+                        .map(|(pos, _)| *pos)
+                        .unwrap_or(u64::MAX);
                     a_pos.cmp(&b_pos)
                 })
                 .then_with(|| a.id.cmp(&b.id))
@@ -231,6 +249,8 @@ fn run_agents_thread(
     app: AppHandle,
     stop_signal: Arc<(Mutex<bool>, Condvar)>,
     latest: Arc<Mutex<Option<AgentsSnapshot>>>,
+    my_gen: u64,
+    gen_ref: Arc<AtomicU64>,
 ) {
     let paths = AgentPaths::from_env();
     let mut cache = SourceCache::default();
@@ -239,13 +259,13 @@ fn run_agents_thread(
 
     let (stop_lock, stop_cvar) = &*stop_signal;
     loop {
-        if *stop_lock.lock() {
+        if *stop_lock.lock() || gen_ref.load(Ordering::Acquire) != my_gen {
             break;
         }
         let now = unix_now_ms();
         let procs = ProcessIndex::scan_tracked();
         let mut sessions = scan_all_sessions(&paths, &procs, now, Some(&mut cache));
-        order_memory.apply(&mut sessions);
+        order_memory.apply(&mut sessions, now);
         let any_active = sessions
             .iter()
             .any(|s| matches!(s.status, AgentStatus::Working | AgentStatus::Waiting));
@@ -253,6 +273,9 @@ fn run_agents_thread(
             sessions: sessions.clone(),
             updated_at: now,
         };
+        if *stop_lock.lock() || gen_ref.load(Ordering::Acquire) != my_gen {
+            break;
+        }
         *latest.lock() = Some(snapshot.clone());
 
         let changed_for_ui = last_emitted_sessions
@@ -260,6 +283,9 @@ fn run_agents_thread(
             .map(|prev| !same_sessions_for_ui(prev, sessions.as_slice()))
             .unwrap_or(true);
         if changed_for_ui {
+            if *stop_lock.lock() || gen_ref.load(Ordering::Acquire) != my_gen {
+                break;
+            }
             last_emitted_sessions = Some(sessions);
             super::scheduler::emit_provider(
                 &app,
@@ -297,6 +323,7 @@ mod tests {
     use std::{
         fs,
         path::{Path, PathBuf},
+        time::{SystemTime, UNIX_EPOCH},
     };
 
     struct TestDir {
@@ -376,7 +403,7 @@ mod tests {
             test_session("devin:b", AgentStatus::Working, 200),
             test_session("devin:c", AgentStatus::Ready, 300),
         ];
-        memory.apply(&mut first);
+        memory.apply(&mut first, 1_000);
         assert_eq!(
             first.iter().map(|s| s.id.as_str()).collect::<Vec<_>>(),
             vec!["devin:a", "devin:b", "devin:c"]
@@ -387,7 +414,7 @@ mod tests {
             test_session("devin:a", AgentStatus::Working, 400),
             test_session("devin:c", AgentStatus::Ready, 600),
         ];
-        memory.apply(&mut second);
+        memory.apply(&mut second, 2_000);
         assert_eq!(
             second.iter().map(|s| s.id.as_str()).collect::<Vec<_>>(),
             vec!["devin:a", "devin:b", "devin:c"]

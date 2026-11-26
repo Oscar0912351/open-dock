@@ -9,10 +9,10 @@
 use std::{
     collections::HashMap,
     sync::{
-        atomic::Ordering,
+        atomic::{AtomicBool, Ordering},
         Arc, LazyLock,
     },
-    time::{Duration, Instant},
+    time::Duration,
 };
 
 use serde::Serialize;
@@ -30,12 +30,9 @@ use crate::state::AppState;
 const POLL_MS: u64 = 100;
 /// Ekstra margin omkring widget-rektanglet, i fysiske pixels.
 const HOVER_MARGIN_PX: i32 = 8;
-/// Gen-afsend af aktuel tilstand med dette interval — webview'ens
-/// `widget://hover`-lytter kan registreres efter første emit (app-start
-/// eller ny widget), og vi emitter kun ved ændring.
-const REEMIT: Duration = Duration::from_secs(2);
 
 static WAKE: LazyLock<Arc<Notify>> = LazyLock::new(|| Arc::new(Notify::new()));
+static STOPPED: AtomicBool = AtomicBool::new(false);
 
 /// Vækker hover-tasken — kaldes ved config-ændringer og edit-mode-skift.
 pub fn poke() {
@@ -57,29 +54,57 @@ fn widget_rect(app: &AppHandle, label: &str) -> Option<RECT> {
     Some(rect)
 }
 
+pub fn is_cursor_inside_widget(app: &AppHandle, label: &str) -> bool {
+    let mut cursor = POINT::default();
+    if unsafe { GetCursorPos(&mut cursor) }.is_err() {
+        return false;
+    }
+    widget_rect(app, label).is_some_and(|rect| {
+        cursor.x >= rect.left - HOVER_MARGIN_PX
+            && cursor.x <= rect.right + HOVER_MARGIN_PX
+            && cursor.y >= rect.top - HOVER_MARGIN_PX
+            && cursor.y <= rect.bottom + HOVER_MARGIN_PX
+    })
+}
+
+pub fn shutdown() {
+    STOPPED.store(true, Ordering::Release);
+    WAKE.notify_one();
+}
+
 pub fn start(app: AppHandle) {
+    STOPPED.store(false, Ordering::Release);
     tauri::async_runtime::spawn(async move {
         // Sidste kendte inside-tilstand pr. widget-id; glemmes når widgetten
-        // fjernes, funktionen slås fra, eller edit-mode tændes. `last_emit`
-        // styrer gen-afsend af uændret tilstand (se REEMIT).
+        // fjernes, funktionen slås fra, eller edit-mode tændes.
         let mut inside: HashMap<Uuid, bool> = HashMap::new();
-        let mut last_emit: HashMap<Uuid, Instant> = HashMap::new();
         loop {
+            if STOPPED.load(Ordering::Acquire) {
+                break;
+            }
             let state = app.state::<AppState>();
             let targets: Vec<(Uuid, String)> = if state.edit_mode.load(Ordering::Acquire) {
                 Vec::new()
             } else {
                 state
                     .config
-                    .get()
-                    .widgets
-                    .iter()
-                    .filter(|w| w.reveal_on_hover)
-                    .map(|w| (w.id, w.window_label()))
-                    .collect()
+                    .read_with(|cfg| {
+                        cfg.widgets
+                            .iter()
+                            .filter(|w| {
+                                w.reveal_on_hover
+                                    || w.cluster.as_ref().is_some_and(|c| {
+                                        c.modules.iter().any(|m| {
+                                            m.auto_rule
+                                                == crate::config::schema::AutoRule::ShowOnHover
+                                        })
+                                    })
+                            })
+                            .map(|w| (w.id, w.window_label()))
+                            .collect()
+                    })
             };
             inside.retain(|id, _| targets.iter().any(|(target, _)| *target == *id));
-            last_emit.retain(|id, _| targets.iter().any(|(target, _)| *target == *id));
 
             if targets.is_empty() {
                 WAKE.notified().await;
@@ -88,7 +113,6 @@ pub fn start(app: AppHandle) {
 
             let mut cursor = POINT::default();
             let cursor_ok = unsafe { GetCursorPos(&mut cursor) }.is_ok();
-            let now = Instant::now();
             for (id, label) in &targets {
                 let now_inside = cursor_ok
                     && widget_rect(&app, label).is_some_and(|rect| {
@@ -97,17 +121,12 @@ pub fn start(app: AppHandle) {
                             && cursor.y >= rect.top - HOVER_MARGIN_PX
                             && cursor.y <= rect.bottom + HOVER_MARGIN_PX
                     });
-                let changed = inside.insert(*id, now_inside) != Some(now_inside);
-                let due = last_emit
-                    .get(id)
-                    .map_or(true, |at| now.saturating_duration_since(*at) >= REEMIT);
-                if changed || due {
+                if inside.insert(*id, now_inside) != Some(now_inside) {
                     let _ = app.emit_to(
                         label,
                         "widget://hover",
                         WidgetHover { inside: now_inside },
                     );
-                    last_emit.insert(*id, now);
                 }
             }
 

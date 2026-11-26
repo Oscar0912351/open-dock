@@ -5,4 +5,4 @@ import type { MonitorInfo } from "./MonitorInfo";
 import type { WidgetInstance } from "./WidgetInstance";
 import type { WidgetPlacement } from "./WidgetPlacement";
 
-export type WidgetBoot = { instance: WidgetInstance, appearance: Appearance, effectiveEngine: GlassEngine, liveBackdrop: boolean, monitor: MonitorInfo | null, placement: WidgetPlacement | null, startDelayMs: number, editMode: boolean, paused: boolean, gameOverlayActive: boolean, };
+export type WidgetBoot = { instance: WidgetInstance, appearance: Appearance, effectiveEngine: GlassEngine, liveBackdrop: boolean, monitor: MonitorInfo | null, placement: WidgetPlacement | null, startDelayMs: number, editMode: boolean, hoverInside: boolean, paused: boolean, gameOverlayActive: boolean, };

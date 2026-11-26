@@ -494,10 +494,7 @@ pub async fn exchange_code_for_token(
     redirect_uri: &str,
     code: &str,
 ) -> Result<TokenResponse, String> {
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(12))
-        .build()
-        .map_err(|err| format!("HTTP-klient fejl: {err}"))?;
+    let client = crate::util::http_client();
 
     let trimmed_redirect = redirect_uri.trim();
     let mut fields = vec![
@@ -512,6 +509,7 @@ pub async fn exchange_code_for_token(
 
     let resp = client
         .post(TOKEN_ENDPOINT)
+        .timeout(Duration::from_secs(12))
         .header("Content-Type", "application/x-www-form-urlencoded")
         .body(build_form_body(&fields))
         .send()
@@ -538,6 +536,7 @@ pub async fn exchange_code_for_token(
         ];
         let retry = client
             .post(TOKEN_ENDPOINT)
+            .timeout(Duration::from_secs(12))
             .header("Content-Type", "application/x-www-form-urlencoded")
             .body(build_form_body(&fallback_fields))
             .send()
@@ -560,10 +559,7 @@ pub async fn refresh_access_token(
     client_secret: &str,
     refresh_token: &str,
 ) -> Result<TokenResponse, String> {
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(12))
-        .build()
-        .map_err(|err| format!("HTTP-klient fejl: {err}"))?;
+    let client = crate::util::http_client();
 
     let fields = [
         ("client_id", client_id.trim()),
@@ -574,6 +570,7 @@ pub async fn refresh_access_token(
 
     let resp = client
         .post(TOKEN_ENDPOINT)
+        .timeout(Duration::from_secs(12))
         .header("Content-Type", "application/x-www-form-urlencoded")
         .body(build_form_body(&fields))
         .send()
@@ -593,13 +590,11 @@ pub async fn refresh_access_token(
 pub async fn fetch_central_rpc_config(base_url: &str) -> Result<(String, String), String> {
     let base = base_url.trim().trim_end_matches('/');
     let url = format!("{base}/api/discord-rpc/config");
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(12))
-        .build()
-        .map_err(|err| format!("HTTP-klient fejl: {err}"))?;
+    let client = crate::util::http_client();
 
     let resp = client
         .get(&url)
+        .timeout(Duration::from_secs(12))
         .send()
         .await
         .map_err(|err| format!("Kunne ikke kontakte OSSI Central: {err}"))?;
@@ -633,13 +628,11 @@ pub async fn fetch_central_rpc_config(base_url: &str) -> Result<(String, String)
 async fn post_central_token(base_url: &str, body: Value) -> Result<TokenResponse, String> {
     let base = base_url.trim().trim_end_matches('/');
     let url = format!("{base}/api/discord-rpc/token");
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(12))
-        .build()
-        .map_err(|err| format!("HTTP-klient fejl: {err}"))?;
+    let client = crate::util::http_client();
 
     let resp = client
         .post(&url)
+        .timeout(Duration::from_secs(12))
         .json(&body)
         .send()
         .await

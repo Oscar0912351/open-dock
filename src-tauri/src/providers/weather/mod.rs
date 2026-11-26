@@ -3,7 +3,7 @@ use std::{
     fs,
     path::{Path, PathBuf},
     sync::Arc,
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::Duration,
 };
 
 use parking_lot::Mutex;
@@ -14,7 +14,7 @@ use tokio::sync::Notify;
 use ts_rs::TS;
 use uuid::Uuid;
 
-use crate::{error::AppError, state::AppState};
+use crate::{error::AppError, state::AppState, util::unix_now_ms};
 
 mod metno;
 mod openmeteo;
@@ -423,12 +423,6 @@ fn percent_encode_query(input: &str) -> String {
     out
 }
 
-fn unix_now_ms() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0)
-}
 
 #[derive(Deserialize)]
 struct GeoResponse {

@@ -1,0 +1,20 @@
+{
+  "sizes": {
+    "pill": { "width": 204, "height": 48, "paddingX": 12, "paddingY": 8 },
+    "s": { "width": 132, "height": 132, "paddingX": 14, "paddingY": 14 },
+    "m": { "width": 276, "height": 132, "paddingX": 14, "paddingY": 14 },
+    "l": { "width": 276, "height": 276, "paddingX": 16, "paddingY": 16 }
+  },
+  "radii": {
+    "soft": { "pill": 8, "s": 10, "m": 10, "l": 12 },
+    "round": { "pill": 14, "s": 22, "m": 22, "l": 26 },
+    "extra": { "pill": 24, "s": 36, "m": 36, "l": 42 }
+  },
+  "clusterRadii": {
+    "soft": 10,
+    "round": 22,
+    "extra": 34
+  },
+  "laerkRadiusMultiplier": 0.72,
+  "squircleMultiplier": 1.5
+}

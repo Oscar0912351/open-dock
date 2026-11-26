@@ -200,16 +200,11 @@ async fn hydrate_missing_thumbnails(app: &AppHandle) -> Result<bool, AppError> {
         .collect();
 
     if !missing_photos.is_empty() {
-        let client = Client::builder()
-            .timeout(Duration::from_secs(12))
-            .user_agent("OpenDock/0.1 (Windows)")
-            .build()
-            .map_err(AppError::Network)?;
+        let client = crate::util::http_client();
         let sem = std::sync::Arc::new(Semaphore::new(4));
         let mut handles = Vec::with_capacity(missing_photos.len());
 
         for spec in missing_photos {
-            let client = client.clone();
             let sem = sem.clone();
             let out = dirs.thumbs.join(format!("{}.jpg", spec.id));
             let url = photo_thumb_url(spec);
@@ -217,7 +212,7 @@ async fn hydrate_missing_thumbnails(app: &AppHandle) -> Result<bool, AppError> {
                 let Ok(_permit) = sem.acquire().await else {
                     return false;
                 };
-                download_image_atomic(&client, &url, &out).await.is_ok()
+                download_image_atomic(client, &url, &out, Duration::from_secs(12)).await.is_ok()
             }));
         }
 
@@ -240,13 +235,9 @@ pub async fn ensure_photo_downloaded(app: &AppHandle, photo_id: &str) -> Result<
         return Ok(out);
     }
 
-    let client = Client::builder()
-        .timeout(Duration::from_secs(30))
-        .user_agent("OpenDock/0.1 (Windows)")
-        .build()
-        .map_err(AppError::Network)?;
+    let client = crate::util::http_download_client();
     let url = photo_full_url(spec);
-    download_image_atomic(&client, &url, &out).await?;
+    download_image_atomic(client, &url, &out, Duration::from_secs(30)).await?;
     Ok(out)
 }
 
@@ -355,8 +346,18 @@ pub fn delete_custom_assets(app: &AppHandle, item: &CustomWallpaper) {
     }
 }
 
-async fn download_image_atomic(client: &Client, url: &str, out_path: &Path) -> Result<(), AppError> {
-    let resp = client.get(url).send().await.map_err(AppError::Network)?;
+async fn download_image_atomic(
+    client: &Client,
+    url: &str,
+    out_path: &Path,
+    timeout: Duration,
+) -> Result<(), AppError> {
+    let resp = client
+        .get(url)
+        .timeout(timeout)
+        .send()
+        .await
+        .map_err(AppError::Network)?;
     if !resp.status().is_success() {
         return Err(AppError::Other(format!(
             "Billedserver svarede med status {}",

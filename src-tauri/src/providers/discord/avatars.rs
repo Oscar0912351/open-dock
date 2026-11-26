@@ -102,11 +102,13 @@ pub async fn fetch_and_cache_avatar(
         avatar_hash.as_deref(),
         discriminator.as_deref(),
     );
-    let client = reqwest::Client::builder()
+    let client = crate::util::http_client();
+    let resp = client
+        .get(&url)
         .timeout(Duration::from_secs(8))
-        .build()
+        .send()
+        .await
         .ok()?;
-    let resp = client.get(&url).send().await.ok()?;
     if !resp.status().is_success() {
         return None;
     }
