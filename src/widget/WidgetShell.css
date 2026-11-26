@@ -149,9 +149,11 @@
   .widget-root:not(.is-preview).engine-acrylic .widget::before { corner-shape: round; }
 }
 .engine-acrylic .glass-plate,
-.engine-tint .glass-plate,
-.widget-root:not(.is-preview).is-live-backdrop .glass-plate {
+.engine-tint .glass-plate {
   display: none;
+}
+.widget-root:not(.is-preview).is-live-backdrop .glass-plate {
+  opacity: 0.5;
 }
 .widget-root:not(.is-preview).is-live-backdrop .widget {
   animation-name: od-fade-in;

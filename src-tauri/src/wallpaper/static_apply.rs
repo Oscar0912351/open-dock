@@ -155,7 +155,7 @@ pub fn apply_static_wallpaper(
                 }
             } else {
                 return Err(AppError::Other(
-                    "Kunne ikke finde den valgte skærm til baggrunden".into(),
+                    "Kunne ikke finde den skærm, du valgte".into(),
                 ));
             }
         }

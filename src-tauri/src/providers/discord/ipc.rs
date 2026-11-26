@@ -306,7 +306,7 @@ impl DiscordIpcPipe {
             let remaining = deadline.saturating_duration_since(Instant::now());
             if remaining.is_zero() {
                 return Err(PipeError::Broken(
-                    "Tidsudløb mens der blev ventet på svar fra Discord".into(),
+                    "Discord svarede ikke i tide".into(),
                 ));
             }
             let (_, val) = self.read_frame_timeout(remaining)?;
@@ -320,7 +320,7 @@ impl DiscordIpcPipe {
 pub fn connect_and_handshake(client_id: &str) -> Result<DiscordIpcPipe, String> {
     let cid = client_id.trim();
     if cid.is_empty() {
-        return Err("Client ID må ikke være tomt".into());
+        return Err("Indsæt dit Client ID".into());
     }
     #[cfg(windows)]
     {
@@ -362,9 +362,9 @@ pub fn connect_and_handshake(client_id: &str) -> Result<DiscordIpcPipe, String> 
             }
         }
         if !any_pipe {
-            Err("Discord kører ikke, eller Discords lokale IPC er utilgængelig".into())
+            Err("Kunne ikke forbinde til Discord. Tjek, at Discord er åbent".into())
         } else if last_err.is_empty() {
-            Err("Kunne ikke gennemføre handshake med Discord IPC".into())
+            Err("Kunne ikke få forbindelse til Discord".into())
         } else {
             Err(last_err)
         }
@@ -458,7 +458,7 @@ fn format_authorize_error(msg: &str) -> String {
          på Discord-appen. Bed udgiveren om tester-adgang, eller forbind med din egen app herunder."
             .into()
     } else if msg.is_empty() {
-        "Discord afviste godkendelsen uden nærmere besked".into()
+        "Discord afviste adgangen uden at angive en grund".into()
     } else {
         msg.to_string()
     }

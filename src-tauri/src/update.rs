@@ -128,7 +128,7 @@ async fn fetch_manifest(client: &Client) -> Result<ReleaseManifest, AppError> {
     let status = response.status();
     if status == reqwest::StatusCode::NOT_FOUND {
         return Err(AppError::Other(
-            "Ingen udgivelser fundet på GitHub endnu".into(),
+            "Der er ingen versioner at hente endnu".into(),
         ));
     }
     if !status.is_success() {
@@ -227,14 +227,14 @@ fn verify_installer_bytes(bytes: &[u8], manifest: &ReleaseManifest) -> Result<()
     if manifest.signature.is_empty() {
         log::warn!(target: "update", "Manifestet har ingen signatur — afviser opdateringen");
         return Err(AppError::Other(
-            "Opdateringen er ikke signatureret og kan ikke verificeres".into(),
+            "Opdateringen kunne ikke bekræftes som ægte, så den bliver ikke installeret".into(),
         ));
     }
     let message = signed_message(manifest.build_id, &digest);
     if !verify_signature(&message, &manifest.signature) {
         log::warn!(target: "update", "ed25519-signatur verificerede ikke for build {}", manifest.build_id);
         return Err(AppError::Other(
-            "Signaturen på den hentede opdatering er ugyldig".into(),
+            "Opdateringen kunne ikke bekræftes som ægte, så den bliver ikke installeret".into(),
         ));
     }
     Ok(())
@@ -441,14 +441,14 @@ fn collect_splash_meta(app: &AppHandle, target: Option<&ReleaseManifest>) -> Spl
 pub async fn install(app: &AppHandle) -> Result<(), AppError> {
     if local_build_id().is_none() {
         return Err(AppError::Other(
-            "Opdatering er kun tilgængelig i release-builds".into(),
+            "Opdateringer virker kun i den installerede app".into(),
         ));
     }
     let tracker = app.try_state::<UpdateTracker>();
     if let Some(t) = &tracker {
         if t.working.swap(true, Ordering::SeqCst) {
             return Err(AppError::Other(
-                "Opdateringen downloades stadig — vent et øjeblik".into(),
+                "Vent, til opdateringen er hentet".into(),
             ));
         }
     }
@@ -696,7 +696,7 @@ pub fn install_background_check(app: &AppHandle) {
 fn notify_ready(app: &AppHandle, remote_version: &str) {
     use tauri_plugin_notification::NotificationExt;
     let body = if remote_version.is_empty() {
-        "Opdateringen er hentet og klar — genstart Open Dock for at installere den.".to_string()
+        "Opdateringen er klar. Genstart Open Dock for at få den.".to_string()
     } else {
         format!(
             "Open Dock {remote_version} er hentet og klar — genstart for at installere opdateringen."

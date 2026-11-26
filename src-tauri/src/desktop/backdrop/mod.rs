@@ -1,87 +1,57 @@
+mod capture;
+mod duplication;
+mod effects;
+mod hdr;
+mod squircle;
+mod window;
+
 use std::{
     cell::{Cell, RefCell},
     collections::HashMap,
     mem::size_of,
-    sync::{LazyLock, OnceLock},
+    sync::LazyLock,
 };
 
-use parking_lot::{Mutex, RwLock};
+use parking_lot::Mutex;
 use windows::{
-    core::{h, w, Interface, BOOL, HSTRING, PCWSTR, PWSTR},
-    Foundation::{IPropertyValue, PropertyValue, TimeSpan},
-    Graphics::{IGeometrySource2D, IGeometrySource2D_Impl},
-    Graphics::Effects::{IGraphicsEffect, IGraphicsEffectSource, IGraphicsEffectSource_Impl, IGraphicsEffect_Impl},
+    core::{h, w, Interface},
+    Foundation::TimeSpan,
     System::{DispatcherQueue, DispatcherQueueController},
-    UI::Composition::{
-        CompositionBackdropBrush, CompositionBitmapInterpolationMode, CompositionEffectBrush,
-        CompositionGeometry, CompositionPath, CompositionRoundedRectangleGeometry,
-        CompositionStretch, CompositionSurfaceBrush, Compositor, SpriteVisual,
-        Desktop::DesktopWindowTarget,
-    },
     Win32::{
-        Foundation::{E_INVALIDARG, E_NOTIMPL, ERROR_SUCCESS, HWND, LPARAM, LRESULT, RECT, WPARAM},
-        Graphics::{
-            Direct2D::{
-                CLSID_D2D1GaussianBlur, CLSID_D2D1Saturation, D2D1CreateFactory,
-                Common::{
-                    D2D1_BORDER_MODE_HARD, D2D1_FIGURE_BEGIN_FILLED, D2D1_FIGURE_END_CLOSED,
-                },
-                ID2D1Factory, ID2D1Geometry, D2D1_FACTORY_TYPE_MULTI_THREADED,
-                D2D1_GAUSSIANBLUR_OPTIMIZATION_BALANCED,
-            },
-            Dwm::{
-                DwmSetWindowAttribute, DWMWA_BORDER_COLOR, DWMWA_COLOR_NONE,
-                DWMWA_TRANSITIONS_FORCEDISABLED, DWMWA_USE_HOSTBACKDROPBRUSH,
-                DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_DONOTROUND,
-            },
-            Dxgi::IDXGISwapChain1,
-            Gdi::HBRUSH,
-        },
+        Foundation::{ERROR_SUCCESS, HWND, RECT},
+        Graphics::Direct2D::{D2D1CreateFactory, ID2D1Factory, D2D1_FACTORY_TYPE_MULTI_THREADED},
         System::{
-            Com::CoTaskMemFree,
-            LibraryLoader::GetModuleHandleW,
             Registry::{RegGetValueW, HKEY_CURRENT_USER, RRF_RT_REG_DWORD},
             WinRT::{
-                CreateDispatcherQueueController,
-                Composition::{ICompositorDesktopInterop, ICompositorInterop},
-                DispatcherQueueOptions,
-                Graphics::Direct2D::{
-                    IGeometrySource2DInterop, IGeometrySource2DInterop_Impl,
-                    IGraphicsEffectD2D1Interop, IGraphicsEffectD2D1Interop_Impl,
-                    GRAPHICS_EFFECT_PROPERTY_MAPPING,
-                    GRAPHICS_EFFECT_PROPERTY_MAPPING_DIRECT,
-                },
-                DQTAT_COM_NONE, DQTYPE_THREAD_CURRENT,
+                Composition::ICompositorDesktopInterop, CreateDispatcherQueueController,
+                DispatcherQueueOptions, DQTAT_COM_NONE, DQTYPE_THREAD_CURRENT,
             },
         },
         UI::WindowsAndMessaging::{
-            CreateWindowExW, DefWindowProcW, DestroyWindow, GetWindow, GetWindowLongPtrW,
-            GetWindowRect, IsWindow, IsWindowVisible, RegisterClassExW, SetWindowDisplayAffinity,
-            SetWindowPos, ShowWindow, GWL_EXSTYLE, GW_HWNDNEXT, HWND_NOTOPMOST, HWND_TOPMOST,
-            SWP_HIDEWINDOW, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SWP_SHOWWINDOW,
-            SW_HIDE, WDA_EXCLUDEFROMCAPTURE, WDA_NONE, WNDCLASSEXW, WS_EX_NOACTIVATE,
-            WS_EX_NOREDIRECTIONBITMAP, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT,
-            WS_POPUP,
+            DestroyWindow, GetWindowRect, IsWindow, IsWindowVisible, ShowWindow, SW_HIDE,
         },
     },
+    UI::Composition::{
+        CompositionGeometry, CompositionRoundedRectangleGeometry, Compositor,
+        Desktop::DesktopWindowTarget, SpriteVisual,
+    },
 };
-use windows_core::implement;
 use windows_numerics::Vector2;
 
-use crate::config::{
-    geometry::{
-        cluster_radius_base, laerk_radius_multiplier, squircle_multiplier, widget_radius_base,
-    },
-    schema::{Layer, RadiusPreset, ThemeId, VerticalAnchor, WidgetSize},
+use crate::config::schema::{Layer, RadiusPreset, ThemeId, VerticalAnchor, WidgetSize};
+
+use super::glass::{self, LiveBackdropMode};
+
+use capture::{CaptureTargetSpec, SendSwapChain};
+use effects::{build_effect_brush, build_surface_brush};
+use squircle::{build_clip, spec_clip_key};
+use window::{
+    align_backdrop_to_widget, create_backdrop_hwnd, ensure_class_registered,
+    set_exclude_from_capture, widget_is_topmost,
 };
 
-use super::{
-    backdrop_capture::{self, CaptureTargetSpec, SendSwapChain},
-    glass::{self, LiveBackdropMode},
-    plate,
-};
-
-const BACKDROP_CLASS_NAME: PCWSTR = w!("OpenDockGlassBackdrop");
+pub use capture::{notify_color_change, notify_display_change};
+pub use squircle::{build_squircle_points, compute_blur_and_saturation, compute_corner_geometry};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct BackdropSpec {
@@ -100,7 +70,10 @@ static BACKDROP_MAP: LazyLock<Mutex<HashMap<isize, isize>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
 pub fn backdrop_hwnd_for(widget_hwnd: HWND) -> Option<HWND> {
-    let raw = BACKDROP_MAP.lock().get(&(widget_hwnd.0 as isize)).copied()?;
+    let raw = BACKDROP_MAP
+        .lock()
+        .get(&(widget_hwnd.0 as isize))
+        .copied()?;
     if raw == 0 {
         return None;
     }
@@ -137,361 +110,6 @@ pub fn system_transparency_enabled() -> bool {
     }
 }
 
-fn supports_css_squircle() -> bool {
-    static SQUIRCLE_SUPPORTED: OnceLock<bool> = OnceLock::new();
-    *SQUIRCLE_SUPPORTED.get_or_init(|| {
-        let mut raw_ver = PWSTR::null();
-        let res = unsafe {
-            webview2_com::Microsoft::Web::WebView2::Win32::GetAvailableCoreWebView2BrowserVersionString(
-                PCWSTR::null(),
-                &mut raw_ver,
-            )
-        };
-        if res.is_err() || raw_ver.0.is_null() {
-            return true;
-        }
-        let ver_str = unsafe { raw_ver.to_string() }.unwrap_or_default();
-        unsafe {
-            CoTaskMemFree(Some(raw_ver.0 as *const _));
-        }
-        let major = ver_str
-            .split(|c: char| c == '.' || c.is_whitespace())
-            .next()
-            .and_then(|part| part.parse::<u32>().ok())
-            .unwrap_or(139);
-        major >= 139
-    })
-}
-
-pub fn compute_corner_geometry(
-    spec: &BackdropSpec,
-    phys_w: f32,
-    phys_h: f32,
-    squircle_supported: bool,
-) -> (f32, bool) {
-    let r_base = if spec.is_cluster {
-        cluster_radius_base(spec.radius)
-    } else {
-        widget_radius_base(spec.radius, spec.size)
-    };
-
-    let r_mult = match spec.theme {
-        ThemeId::Laerk => laerk_radius_multiplier(),
-        ThemeId::Aurora | ThemeId::Grafit => 1.0_f32,
-    };
-
-    let u_phys = phys_w.max(1.0) / (spec.base_width.max(1.0) as f32);
-    let r_widget = r_base * r_mult * u_phys;
-
-    let is_round_pill =
-        !spec.is_cluster && spec.size == WidgetSize::Pill && spec.radius == RadiusPreset::Extra;
-    let use_squircle = squircle_supported && !is_round_pill;
-    let raw_r = if use_squircle {
-        r_widget * squircle_multiplier()
-    } else {
-        r_widget
-    };
-    let max_r = (phys_w * 0.5).min(phys_h * 0.5).max(0.0);
-    (raw_r.clamp(0.0, max_r), use_squircle)
-}
-
-pub fn compute_blur_and_saturation(
-    theme: ThemeId,
-    glass_strength: f32,
-    dpi_scale: f64,
-) -> (f32, f32) {
-    let (blur_logical, sat) = plate::theme_glass_params(theme, glass_strength);
-    let scale = if dpi_scale.is_finite() {
-        dpi_scale.max(0.5) as f32
-    } else {
-        1.0
-    };
-    let sigma = (blur_logical * scale).clamp(0.0, 200.0);
-    (sigma, sat)
-}
-
-fn push_unique_point(pts: &mut Vec<Vector2>, p: Vector2) {
-    if let Some(last) = pts.last() {
-        if (last.X - p.X).abs() < 1e-4 && (last.Y - p.Y).abs() < 1e-4 {
-            return;
-        }
-    }
-    pts.push(p);
-}
-
-/// Bygger lukket polygon-approksimation af Chromium's `corner-shape: squircle`
-/// (`superellipse(2)` => |x|^4 + |y|^4 = 1) med 24 segmenter pr. hjørne (45°-split).
-pub fn build_squircle_points(x0: f32, y0: f32, w: f32, h: f32, r: f32) -> Vec<Vector2> {
-    let x1 = x0 + w;
-    let y1 = y0 + h;
-    let r = r.clamp(0.0, (w * 0.5).min(h * 0.5));
-    if r <= 0.25 {
-        return vec![
-            Vector2::new(x0, y0),
-            Vector2::new(x1, y0),
-            Vector2::new(x1, y1),
-            Vector2::new(x0, y1),
-        ];
-    }
-
-    const HALF_STEPS: usize = 12;
-    let t_mid = 2.0_f32.powf(-0.25); // 2^(-1/4) ≈ 0.8408964
-    let mut pts = Vec::with_capacity(4 * (HALF_STEPS * 2 + 1));
-
-    // Øverste venstre hjørne: (x0, y0 + r) -> (x0 + r, y0)
-    let cx = x0 + r;
-    let cy = y0 + r;
-    for i in 0..=HALF_STEPS {
-        let v = t_mid * (i as f32 / HALF_STEPS as f32);
-        let u = (1.0 - v.powi(4)).max(0.0).powf(0.25);
-        push_unique_point(&mut pts, Vector2::new(cx - u * r, cy - v * r));
-    }
-    for i in 1..=HALF_STEPS {
-        let u = t_mid * (1.0 - i as f32 / HALF_STEPS as f32);
-        let v = (1.0 - u.powi(4)).max(0.0).powf(0.25);
-        push_unique_point(&mut pts, Vector2::new(cx - u * r, cy - v * r));
-    }
-
-    // Øverste højre hjørne: (x1 - r, y0) -> (x1, y0 + r)
-    let cx = x1 - r;
-    let cy = y0 + r;
-    for i in 0..=HALF_STEPS {
-        let u = t_mid * (i as f32 / HALF_STEPS as f32);
-        let v = (1.0 - u.powi(4)).max(0.0).powf(0.25);
-        push_unique_point(&mut pts, Vector2::new(cx + u * r, cy - v * r));
-    }
-    for i in 1..=HALF_STEPS {
-        let v = t_mid * (1.0 - i as f32 / HALF_STEPS as f32);
-        let u = (1.0 - v.powi(4)).max(0.0).powf(0.25);
-        push_unique_point(&mut pts, Vector2::new(cx + u * r, cy - v * r));
-    }
-
-    // Nederste højre hjørne: (x1, y1 - r) -> (x1 - r, y1)
-    let cx = x1 - r;
-    let cy = y1 - r;
-    for i in 0..=HALF_STEPS {
-        let v = t_mid * (i as f32 / HALF_STEPS as f32);
-        let u = (1.0 - v.powi(4)).max(0.0).powf(0.25);
-        push_unique_point(&mut pts, Vector2::new(cx + u * r, cy + v * r));
-    }
-    for i in 1..=HALF_STEPS {
-        let u = t_mid * (1.0 - i as f32 / HALF_STEPS as f32);
-        let v = (1.0 - u.powi(4)).max(0.0).powf(0.25);
-        push_unique_point(&mut pts, Vector2::new(cx + u * r, cy + v * r));
-    }
-
-    // Nederste venstre hjørne: (x0 + r, y1) -> (x0, y1 - r)
-    let cx = x0 + r;
-    let cy = y1 - r;
-    for i in 0..=HALF_STEPS {
-        let u = t_mid * (i as f32 / HALF_STEPS as f32);
-        let v = (1.0 - u.powi(4)).max(0.0).powf(0.25);
-        push_unique_point(&mut pts, Vector2::new(cx - u * r, cy + v * r));
-    }
-    for i in 1..=HALF_STEPS {
-        let v = t_mid * (1.0 - i as f32 / HALF_STEPS as f32);
-        let u = (1.0 - v.powi(4)).max(0.0).powf(0.25);
-        push_unique_point(&mut pts, Vector2::new(cx - u * r, cy + v * r));
-    }
-
-    if pts.len() > 1 {
-        let first = pts[0];
-        if let Some(last) = pts.last() {
-            if (last.X - first.X).abs() < 1e-4 && (last.Y - first.Y).abs() < 1e-4 {
-                pts.pop();
-            }
-        }
-    }
-    pts
-}
-
-#[implement(IGraphicsEffect, IGraphicsEffectSource, IGraphicsEffectD2D1Interop)]
-struct D2dGaussianBlurEffect {
-    name: RwLock<HSTRING>,
-    std_dev: f32,
-    source: IGraphicsEffectSource,
-}
-
-impl IGraphicsEffectSource_Impl for D2dGaussianBlurEffect_Impl {}
-
-impl IGraphicsEffect_Impl for D2dGaussianBlurEffect_Impl {
-    fn Name(&self) -> windows_core::Result<HSTRING> {
-        Ok(self.name.read().clone())
-    }
-
-    fn SetName(&self, name: &HSTRING) -> windows_core::Result<()> {
-        *self.name.write() = name.clone();
-        Ok(())
-    }
-}
-
-impl IGraphicsEffectD2D1Interop_Impl for D2dGaussianBlurEffect_Impl {
-    fn GetEffectId(&self) -> windows_core::Result<windows_core::GUID> {
-        Ok(CLSID_D2D1GaussianBlur)
-    }
-
-    fn GetNamedPropertyMapping(
-        &self,
-        name: &PCWSTR,
-        index: *mut u32,
-        mapping: *mut GRAPHICS_EFFECT_PROPERTY_MAPPING,
-    ) -> windows_core::Result<()> {
-        if index.is_null() || mapping.is_null() {
-            return Err(windows_core::Error::from(E_INVALIDARG));
-        }
-        let prop = unsafe { name.to_string() }.unwrap_or_default();
-        if prop.eq_ignore_ascii_case("BlurAmount") {
-            unsafe {
-                *index = 0;
-                *mapping = GRAPHICS_EFFECT_PROPERTY_MAPPING_DIRECT;
-            }
-            return Ok(());
-        }
-        Err(windows_core::Error::from(E_INVALIDARG))
-    }
-
-    fn GetPropertyCount(&self) -> windows_core::Result<u32> {
-        Ok(3)
-    }
-
-    fn GetProperty(&self, index: u32) -> windows_core::Result<IPropertyValue> {
-        match index {
-            // D2D1_GAUSSIANBLUR_PROP_STANDARD_DEVIATION = 0
-            0 => PropertyValue::CreateSingle(self.std_dev)?.cast(),
-            // D2D1_GAUSSIANBLUR_PROP_OPTIMIZATION = 1
-            1 => PropertyValue::CreateUInt32(D2D1_GAUSSIANBLUR_OPTIMIZATION_BALANCED.0 as u32)?.cast(),
-            // D2D1_GAUSSIANBLUR_PROP_BORDER_MODE = 2 (HARD hindrer kant-fade)
-            2 => PropertyValue::CreateUInt32(D2D1_BORDER_MODE_HARD.0 as u32)?.cast(),
-            _ => Err(windows_core::Error::from(E_INVALIDARG)),
-        }
-    }
-
-    fn GetSource(&self, index: u32) -> windows_core::Result<IGraphicsEffectSource> {
-        if index == 0 {
-            Ok(self.source.clone())
-        } else {
-            Err(windows_core::Error::from(E_INVALIDARG))
-        }
-    }
-
-    fn GetSourceCount(&self) -> windows_core::Result<u32> {
-        Ok(1)
-    }
-}
-
-#[implement(IGraphicsEffect, IGraphicsEffectSource, IGraphicsEffectD2D1Interop)]
-struct D2dSaturationEffect {
-    name: RwLock<HSTRING>,
-    saturation: f32,
-    source: IGraphicsEffectSource,
-}
-
-impl IGraphicsEffectSource_Impl for D2dSaturationEffect_Impl {}
-
-impl IGraphicsEffect_Impl for D2dSaturationEffect_Impl {
-    fn Name(&self) -> windows_core::Result<HSTRING> {
-        Ok(self.name.read().clone())
-    }
-
-    fn SetName(&self, name: &HSTRING) -> windows_core::Result<()> {
-        *self.name.write() = name.clone();
-        Ok(())
-    }
-}
-
-impl IGraphicsEffectD2D1Interop_Impl for D2dSaturationEffect_Impl {
-    fn GetEffectId(&self) -> windows_core::Result<windows_core::GUID> {
-        Ok(CLSID_D2D1Saturation)
-    }
-
-    fn GetNamedPropertyMapping(
-        &self,
-        name: &PCWSTR,
-        index: *mut u32,
-        mapping: *mut GRAPHICS_EFFECT_PROPERTY_MAPPING,
-    ) -> windows_core::Result<()> {
-        if index.is_null() || mapping.is_null() {
-            return Err(windows_core::Error::from(E_INVALIDARG));
-        }
-        let prop = unsafe { name.to_string() }.unwrap_or_default();
-        if prop.eq_ignore_ascii_case("Saturation") {
-            unsafe {
-                *index = 0;
-                *mapping = GRAPHICS_EFFECT_PROPERTY_MAPPING_DIRECT;
-            }
-            return Ok(());
-        }
-        Err(windows_core::Error::from(E_INVALIDARG))
-    }
-
-    fn GetPropertyCount(&self) -> windows_core::Result<u32> {
-        Ok(1)
-    }
-
-    fn GetProperty(&self, index: u32) -> windows_core::Result<IPropertyValue> {
-        match index {
-            // D2D1_SATURATION_PROP_SATURATION = 0
-            0 => PropertyValue::CreateSingle(self.saturation)?.cast(),
-            _ => Err(windows_core::Error::from(E_INVALIDARG)),
-        }
-    }
-
-    fn GetSource(&self, index: u32) -> windows_core::Result<IGraphicsEffectSource> {
-        if index == 0 {
-            Ok(self.source.clone())
-        } else {
-            Err(windows_core::Error::from(E_INVALIDARG))
-        }
-    }
-
-    fn GetSourceCount(&self) -> windows_core::Result<u32> {
-        Ok(1)
-    }
-}
-
-fn build_d2d_path_geometry(
-    factory: &ID2D1Factory,
-    pts: &[Vector2],
-) -> windows_core::Result<ID2D1Geometry> {
-    let path = unsafe { factory.CreatePathGeometry()? };
-    let sink = unsafe { path.Open()? };
-    unsafe {
-        sink.BeginFigure(pts[0], D2D1_FIGURE_BEGIN_FILLED);
-        for &pt in &pts[1..] {
-            sink.AddLine(pt);
-        }
-        sink.EndFigure(D2D1_FIGURE_END_CLOSED);
-        sink.Close()?;
-    }
-    path.cast()
-}
-
-#[implement(IGeometrySource2D, IGeometrySource2DInterop)]
-struct PathGeometrySource {
-    geometry: ID2D1Geometry,
-    pts: Vec<Vector2>,
-}
-
-impl IGeometrySource2D_Impl for PathGeometrySource_Impl {}
-
-impl IGeometrySource2DInterop_Impl for PathGeometrySource_Impl {
-    fn GetGeometry(&self) -> windows_core::Result<ID2D1Geometry> {
-        Ok(self.geometry.clone())
-    }
-
-    fn TryGetGeometryUsingFactory(
-        &self,
-        factory: windows_core::Ref<ID2D1Factory>,
-    ) -> windows_core::Result<ID2D1Geometry> {
-        if let Some(fac) = factory.as_ref() {
-            if self.pts.len() >= 3 {
-                return build_d2d_path_geometry(fac, &self.pts);
-            }
-        }
-        Err(windows_core::Error::from(E_NOTIMPL))
-    }
-}
-
 struct BackdropEntry {
     backdrop_hwnd: HWND,
     target: DesktopWindowTarget,
@@ -514,40 +132,9 @@ struct BackdropRuntime {
     entries: HashMap<isize, BackdropEntry>,
 }
 
-static CLASS_REGISTERED: OnceLock<()> = OnceLock::new();
-
 thread_local! {
     static RUNTIME: RefCell<Option<BackdropRuntime>> = const { RefCell::new(None) };
     static SYNCING: Cell<bool> = const { Cell::new(false) };
-}
-
-unsafe extern "system" fn backdrop_wnd_proc(
-    hwnd: HWND,
-    msg: u32,
-    wp: WPARAM,
-    lp: LPARAM,
-) -> LRESULT {
-    DefWindowProcW(hwnd, msg, wp, lp)
-}
-
-fn ensure_class_registered() -> windows_core::Result<()> {
-    if CLASS_REGISTERED.get().is_some() {
-        return Ok(());
-    }
-    unsafe {
-        let hinstance = GetModuleHandleW(None)?;
-        let wc = WNDCLASSEXW {
-            cbSize: size_of::<WNDCLASSEXW>() as u32,
-            lpfnWndProc: Some(backdrop_wnd_proc),
-            hInstance: hinstance.into(),
-            hbrBackground: HBRUSH::default(),
-            lpszClassName: BACKDROP_CLASS_NAME,
-            ..Default::default()
-        };
-        let _ = RegisterClassExW(&wc);
-    }
-    let _ = CLASS_REGISTERED.set(());
-    Ok(())
 }
 
 fn init_runtime() -> windows_core::Result<BackdropRuntime> {
@@ -575,292 +162,9 @@ fn init_runtime() -> windows_core::Result<BackdropRuntime> {
     })
 }
 
-fn set_exclude_from_capture(hwnd: HWND, exclude: bool) -> windows_core::Result<()> {
-    let affinity = if exclude { WDA_EXCLUDEFROMCAPTURE } else { WDA_NONE };
-    unsafe { SetWindowDisplayAffinity(hwnd, affinity) }
-}
-
-fn build_surface_brush(
-    compositor: &Compositor,
-    swap_chain: &IDXGISwapChain1,
-) -> windows_core::Result<CompositionSurfaceBrush> {
-    let interop: ICompositorInterop = compositor.cast()?;
-    let surface = unsafe { interop.CreateCompositionSurfaceForSwapChain(swap_chain)? };
-    let brush = compositor.CreateSurfaceBrushWithSurface(&surface)?;
-    brush.SetStretch(CompositionStretch::Fill)?;
-    brush.SetBitmapInterpolationMode(CompositionBitmapInterpolationMode::Linear)?;
-    Ok(brush)
-}
-
-fn create_backdrop_hwnd(
-    rect: RECT,
-    topmost: bool,
-    use_host_backdrop: bool,
-) -> windows_core::Result<HWND> {
-    let hinstance = unsafe { GetModuleHandleW(None)? };
-    let w = (rect.right - rect.left).max(1);
-    let h = (rect.bottom - rect.top).max(1);
-    let mut ex = WS_EX_NOREDIRECTIONBITMAP | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_TRANSPARENT;
-    if topmost {
-        ex |= WS_EX_TOPMOST;
-    }
-
-    let hwnd = unsafe {
-        CreateWindowExW(
-            ex,
-            BACKDROP_CLASS_NAME,
-            w!(""),
-            WS_POPUP,
-            rect.left,
-            rect.top,
-            w,
-            h,
-            None,
-            None,
-            Some(hinstance.into()),
-            None,
-        )?
-    };
-
-    if use_host_backdrop {
-        let enable = BOOL(1);
-        if let Err(err) = unsafe {
-            DwmSetWindowAttribute(
-                hwnd,
-                DWMWA_USE_HOSTBACKDROPBRUSH,
-                &enable as *const BOOL as *const _,
-                size_of::<BOOL>() as u32,
-            )
-        } {
-            unsafe {
-                let _ = DestroyWindow(hwnd);
-            }
-            return Err(err);
-        }
-    }
-
-    let corner = DWMWCP_DONOTROUND;
-    let _ = unsafe {
-        DwmSetWindowAttribute(
-            hwnd,
-            DWMWA_WINDOW_CORNER_PREFERENCE,
-            &corner as *const _ as *const _,
-            size_of::<windows::Win32::Graphics::Dwm::DWM_WINDOW_CORNER_PREFERENCE>() as u32,
-        )
-    };
-    let border_none = DWMWA_COLOR_NONE;
-    let _ = unsafe {
-        DwmSetWindowAttribute(
-            hwnd,
-            DWMWA_BORDER_COLOR,
-            &border_none as *const u32 as *const _,
-            size_of::<u32>() as u32,
-        )
-    };
-    let disable_transitions = BOOL(1);
-    let _ = unsafe {
-        DwmSetWindowAttribute(
-            hwnd,
-            DWMWA_TRANSITIONS_FORCEDISABLED,
-            &disable_transitions as *const BOOL as *const _,
-            size_of::<BOOL>() as u32,
-        )
-    };
-
-    Ok(hwnd)
-}
-
-fn build_effect_brush(
-    compositor: &Compositor,
-    sigma: f32,
-    sat: f32,
-) -> windows_core::Result<CompositionEffectBrush> {
-    let source_param = windows::UI::Composition::CompositionEffectSourceParameter::Create(h!("source"))?;
-    let param_source: IGraphicsEffectSource = source_param.cast()?;
-
-    let blur = D2dGaussianBlurEffect {
-        name: RwLock::new(HSTRING::from("Blur")),
-        std_dev: sigma,
-        source: param_source,
-    };
-    let blur_source: IGraphicsEffectSource = blur.into();
-
-    let root_effect: IGraphicsEffect = if (sat - 1.0).abs() > 0.005 {
-        let sat_fx = D2dSaturationEffect {
-            name: RwLock::new(HSTRING::from("Saturation")),
-            saturation: sat,
-            source: blur_source,
-        };
-        let sat_source: IGraphicsEffectSource = sat_fx.into();
-        sat_source.cast()?
-    } else {
-        blur_source.cast()?
-    };
-
-    let factory = compositor.CreateEffectFactory(&root_effect)?;
-    let brush = factory.CreateBrush()?;
-    let host_backdrop: CompositionBackdropBrush = compositor.CreateHostBackdropBrush()?;
-    brush.SetSourceParameter(h!("source"), &host_backdrop)?;
-    Ok(brush)
-}
-
-fn build_clip(
-    compositor: &Compositor,
-    d2d_factory: &ID2D1Factory,
-    spec: &BackdropSpec,
-    phys_w: f32,
-    phys_h: f32,
-) -> windows_core::Result<windows::UI::Composition::CompositionGeometricClip> {
-    let (r, use_squircle) =
-        compute_corner_geometry(spec, phys_w, phys_h, supports_css_squircle());
-
-    let x0 = 0.5_f32;
-    let y0 = 0.5_f32;
-    let w = (phys_w - 1.0).max(1.0);
-    let h = (phys_h - 1.0).max(1.0);
-    let r_inset = (r - 0.5).clamp(0.0, (w * 0.5).min(h * 0.5));
-
-    if use_squircle && r_inset > 0.25 {
-        let pts = build_squircle_points(x0, y0, w, h, r_inset);
-        if pts.len() >= 3 {
-            let d2d_geom = build_d2d_path_geometry(d2d_factory, &pts)?;
-            let geom_source: IGeometrySource2D = PathGeometrySource {
-                geometry: d2d_geom,
-                pts,
-            }
-            .into();
-            let comp_path = CompositionPath::Create(&geom_source)?;
-            let path_geom = compositor.CreatePathGeometryWithPath(&comp_path)?;
-            let comp_geom: CompositionGeometry = path_geom.cast()?;
-            return compositor.CreateGeometricClipWithGeometry(&comp_geom);
-        }
-    }
-
-    let rr = compositor.CreateRoundedRectangleGeometry()?;
-    rr.SetOffset(Vector2::new(x0, y0))?;
-    rr.SetSize(Vector2::new(w, h))?;
-    rr.SetCornerRadius(Vector2::new(r_inset, r_inset))?;
-    let comp_geom: CompositionGeometry = rr.cast()?;
-    compositor.CreateGeometricClipWithGeometry(&comp_geom)
-}
-
-fn spec_clip_key(spec: &BackdropSpec, w: i32, h: i32) -> (i32, i32, u8, u8, u8, bool, i32) {
-    let radius_k = match spec.radius {
-        RadiusPreset::Soft => 0,
-        RadiusPreset::Round => 1,
-        RadiusPreset::Extra => 2,
-    };
-    let theme_k = match spec.theme {
-        ThemeId::Laerk => 0,
-        ThemeId::Aurora => 1,
-        ThemeId::Grafit => 2,
-    };
-    let size_k = match spec.size {
-        WidgetSize::Pill => 0,
-        WidgetSize::S => 1,
-        WidgetSize::M => 2,
-        WidgetSize::L => 3,
-    };
-    (
-        w,
-        h,
-        radius_k,
-        theme_k,
-        size_k,
-        spec.is_cluster,
-        spec.base_width.round() as i32,
-    )
-}
-
-fn widget_is_topmost(widget_hwnd: HWND) -> bool {
-    let ex = unsafe { GetWindowLongPtrW(widget_hwnd, GWL_EXSTYLE) as u32 };
-    (ex & WS_EX_TOPMOST.0) != 0
-}
-
-fn backdrop_is_topmost(backdrop_hwnd: HWND) -> bool {
-    let ex = unsafe { GetWindowLongPtrW(backdrop_hwnd, GWL_EXSTYLE) as u32 };
-    (ex & WS_EX_TOPMOST.0) != 0
-}
-
-fn align_backdrop_to_widget(widget_hwnd: HWND, backdrop_hwnd: HWND, hidden_idle: bool) {
-    let mut w_rect = RECT::default();
-    if unsafe { GetWindowRect(widget_hwnd, &mut w_rect) }.is_err() {
-        return;
-    }
-    let w = (w_rect.right - w_rect.left).max(1);
-    let h = (w_rect.bottom - w_rect.top).max(1);
-    let want_visible = unsafe { IsWindowVisible(widget_hwnd).as_bool() } && !hidden_idle;
-
-    let mut b_rect = RECT::default();
-    let got_b_rect = unsafe { GetWindowRect(backdrop_hwnd, &mut b_rect) }.is_ok();
-    let b_visible = unsafe { IsWindowVisible(backdrop_hwnd).as_bool() };
-    let b_directly_behind = unsafe { GetWindow(widget_hwnd, GW_HWNDNEXT) }
-        .map(|next| next == backdrop_hwnd)
-        .unwrap_or(false);
-    let w_topmost = widget_is_topmost(widget_hwnd);
-    let b_topmost = backdrop_is_topmost(backdrop_hwnd);
-
-    if got_b_rect
-        && b_rect == w_rect
-        && b_visible == want_visible
-        && b_directly_behind
-        && w_topmost == b_topmost
-    {
-        return;
-    }
-
-    if w_topmost != b_topmost {
-        let band = if w_topmost {
-            HWND_TOPMOST
-        } else {
-            HWND_NOTOPMOST
-        };
-        if let Err(err) = unsafe {
-            SetWindowPos(
-                backdrop_hwnd,
-                Some(band),
-                0,
-                0,
-                0,
-                0,
-                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
-            )
-        } {
-            log::warn!("align_backdrop_to_widget SetWindowPos fejlede: {err}");
-        }
-    }
-
-    let mut flags = SWP_NOACTIVATE;
-    if want_visible && !b_visible {
-        flags |= SWP_SHOWWINDOW;
-    } else if !want_visible && b_visible {
-        flags |= SWP_HIDEWINDOW;
-    }
-    if got_b_rect && b_rect == w_rect {
-        flags |= SWP_NOMOVE | SWP_NOSIZE;
-    }
-    if b_directly_behind && w_topmost == b_topmost {
-        flags |= SWP_NOZORDER;
-    }
-
-    if let Err(err) = unsafe {
-        SetWindowPos(
-            backdrop_hwnd,
-            Some(widget_hwnd),
-            w_rect.left,
-            w_rect.top,
-            w,
-            h,
-            flags,
-        )
-    } {
-        log::warn!("align_backdrop_to_widget SetWindowPos fejlede: {err}");
-    }
-}
-
 fn remove_entry_locked(rt: &mut BackdropRuntime, key: isize, widget_hwnd: HWND) {
     BACKDROP_MAP.lock().remove(&key);
-    backdrop_capture::unregister(key);
+    capture::unregister(key);
     unsafe {
         if IsWindow(Some(widget_hwnd)).as_bool() {
             let _ = set_exclude_from_capture(widget_hwnd, false);
@@ -910,18 +214,22 @@ fn create_entry_for_mode(
                     return None;
                 }
             };
-            let target = match rt.compositor.cast::<ICompositorDesktopInterop>().and_then(|interop| {
-                unsafe { interop.CreateDesktopWindowTarget(backdrop_hwnd, true) }
-            }) {
-                Ok(t) => t,
-                Err(err) => {
-                    log::warn!("CreateDesktopWindowTarget fejlede: {err}");
-                    unsafe {
-                        let _ = DestroyWindow(backdrop_hwnd);
+            let target =
+                match rt
+                    .compositor
+                    .cast::<ICompositorDesktopInterop>()
+                    .and_then(|interop| unsafe {
+                        interop.CreateDesktopWindowTarget(backdrop_hwnd, true)
+                    }) {
+                    Ok(t) => t,
+                    Err(err) => {
+                        log::warn!("CreateDesktopWindowTarget fejlede: {err}");
+                        unsafe {
+                            let _ = DestroyWindow(backdrop_hwnd);
+                        }
+                        return None;
                     }
-                    return None;
-                }
-            };
+                };
             let visual = match rt.compositor.CreateSpriteVisual() {
                 Ok(v) => v,
                 Err(err) => {
@@ -998,7 +306,7 @@ fn create_entry_for_mode(
                 return None;
             }
 
-            let sc = match backdrop_capture::register_sync(CaptureTargetSpec {
+            let sc = match capture::register_sync(CaptureTargetSpec {
                 widget_hwnd: key,
                 rect,
                 sigma,
@@ -1024,27 +332,31 @@ fn create_entry_for_mode(
                 }
             };
 
-            let target = match rt.compositor.cast::<ICompositorDesktopInterop>().and_then(|interop| {
-                unsafe { interop.CreateDesktopWindowTarget(backdrop_hwnd, true) }
-            }) {
-                Ok(t) => t,
-                Err(err) => {
-                    log::warn!("CreateDesktopWindowTarget (capture) fejlede: {err}");
-                    backdrop_capture::unregister(key);
-                    unsafe {
-                        let _ = set_exclude_from_capture(widget_hwnd, false);
-                        let _ = DestroyWindow(backdrop_hwnd);
+            let target =
+                match rt
+                    .compositor
+                    .cast::<ICompositorDesktopInterop>()
+                    .and_then(|interop| unsafe {
+                        interop.CreateDesktopWindowTarget(backdrop_hwnd, true)
+                    }) {
+                    Ok(t) => t,
+                    Err(err) => {
+                        log::warn!("CreateDesktopWindowTarget (capture) fejlede: {err}");
+                        capture::unregister(key);
+                        unsafe {
+                            let _ = set_exclude_from_capture(widget_hwnd, false);
+                            let _ = DestroyWindow(backdrop_hwnd);
+                        }
+                        return None;
                     }
-                    return None;
-                }
-            };
+                };
 
             let visual = match rt.compositor.CreateSpriteVisual() {
                 Ok(v) => v,
                 Err(err) => {
                     log::warn!("CreateSpriteVisual (capture) fejlede: {err}");
                     drop(target);
-                    backdrop_capture::unregister(key);
+                    capture::unregister(key);
                     unsafe {
                         let _ = set_exclude_from_capture(widget_hwnd, false);
                         let _ = DestroyWindow(backdrop_hwnd);
@@ -1073,7 +385,7 @@ fn create_entry_for_mode(
                 log::warn!("Opsætning af CaptureD2d liquid glass-graf fejlede: {err}");
                 drop(visual);
                 drop(target);
-                backdrop_capture::unregister(key);
+                capture::unregister(key);
                 unsafe {
                     let _ = set_exclude_from_capture(widget_hwnd, false);
                     let _ = DestroyWindow(backdrop_hwnd);
@@ -1082,13 +394,13 @@ fn create_entry_for_mode(
             }
 
             if !w_visible {
-                backdrop_capture::set_paused(key, true);
+                capture::set_paused(key, true);
             }
 
             BACKDROP_MAP.lock().insert(key, backdrop_hwnd.0 as isize);
             align_backdrop_to_widget(widget_hwnd, backdrop_hwnd, false);
             if w_visible {
-                backdrop_capture::request_redraw(key);
+                capture::request_redraw(key);
             }
             log::info!(
                 "Levende glas aktivt (CaptureD2d) for widget {key} (backdrop={}, vis={w_visible}, rect={}x{})",
@@ -1228,7 +540,7 @@ pub fn apply(widget_hwnd: HWND, requested_mode: LiveBackdropMode, spec: Backdrop
                 }
             }
         } else if entry.sigma_sat != sigma_sat && !size_changed && !rect_changed && !vis_changed {
-            backdrop_capture::update_params_nonblocking(key, sigma, sat);
+            capture::update_params_nonblocking(key, sigma, sat);
             entry.sigma_sat = sigma_sat;
         } else if entry.sigma_sat != sigma_sat {
             entry.sigma_sat = sigma_sat;
@@ -1264,7 +576,7 @@ pub fn apply(widget_hwnd: HWND, requested_mode: LiveBackdropMode, spec: Backdrop
         entry.window_visible = w_visible;
         if entry.mode == LiveBackdropMode::CaptureD2d && (size_changed || rect_changed || vis_changed)
         {
-            backdrop_capture::update_nonblocking(CaptureTargetSpec {
+            capture::update_nonblocking(CaptureTargetSpec {
                 widget_hwnd: key,
                 rect,
                 sigma,
@@ -1280,16 +592,12 @@ pub fn apply(widget_hwnd: HWND, requested_mode: LiveBackdropMode, spec: Backdrop
     })
 }
 
-pub fn attach_capture_swapchain(
-    widget_hwnd: HWND,
-    generation: u64,
-    swap_chain: SendSwapChain,
-) {
+pub fn attach_capture_swapchain(widget_hwnd: HWND, generation: u64, swap_chain: SendSwapChain) {
     if !super::is_ui_thread() {
         return;
     }
     let key = widget_hwnd.0 as isize;
-    if !backdrop_capture::is_generation_current(key, generation) {
+    if !capture::is_generation_current(key, generation) {
         return;
     }
     RUNTIME.with(|cell| {
@@ -1310,7 +618,7 @@ pub fn attach_capture_swapchain(
                 if let Err(err) = entry.visual.SetBrush(&brush) {
                     log::warn!("Kunne ikke binde opdateret capture-brush: {err}");
                 } else if entry.window_visible && !entry.hidden_idle {
-                    backdrop_capture::request_redraw(key);
+                    capture::request_redraw(key);
                 }
             }
             Err(err) => {
@@ -1361,7 +669,9 @@ pub fn sync_from_widget(widget_hwnd: HWND) {
         let vis_changed = entry.window_visible != w_visible;
 
         if size_changed {
-            let _ = entry.visual.SetSize(Vector2::new(phys_w as f32, phys_h as f32));
+            let _ = entry
+                .visual
+                .SetSize(Vector2::new(phys_w as f32, phys_h as f32));
             entry.phys_size = (phys_w, phys_h);
             entry.animating_clip = None;
             let ckey = spec_clip_key(&entry.spec, phys_w, phys_h);
@@ -1388,7 +698,7 @@ pub fn sync_from_widget(widget_hwnd: HWND) {
                 entry.spec.glass_strength,
                 entry.spec.dpi_scale,
             );
-            backdrop_capture::update_nonblocking(CaptureTargetSpec {
+            capture::update_nonblocking(CaptureTargetSpec {
                 widget_hwnd: key,
                 rect,
                 sigma,
@@ -1422,7 +732,7 @@ pub fn set_window_visible(widget_hwnd: HWND, visible: bool) {
         };
         entry.window_visible = visible;
         if entry.mode == LiveBackdropMode::CaptureD2d {
-            backdrop_capture::set_paused(key, !(entry.window_visible && !entry.hidden_idle));
+            capture::set_paused(key, !(entry.window_visible && !entry.hidden_idle));
         }
         let b_hwnd = entry.backdrop_hwnd;
         if !unsafe { IsWindow(Some(b_hwnd)).as_bool() } {
@@ -1456,13 +766,13 @@ pub fn set_idle_visible(widget_hwnd: HWND, visible: bool, duration_ms: u32) {
         entry.window_visible = w_visible;
         if entry.hidden_idle == !visible {
             if entry.mode == LiveBackdropMode::CaptureD2d {
-                backdrop_capture::set_paused(key, !(w_visible && !entry.hidden_idle));
+                capture::set_paused(key, !(w_visible && !entry.hidden_idle));
             }
             return;
         }
         entry.hidden_idle = !visible;
         if entry.mode == LiveBackdropMode::CaptureD2d {
-            backdrop_capture::set_paused(key, !(w_visible && !entry.hidden_idle));
+            capture::set_paused(key, !(w_visible && !entry.hidden_idle));
         }
         let b_hwnd = entry.backdrop_hwnd;
 
@@ -1477,10 +787,10 @@ pub fn set_idle_visible(widget_hwnd: HWND, visible: bool, duration_ms: u32) {
                     let _ = anim.SetDuration(TimeSpan {
                         Duration: (duration_ms as i64) * 10_000,
                     });
-                    if let Ok(ease) = rt
-                        .compositor
-                        .CreateCubicBezierEasingFunction(Vector2::new(0.22, 0.61), Vector2::new(0.36, 1.0))
-                    {
+                    if let Ok(ease) = rt.compositor.CreateCubicBezierEasingFunction(
+                        Vector2::new(0.22, 0.61),
+                        Vector2::new(0.36, 1.0),
+                    ) {
                         let _ = anim.InsertKeyFrameWithEasingFunction(1.0, 1.0, &ease);
                     } else {
                         let _ = anim.InsertKeyFrame(1.0, 1.0);
@@ -1641,7 +951,7 @@ pub fn animate_cluster_box(
 pub fn detach(widget_hwnd: HWND) {
     let key = widget_hwnd.0 as isize;
     BACKDROP_MAP.lock().remove(&key);
-    backdrop_capture::unregister(key);
+    capture::unregister(key);
     unsafe {
         if IsWindow(Some(widget_hwnd)).as_bool() {
             let _ = set_exclude_from_capture(widget_hwnd, false);
@@ -1668,7 +978,7 @@ pub fn detach(widget_hwnd: HWND) {
 }
 
 pub fn shutdown_all() {
-    backdrop_capture::shutdown_all();
+    capture::shutdown_all();
     let stale: Vec<(isize, isize)> = BACKDROP_MAP.lock().drain().collect();
     if super::is_ui_thread() {
         RUNTIME.with(|cell| {

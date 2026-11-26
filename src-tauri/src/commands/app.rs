@@ -234,9 +234,9 @@ pub async fn layout_import(
     crate::commands::ensure_control_window(&window)?;
     let raw = fs::read_to_string(&path).map_err(AppError::ConfigWrite)?;
     let value: Value = serde_json::from_str(&raw)
-        .map_err(|_| AppError::Other("Filen indeholder ikke et gyldigt Open Dock-layout.".into()))?;
+        .map_err(|_| AppError::Other("Filen er ikke et Open Dock-layout.".into()))?;
     let imported = migrate::migrate(value)
-        .map_err(|_| AppError::Other("Filen passer ikke til Open Docks layoutformat.".into()))?;
+        .map_err(|_| AppError::Other("Filen kunne ikke læses som et Open Dock-layout.".into()))?;
 
     let state = app.state::<AppState>();
     if state.edit_mode.load(std::sync::atomic::Ordering::Acquire) {

@@ -31,7 +31,7 @@ struct MenuCopy {
 fn copy_for(lang: Language) -> MenuCopy {
     match lang {
         Language::Da => MenuCopy {
-            edit: "Redigér layout",
+            edit: "Flyt widgets",
             size: "Størrelse",
             narrow: "Smal (232 px)",
             standard: "Standard (264 px)",
@@ -39,7 +39,7 @@ fn copy_for(lang: Language) -> MenuCopy {
             layer: "Lag",
             desktop: "På skrivebordet",
             top: "Altid øverst",
-            settings: "Indstillinger for widget…",
+            settings: "Indstillinger…",
             remove: "Fjern widget",
             devtools: "Åbn DevTools",
         },

@@ -135,12 +135,12 @@ impl WidgetTimers {
         let label: String = raw_label.trim().chars().take(MAX_LABEL_CHARS).collect();
         if !(MIN_DURATION_MS..=MAX_DURATION_MS).contains(&duration_ms) {
             return Err(AppError::Other(
-                "Tiden skal være mellem 1 sekund og 24 timer".into(),
+                "Vælg en tid mellem 1 sekund og 24 timer".into(),
             ));
         }
         if self.items.len() >= MAX_ITEMS {
             return Err(AppError::Other(
-                "Der kan højst køre 8 timere ad gangen".into(),
+                "Du kan højst have 8 timere i gang".into(),
             ));
         }
         let id = Uuid::new_v4();

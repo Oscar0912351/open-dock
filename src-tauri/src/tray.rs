@@ -244,7 +244,7 @@ fn copy_for(lang: Language) -> TrayCopy {
     match lang {
         Language::Da => TrayCopy {
             open: "Åbn Open Dock",
-            edit: "Redigér layout",
+            edit: "Flyt widgets",
             hide_widgets: "Skjul widgets",
             show_widgets: "Vis widgets",
             pause: "Pause",

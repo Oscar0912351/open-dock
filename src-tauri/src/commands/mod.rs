@@ -20,7 +20,7 @@ pub fn ensure_control_window(window: &tauri::Window) -> Result<(), crate::error:
             window.label()
         );
         return Err(crate::error::AppError::Other(
-            "Handlingen kan kun udføres fra kontrolcentret.".into(),
+            "Det kan kun gøres inde i appen.".into(),
         ));
     }
     Ok(())

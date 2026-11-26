@@ -891,7 +891,7 @@ const SystemClusterMod = memo(function SystemClusterMod({
         onClick={onClick}
       >
         <div className="row between g8">
-          <span className="label">System</span>
+          <span className="label">{t("system.cpu")}</span>
           <span className="micro trunc">{rightMeta}</span>
         </div>
         <div className="row between" style={{ alignItems: "flex-end", marginTop: "calc(2 * var(--u))" }}>

@@ -21,9 +21,9 @@ const BACKUP_FILE: &str = "config.bak.json";
 const SAVE_DEBOUNCE_MS: u64 = 300;
 static TEMP_SEQ: AtomicU64 = AtomicU64::new(0);
 pub const RESTORED_BACKUP_MESSAGE: &str =
-    "Dit layout kunne ikke indlæses. Vi har gendannet den seneste sikkerhedskopi.";
+    "Dine widgets kunne ikke indlæses, så vi har hentet den seneste gemte version frem.";
 pub const RESTORED_DEFAULTS_MESSAGE: &str =
-    "Dit layout kunne ikke indlæses. Standardopsætningen er gendannet.";
+    "Dine widgets kunne ikke indlæses, så vi er startet forfra med standardopsætningen.";
 
 pub struct ConfigStore {
     dir: PathBuf,

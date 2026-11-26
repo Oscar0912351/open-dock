@@ -98,7 +98,7 @@ pub fn helper_directory(resource_dir: Option<&Path>) -> Result<PathBuf, String> 
     candidates
         .into_iter()
         .find(|dir| has_helper_files(dir))
-        .ok_or_else(|| "CPU-sensor hjælpefiler ikke fundet".to_string())
+        .ok_or_else(|| "Der mangler nogle filer. Prøv at geninstallere Open Dock".to_string())
 }
 
 pub fn parse_reply(raw: &[u8], expected_sequence: u64, now: i64) -> Result<Value, String> {
@@ -231,7 +231,7 @@ pub fn install_service() -> Result<CpuSensorStatus, String> {
             match crate::elevation::run_elevated_self_and_wait(&args, 60_000) {
                 Ok(c) => c as i32,
                 Err(crate::elevation::ElevatedRunError::Cancelled) => {
-                    return Err("Administratoradgang blev annulleret".to_string());
+                    return Err("Du annullerede godkendelsen".to_string());
                 }
                 Err(crate::elevation::ElevatedRunError::Failed(msg)) => return Err(msg),
             }
@@ -244,7 +244,7 @@ pub fn install_service() -> Result<CpuSensorStatus, String> {
     }
     #[cfg(not(all(windows, target_arch = "x86_64")))]
     {
-        Err("CPU-sensortjenesten understøttes kun på Windows (x64)".to_string())
+        Err("CPU-temperatur virker kun på Windows (x64)".to_string())
     }
 }
 
@@ -259,7 +259,7 @@ pub fn uninstall_service() -> Result<CpuSensorStatus, String> {
             match crate::elevation::run_elevated_self_and_wait(&args, 30_000) {
                 Ok(c) => c as i32,
                 Err(crate::elevation::ElevatedRunError::Cancelled) => {
-                    return Err("Administratoradgang blev annulleret".to_string());
+                    return Err("Du annullerede godkendelsen".to_string());
                 }
                 Err(crate::elevation::ElevatedRunError::Failed(msg)) => return Err(msg),
             }
@@ -272,22 +272,22 @@ pub fn uninstall_service() -> Result<CpuSensorStatus, String> {
     }
     #[cfg(not(all(windows, target_arch = "x86_64")))]
     {
-        Err("CPU-sensortjenesten understøttes kun på Windows (x64)".to_string())
+        Err("CPU-temperatur virker kun på Windows (x64)".to_string())
     }
 }
 
 fn exit_code_message(code: i32) -> &'static str {
     match code {
-        EXIT_NOT_ELEVATED => "Kræver administratorrettigheder for at ændre baggrundstjenesten",
-        EXIT_HELPER_MISSING => "CPU-sensor hjælpefiler blev ikke fundet",
-        EXIT_INTEGRITY_FAILED => "Integritetstjek af CPU-sensor filer fejlede",
-        EXIT_STOP_FAILED => "Kunne ikke stoppe den eksisterende CPU-sensortjeneste",
-        EXIT_COPY_FAILED => "Kunne ikke kopiere CPU-sensor filer til Program Files",
-        EXIT_REGISTER_FAILED => "Kunne ikke registrere Windows-tjenesten",
-        EXIT_START_FAILED => "Tjenesten blev installeret, men kunne ikke startes",
-        EXIT_REMOVE_FAILED => "Kunne ikke fjerne CPU-sensortjenesten helt",
-        EXIT_DRIVER_FAILED => "Kunne ikke installere PawnIO-driveren",
-        _ => "Uventet fejl under konfiguration af CPU-sensortjenesten",
+        EXIT_NOT_ELEVATED => "Ændring af sensoren kræver administratoradgang",
+        EXIT_HELPER_MISSING => "Sensorfilerne mangler. Prøv at geninstallere Open Dock",
+        EXIT_INTEGRITY_FAILED => "Sensorfilerne kunne ikke verificeres. Prøv at geninstallere Open Dock",
+        EXIT_STOP_FAILED => "Sensoren kunne ikke stoppes",
+        EXIT_COPY_FAILED => "Sensorfilerne kunne ikke kopieres",
+        EXIT_REGISTER_FAILED => "Windows kunne ikke registrere sensoren",
+        EXIT_START_FAILED => "Sensoren er installeret, men kunne ikke startes",
+        EXIT_REMOVE_FAILED => "Sensoren kunne ikke fjernes helt",
+        EXIT_DRIVER_FAILED => "PawnIO-driveren kunne ikke installeres",
+        _ => "Sensoren kunne ikke sættes op. Prøv igen",
     }
 }
 

@@ -321,7 +321,7 @@ export function WidgetShell({
           }
         }}
       >
-        {engine === "wallpaper" && !(liveBackdrop && !preview) ? (
+        {engine === "wallpaper" ? (
           <div className="glass-anchor-layer" aria-hidden="true">
             <GlassPlate
               plateRef={plateRef}

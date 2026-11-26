@@ -273,7 +273,7 @@ pub async fn import_local_file(app: &AppHandle, source: &Path) -> Result<CustomW
         "mp4" | "webm" | "mkv" | "mov" | "wmv" => WallpaperKind::Video,
         _ => {
             return Err(AppError::Other(
-                "Filtypen understøttes ikke. Vælg PNG, JPG, WebP, MP4, WebM eller MKV.".into(),
+                "Den filtype virker ikke. Vælg et billede (PNG, JPG, WebP) eller en video (MP4, WebM, MKV).".into(),
             ));
         }
     };
@@ -376,7 +376,7 @@ async fn download_image_atomic(
     }
     let bytes = resp.bytes().await.map_err(AppError::Network)?;
     if bytes.len() < 1024 {
-        return Err(AppError::Other("Downloadet billede er tomt eller defekt".into()));
+        return Err(AppError::Other("Billedfilen er tom eller ufuldstændig. Prøv igen".into()));
     }
     if let Some(parent) = out_path.parent() {
         fs::create_dir_all(parent).map_err(AppError::ConfigWrite)?;

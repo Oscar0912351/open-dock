@@ -344,7 +344,7 @@ export const en: Messages = {
     clickThroughHelp: "Clicks go straight through the widget. Use the control center to change it.",
     revealOnHover: "Show only on hover",
     revealOnHoverHelp:
-      "The widget stays invisible until you hover over its spot. A timer reveals itself when time is up.",
+      "The widget stays invisible until you hover over its spot. A timer stays visible while a timer is active or finished.",
     monitorLabelField: "Display",
     secContent: "Content",
     removeWidget: "Remove widget",
@@ -371,7 +371,7 @@ export const en: Messages = {
     ruleNone: "None (click only)",
     ruleExpandWhenPlaying: "Expand while music plays",
     ruleCollapseWhenIdle: "Hide when music pauses",
-    ruleExpandWhenHighLoad: "Expand under heavy load",
+    ruleExpandWhenHighLoad: "Expand at high CPU or GPU usage",
     ruleExpandWhenActive: "Expand while agents work",
     ruleExpandWhenInCall: "Expand while you're in a call",
     ruleShowOnHover: "Show on hover",

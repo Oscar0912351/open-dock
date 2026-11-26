@@ -425,4 +425,39 @@ describe("showOnHover", () => {
     );
     expect(hover.get("timer")).toBe("expanded");
   });
+
+  it("aktiv timer uden hover viser compact i box og expanded i pillBar", () => {
+    const modules = [
+      mod("weather", "weather", "compact", "fillRemainingSpace"),
+      mod("timer", "timer", "hidden", "showOnHover"),
+    ];
+    const signals = { ...idleSignals, timerActiveModuleIds: new Set(["timer"]) };
+
+    const box = resolveModuleModes(modules, signals, null, "adaptive");
+    expect(box.get("timer")).toBe("compact");
+    expect(box.get("weather")).toBe("expanded");
+
+    const pill = resolveModuleModes(modules, signals, null, "adaptive", true);
+    expect(pill.get("timer")).toBe("expanded");
+  });
+
+  it("færdig aktiv timer uden hover er stadig expanded", () => {
+    const finished = resolveModuleModes(
+      hoverModules(),
+      {
+        ...idleSignals,
+        timerActiveModuleIds: new Set(["timer"]),
+        timerFinishedModuleIds: new Set(["timer"]),
+      },
+      null,
+      "adaptive",
+    );
+    expect(finished.get("timer")).toBe("expanded");
+  });
+
+  it("skjules igen når den aktive timer fjernes og der ikke er hover/fokus", () => {
+    const signals = { ...idleSignals, timerActiveModuleIds: new Set<string>() };
+    const modes = resolveModuleModes(hoverModules(), signals, null, "adaptive");
+    expect(modes.get("timer")).toBe("hidden");
+  });
 });

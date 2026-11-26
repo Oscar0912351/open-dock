@@ -165,6 +165,14 @@ export function ClusterShell({
     setFocusedModuleIds(new Set(set));
   }, []);
 
+  const timerActiveModuleIds = useMemo(() => {
+    const active = new Set<string>();
+    for (const id of timerModuleIds) {
+      if ((timerSnapshots.get(id)?.items.length ?? 0) > 0) active.add(id);
+    }
+    return active;
+  }, [timerModuleIds, timerSnapshots]);
+
   const timerFinishedModuleIds = useMemo(() => {
     const finished = new Set<string>();
     for (const id of timerModuleIds) {
@@ -174,10 +182,12 @@ export function ClusterShell({
     return finished;
   }, [timerModuleIds, timerSnapshots]);
 
-  // Klyngen er pinnet ("vis kun når musen er over") når en timer er færdig
-  // eller et timer-input har fokus.
+  // Klyngen er pinnet ("vis kun når musen er over") når mindst én timer er
+  // sat (kørende, pauset eller færdig) eller et timer-input har fokus.
   const anyTimerPinned =
-    timerFinishedModuleIds.size > 0 || timerModuleIds.some((id) => focusedModuleIds.has(id));
+    timerActiveModuleIds.size > 0 ||
+    timerFinishedModuleIds.size > 0 ||
+    timerModuleIds.some((id) => focusedModuleIds.has(id));
   useEffect(() => {
     onPinVisibleChange?.(anyTimerPinned);
   }, [anyTimerPinned, onPinVisibleChange]);
@@ -292,6 +302,7 @@ export function ClusterShell({
           discordInCall: hasDiscord && discordInCall,
           clusterHover: hoverActive,
           focusedModuleIds,
+          timerActiveModuleIds,
           timerFinishedModuleIds,
         },
         manualExpandedId,
@@ -312,6 +323,7 @@ export function ClusterShell({
       discordInCall,
       hoverActive,
       focusedModuleIds,
+      timerActiveModuleIds,
       timerFinishedModuleIds,
       manualExpandedId,
       cluster.resizeBehavior,

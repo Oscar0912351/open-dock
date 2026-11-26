@@ -10,6 +10,7 @@ export interface ClusterSignals {
   discordInCall: boolean;
   clusterHover?: boolean;
   focusedModuleIds?: ReadonlySet<string>;
+  timerActiveModuleIds?: ReadonlySet<string>;
   timerFinishedModuleIds?: ReadonlySet<string>;
 }
 
@@ -75,7 +76,11 @@ export function resolveModuleModes(
       case "showOnHover": {
         if (signals.timerFinishedModuleIds?.has(mod.id)) {
           mode = "expanded";
-        } else if (signals.clusterHover || signals.focusedModuleIds?.has(mod.id)) {
+        } else if (
+          signals.timerActiveModuleIds?.has(mod.id) ||
+          signals.clusterHover ||
+          signals.focusedModuleIds?.has(mod.id)
+        ) {
           mode = allowHiddenManual ? "expanded" : "compact";
         } else {
           mode = "hidden";

@@ -54,7 +54,7 @@ interface TimerProps {
   editMode: boolean;
   preview?: boolean;
   onAriaChange?: (aria: string) => void;
-  /** Rapporterer om widgetten skal forblive synlig (finished timer eller
+  /** Rapporterer om widgetten skal forblive synlig (sat/aktiv timer eller
       fokuseret input) — bruges af "vis kun når musen er over". */
   onPinVisibleChange?: (pinned: boolean) => void;
 }
@@ -384,6 +384,8 @@ export function TimerRow({ timerId, item, nowMs, size = "m", interactive = true 
     void ipc.timerRemove(timerId, item.id).catch(() => {});
   };
 
+  const actBtnSize = size === "m" ? 16 : 18;
+
   const rowTitle = finished
     ? t("timer.overtime", { time: formatCountdown(overtimeMs) })
     : t("timer.adjustHint");
@@ -406,10 +408,45 @@ export function TimerRow({ timerId, item, nowMs, size = "m", interactive = true 
     >
       <div className="tm-row-top">
         <span className="tm-row-title label trunc">{title}</span>
-        {paused && <span className="tm-row-pause">{icon("pause", 9)}</span>}
+        {paused && (!interactive || size === "s") && (
+          <span className="tm-row-pause">{icon("pause", 9)}</span>
+        )}
         <span className={`tm-row-time value tabular${finished ? " is-overtime" : ""}`}>
           {timeText}
         </span>
+        {!finished && interactive && (
+          <div className="tm-row-actions">
+            <button
+              type="button"
+              className="od-btn tm-act-btn"
+              style={{ "--b": actBtnSize } as CSSProperties}
+              aria-label={paused ? t("timer.resume") : t("timer.pause")}
+              title={paused ? t("timer.resume") : t("timer.pause")}
+              onClick={togglePause}
+            >
+              {paused ? icon("play", 9.5) : icon("pause", 9.5)}
+            </button>
+            <button
+              type="button"
+              className="tm-act-plus"
+              aria-label={t("timer.plus1")}
+              title={t("timer.plus1")}
+              onClick={() => adjust(60_000)}
+            >
+              +{chipLabel(1)}
+            </button>
+            <button
+              type="button"
+              className="od-btn tm-act-btn tm-act-remove"
+              style={{ "--b": actBtnSize } as CSSProperties}
+              aria-label={t("timer.remove")}
+              title={t("timer.remove")}
+              onClick={remove}
+            >
+              {icon("x", 9.5)}
+            </button>
+          </div>
+        )}
       </div>
       {finished ? (
         /* Færdig: ingen progress-bar — i stedet en handlingslinje med
@@ -451,35 +488,6 @@ export function TimerRow({ timerId, item, nowMs, size = "m", interactive = true 
             className={drain ? "is-running" : undefined}
             style={barStyle}
           />
-        </div>
-      )}
-      {!finished && interactive && (
-        <div className="tm-row-actions">
-          <button
-            type="button"
-            className="od-btn"
-            style={{ "--b": 22 } as CSSProperties}
-            aria-label={paused ? t("timer.resume") : t("timer.pause")}
-            onClick={togglePause}
-          >
-            {paused ? icon("play") : icon("pause")}
-          </button>
-          <button
-            type="button"
-            className="tm-chipbtn tm-chipbtn-mini"
-            onClick={() => adjust(60_000)}
-          >
-            {t("timer.plus1")}
-          </button>
-          <button
-            type="button"
-            className="od-btn"
-            style={{ "--b": 22 } as CSSProperties}
-            aria-label={t("timer.remove")}
-            onClick={remove}
-          >
-            {icon("x")}
-          </button>
         </div>
       )}
     </div>
@@ -720,9 +728,9 @@ export function Timer({
     );
   }, [sorted, items.length, nowMs, onAriaChange]);
 
-  // Pin til "vis kun når musen er over": en finished timer (indtil den er
-  // klaret) eller et fokuseret input holder widgetten fremme.
-  const pinnedVisible = sorted.some((item) => item.status === "finished") || entryActive;
+  // Pin til "vis kun når musen er over": mindst én sat timer (kørende,
+  // pauset eller færdig) eller et fokuseret input holder widgetten fremme.
+  const pinnedVisible = items.length > 0 || entryActive;
   useEffect(() => {
     onPinVisibleChange?.(pinnedVisible);
   }, [pinnedVisible, onPinVisibleChange]);

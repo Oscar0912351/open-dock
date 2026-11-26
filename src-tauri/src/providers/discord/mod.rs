@@ -170,7 +170,7 @@ impl AuthInProgressGuard {
     ) -> Result<Self, AppError> {
         if flag.swap(true, Ordering::AcqRel) {
             return Err(AppError::Other(
-                "Forbinder allerede til Discord — fuldfør eller luk vinduet i Discord først".into(),
+                "Er allerede ved at forbinde. Godkend eller luk vinduet i Discord først".into(),
             ));
         }
         if let Some(tx) = cmd_tx.lock().as_ref() {
@@ -408,7 +408,7 @@ impl DiscordProvider {
 
         let clean_id = client_id.trim().to_string();
         if clean_id.is_empty() {
-            return Err(AppError::Other("Client ID må ikke være tomt".into()));
+            return Err(AppError::Other("Indsæt dit Client ID".into()));
         }
 
         let stored = credentials::load_credentials(&cfg_dir);
@@ -725,15 +725,15 @@ impl DiscordProvider {
         let st = self.rpc_status.lock().clone();
         if !st.connected {
             return Err(AppError::Other(
-                "Discord RPC er ikke forbundet lige nu".into(),
+                "Discord er ikke forbundet lige nu".into(),
             ));
         }
         let guard = self.cmd_tx.lock();
         let Some(tx) = guard.as_ref() else {
-            return Err(AppError::Other("Discord-provideren kører ikke".into()));
+            return Err(AppError::Other("Forbindelsen til Discord er afbrudt".into()));
         };
         tx.send(WorkerMsg::VoiceAction(action))
-            .map_err(|_| AppError::Other("Kunne ikke sende voice-handling til Discord".into()))
+            .map_err(|_| AppError::Other("Kunne ikke sende kommandoen til Discord. Prøv igen".into()))
     }
 
     fn record_rpc_error(

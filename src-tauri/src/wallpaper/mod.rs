@@ -266,7 +266,7 @@ pub async fn apply_wallpaper(
         ResolvedTarget::Shader | ResolvedTarget::Video => {
             if specs.is_empty() {
                 return Err(AppError::Other(
-                    "Ingen aktive skærme fundet til animeret baggrund".into(),
+                    "Kunne ikke finde en skærm at vise baggrunden på".into(),
                 ));
             }
             if let Err(err) = sync_specs_and_wait(candidate_wp, specs.clone(), global_pause).await {
@@ -455,7 +455,7 @@ pub async fn import_and_save(app: &AppHandle, source_path: &Path) -> Result<Wall
     catalog
         .into_iter()
         .find(|item| item.id == id)
-        .ok_or_else(|| AppError::Other("Importeret baggrund blev ikke fundet".into()))
+        .ok_or_else(|| AppError::Other("Baggrunden findes ikke længere".into()))
 }
 
 pub fn delete_custom(app: &AppHandle, id: &str) -> Result<Config, AppError> {

@@ -111,7 +111,9 @@
   justify-content: center;
   border-radius: calc(6 * var(--u));
   flex: none;
+  transition: background 140ms var(--e-soft);
 }
+.tm-row:not(.is-finished):hover { background: var(--veil); }
 .tm-row-s { height: calc(32 * var(--u)); padding: 0 calc(4 * var(--u)); gap: calc(3 * var(--u)); }
 .tm-row-m { height: calc(22 * var(--u)); padding: 0 calc(2 * var(--u)); gap: calc(2 * var(--u)); }
 .tm-row-l { height: calc(28 * var(--u)); padding: 0 calc(4 * var(--u)); gap: calc(3 * var(--u)); }
@@ -119,7 +121,7 @@
 .tm-row-top {
   display: flex;
   align-items: center;
-  gap: calc(6 * var(--u));
+  gap: calc(5 * var(--u));
   min-width: 0;
 }
 .tm-row-title { flex: 1; min-width: 0; }
@@ -178,27 +180,92 @@
   min-width: 0;
 }
 
-/* Actions: overlay højre på kørende/pause-rækker — tiden skubbes ikke,
-   knapperne ligger OVENPÅ med eksisterende panel-token bag sig. Synlige
-   ved hover/focus-within. Færdige rækker bruger .tm-row-done i stedet. */
+/* Actions: in-flow knapper til højre for tiden på kørende/pause-rækker —
+   intet overlay, intet overlap. Færdige rækker bruger .tm-row-done. */
 .tm-row-actions {
-  position: absolute;
-  right: calc(2 * var(--u));
-  top: 50%;
-  transform: translateY(-50%);
-  display: flex;
+  display: inline-flex;
   align-items: center;
-  gap: calc(3 * var(--u));
-  padding: calc(1 * var(--u)) calc(2 * var(--u));
-  background: var(--panel);
-  border-radius: calc(8 * var(--u));
-  box-shadow: inset 0 0 0 1px var(--edge-top);
+  gap: calc(2 * var(--u));
+  flex: none;
+  margin-right: calc(-2 * var(--u));
+}
+.tm-act-btn {
+  color: var(--ink-3);
+}
+.tm-row:hover .tm-act-btn,
+.tm-row:focus-within .tm-act-btn {
+  color: var(--ink-2);
+}
+.tm-act-btn:hover {
+  background: var(--panel-2);
+  color: var(--ink-1);
+}
+.tm-act-remove:hover {
+  color: var(--crit);
+}
+.tm-act-plus {
+  appearance: none;
+  border: 0;
+  height: calc(18 * var(--u));
+  padding: 0 calc(4 * var(--u));
+  border-radius: calc(5 * var(--u));
+  background: transparent;
+  color: var(--ink-3);
+  font-family: var(--font-ui);
+  font-size: calc(9.5 * var(--u));
+  font-weight: 550;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  flex: none;
+  transition: background 140ms var(--e-soft), color 140ms var(--e-soft), transform 120ms var(--e-press);
+}
+.tm-row:hover .tm-act-plus,
+.tm-row:focus-within .tm-act-plus {
+  color: var(--ink-2);
+}
+.tm-act-plus:hover {
+  background: var(--panel-2);
+  color: var(--ink-1);
+}
+.tm-act-plus:active {
+  transform: scale(0.94);
+}
+.tm-act-plus:focus-visible {
+  outline: calc(2 * var(--u)) solid var(--ink-1);
+  outline-offset: calc(2 * var(--u));
+}
+.tm-row-m .tm-act-btn { --b: 16; }
+.tm-row-m .tm-act-plus { height: calc(16 * var(--u)); }
+
+/* smal s-størrelse: ikke plads til titel + tid + 3 knapper samtidig —
+   actions bytter plads med tid/pause-ikon ved hover/focus-within. */
+.tm-row-s .tm-row-actions {
+  width: 0;
+  overflow: hidden;
   opacity: 0;
   pointer-events: none;
-  transition: opacity 140ms var(--e-soft);
+  margin-left: calc(-5 * var(--u));
+  margin-right: 0;
 }
-.tm-row:hover .tm-row-actions,
-.tm-row:focus-within .tm-row-actions { opacity: 1; pointer-events: auto; }
+.tm-row-s:not(.is-finished):hover .tm-row-time,
+.tm-row-s:not(.is-finished):focus-within .tm-row-time,
+.tm-row-s:not(.is-finished):hover .tm-row-pause,
+.tm-row-s:not(.is-finished):focus-within .tm-row-pause {
+  display: none;
+}
+.tm-row-s:not(.is-finished):hover .tm-row-actions,
+.tm-row-s:not(.is-finished):focus-within .tm-row-actions {
+  width: auto;
+  overflow: visible;
+  opacity: 1;
+  pointer-events: auto;
+  margin-left: 0;
+  margin-right: calc(-2 * var(--u));
+}
 
 .tm-more { align-self: flex-start; padding-left: calc(2 * var(--u)); flex: none; }
 
