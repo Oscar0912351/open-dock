@@ -142,6 +142,7 @@ impl ConfigStore {
         };
 
         self.schedule_save();
+        crate::desktop::hover::poke();
         if let Some(app) = &self.app {
             if let Err(error) = app.emit("config://changed", &snapshot) {
                 log::warn!("Kunne ikke sende config://changed: {error}");

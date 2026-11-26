@@ -241,7 +241,6 @@ pub enum MediaAction {
     Next,
     Previous,
     Seek {
-        #[ts(type = "number")]
         ms: u64,
     },
     Shuffle,

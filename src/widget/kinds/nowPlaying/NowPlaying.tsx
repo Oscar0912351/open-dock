@@ -106,10 +106,10 @@ export function NowPlaying({
     return () => window.clearTimeout(timer);
   }, [settings.hideWhenIdle, isIdle, onHiddenIdleChange]);
 
-  const anchorPosMs = snapshot ? Math.max(0, Number(snapshot.positionMs)) : 0;
-  const anchorUpdatedAt = snapshot ? Number(snapshot.updatedAt) : undefined;
+  const anchorPosMs = snapshot ? Math.max(0, snapshot.positionMs) : 0;
+  const anchorUpdatedAt = snapshot ? snapshot.updatedAt : undefined;
   const posMs = scrubMs ?? livePosMs;
-  const durMs = Number(snapshot?.durationMs ?? 0);
+  const durMs = snapshot?.durationMs ?? 0;
 
   useEffect(() => {
     if (!onAriaChange) return;

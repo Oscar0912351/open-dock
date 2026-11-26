@@ -256,7 +256,7 @@ export function Discord({ size, preview = false, onAriaChange }: DiscordProps) {
 
   const callMs =
     inCall && data.callStartedAt !== null
-      ? Math.max(0, nowMs - Number(data.callStartedAt))
+      ? Math.max(0, nowMs - data.callStartedAt)
       : null;
   const timerStr = callMs !== null ? formatCallTimer(callMs) : null;
   const participants = data.participants ?? [];

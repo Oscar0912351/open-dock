@@ -1,12 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
-  adjustDuration,
-  clampDuration,
-  durationParts,
   formatCountdown,
+  formatDurationShort,
   formatOvertime,
-  MAX_DURATION_MS,
-  MIN_DURATION_MS,
 } from "./formatDuration";
 
 describe("formatCountdown", () => {
@@ -39,28 +35,20 @@ describe("formatOvertime", () => {
   });
 });
 
-describe("adjustDuration", () => {
-  it("justerer minutter i trin af 1 og 10", () => {
-    expect(adjustDuration(25 * 60_000, "minutes", 1, false)).toBe(26 * 60_000);
-    expect(adjustDuration(25 * 60_000, "minutes", -1, false)).toBe(24 * 60_000);
-    expect(adjustDuration(25 * 60_000, "minutes", 1, true)).toBe(35 * 60_000);
+describe("formatDurationShort", () => {
+  it("viser sekunder under et minut", () => {
+    expect(formatDurationShort(45_000)).toBe("45 s");
+    expect(formatDurationShort(59_000)).toBe("59 s");
   });
 
-  it("justerer sekunder i trin af 5", () => {
-    expect(adjustDuration(60_000, "seconds", 1, false)).toBe(65_000);
-    expect(adjustDuration(60_000, "seconds", -1, false)).toBe(55_000);
+  it("viser minutter og evt. sekunder under en time", () => {
+    expect(formatDurationShort(600_000)).toBe("10 min");
+    expect(formatDurationShort(150_000)).toBe("2 min 30 s");
   });
 
-  it("klamper ved minimum og maksimum", () => {
-    expect(adjustDuration(MIN_DURATION_MS, "seconds", -1, false)).toBe(MIN_DURATION_MS);
-    expect(adjustDuration(MAX_DURATION_MS, "minutes", 1, true)).toBe(MAX_DURATION_MS);
-    expect(clampDuration(0)).toBe(MIN_DURATION_MS);
-  });
-});
-
-describe("durationParts", () => {
-  it("splitter korrekt", () => {
-    expect(durationParts(65_000)).toEqual({ minutes: 1, seconds: 5 });
-    expect(durationParts(25 * 60_000)).toEqual({ minutes: 25, seconds: 0 });
+  it("viser timer og minutter over en time", () => {
+    expect(formatDurationShort(5_400_000)).toBe("1 t 30 min");
+    expect(formatDurationShort(3_600_000)).toBe("1 t");
+    expect(formatDurationShort(7_200_000)).toBe("2 t");
   });
 });

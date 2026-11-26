@@ -137,8 +137,8 @@ export function Weather({ size, theme, settings, locations, onAriaChange }: Weat
   const today = snapshot.daily[0];
   const isStale = status === "stale" || snapshot.stale;
   const updatedTime =
-    Number(snapshot.fetchedAt) > 0
-      ? formatTime(new Date(Number(snapshot.fetchedAt)), tz && tz !== "auto" ? tz : undefined)
+    snapshot.fetchedAt > 0
+      ? formatTime(new Date(snapshot.fetchedAt), tz && tz !== "auto" ? tz : undefined)
       : "";
   const safeWrapClass = isStale ? "is-stale-content" : undefined;
 
@@ -202,7 +202,7 @@ export function Weather({ size, theme, settings, locations, onAriaChange }: Weat
         <div className={`row grow between wx-m-hours${isStale ? " is-stale-content" : ""}`}>
           {nextFiveHours.map((hour, idx) => {
             const hWmo = resolveWmo(hour.code, hour.isDay);
-            const label = idx === 0 ? t("weather.now") : formatHourLabel(Number(hour.t), tz);
+            const label = idx === 0 ? t("weather.now") : formatHourLabel(hour.t, tz);
             return (
               <div
                 key={String(hour.t)}
@@ -244,7 +244,7 @@ export function Weather({ size, theme, settings, locations, onAriaChange }: Weat
 
   const slotBottoms = useDaily
     ? snapshot.daily.map((d) => formatDayShort(d.date))
-    : hourlySlots.map((h, i) => (i === 0 ? t("weather.now") : formatHourLabel(Number(h.t), tz)));
+    : hourlySlots.map((h, i) => (i === 0 ? t("weather.now") : formatHourLabel(h.t, tz)));
 
   return (
     <>

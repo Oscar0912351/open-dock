@@ -36,9 +36,10 @@ import type { WallpaperEngineSettingsPatch } from "./bindings/WallpaperEngineSet
 import type { WallpaperEngineStatus } from "./bindings/WallpaperEngineStatus";
 import type { WallpaperFit } from "./bindings/WallpaperFit";
 import type { WallpaperItem } from "./bindings/WallpaperItem";
-import type { TimerSnapshot } from "./bindings/TimerSnapshot";
+import type { TimerListSnapshot } from "./bindings/TimerListSnapshot";
 import type { WeatherSnapshot } from "./bindings/WeatherSnapshot";
 import type { WidgetBoot } from "./bindings/WidgetBoot";
+import type { WidgetHover } from "./bindings/WidgetHover";
 import type { WidgetGlassState } from "./bindings/WidgetGlassState";
 import type { WidgetInstance } from "./bindings/WidgetInstance";
 import type { WidgetKind } from "./bindings/WidgetKind";
@@ -115,15 +116,14 @@ export const ipc = {
   weatherLocationRemove: (id: string) => invoke<Config>("weather_location_remove", { id }),
   weatherRefresh: (locationId: string) => invoke<void>("weather_refresh", { locationId }),
   mediaSelectSource: (source: string | null) => invoke<void>("media_select_source", { source }),
-  timerGet: (id: string) => invoke<TimerSnapshot>("timer_get", { id }),
-  timerStart: (id: string, durationMs?: number) =>
-    invoke<void>("timer_start", { id, durationMs: durationMs ?? null }),
-  timerPause: (id: string) => invoke<void>("timer_pause", { id }),
-  timerResume: (id: string) => invoke<void>("timer_resume", { id }),
-  timerReset: (id: string) => invoke<void>("timer_reset", { id }),
-  timerDismiss: (id: string) => invoke<void>("timer_dismiss", { id }),
-  timerSnooze: (id: string, minutes: number) => invoke<void>("timer_snooze", { id, minutes }),
-  timerSkip: (id: string) => invoke<void>("timer_skip", { id }),
+  timerGet: (id: string) => invoke<TimerListSnapshot>("timer_get", { id }),
+  timerAdd: (id: string, label: string, durationMs: number) =>
+    invoke<void>("timer_add", { id, label, durationMs }),
+  timerPause: (id: string, item: string) => invoke<void>("timer_pause", { id, item }),
+  timerResume: (id: string, item: string) => invoke<void>("timer_resume", { id, item }),
+  timerAdjust: (id: string, item: string, deltaMs: number) =>
+    invoke<void>("timer_adjust", { id, item, deltaMs }),
+  timerRemove: (id: string, item: string) => invoke<void>("timer_remove", { id, item }),
   timerPreviewSound: (sound: string, volume: number) =>
     invoke<void>("timer_preview_sound", { sound, volume }),
   noteLoad: (id: string) => invoke<string>("note_load", { id }),
@@ -206,6 +206,8 @@ export const on = {
     listen<WidgetGlassState>("widget://glass", (event) => callback(event.payload)),
   widgetRemoved: (callback: (instance: WidgetInstance) => void) =>
     listen<WidgetInstance>("widget://removed", (event) => callback(event.payload)),
+  widgetHover: (callback: (state: WidgetHover) => void) =>
+    listen<WidgetHover>("widget://hover", (event) => callback(event.payload)),
   navigate: (callback: (route: string) => void) =>
     listen<string>("app://navigate", (event) => callback(event.payload)),
   media: (callback: (snapshot: MediaSnapshot) => void) =>
@@ -218,8 +220,8 @@ export const on = {
     listen<DiscordSnapshot>("provider://discord", (event) => callback(event.payload)),
   discordRpcStatus: (callback: (status: DiscordRpcStatus) => void) =>
     listen<DiscordRpcStatus>("discord://rpc-status", (event) => callback(event.payload)),
-  timerState: (callback: (snapshot: TimerSnapshot) => void) =>
-    listen<TimerSnapshot>("timer://state", (event) => callback(event.payload)),
+  timerState: (callback: (snapshot: TimerListSnapshot) => void) =>
+    listen<TimerListSnapshot>("timer://state", (event) => callback(event.payload)),
   agents: (callback: (snapshot: AgentsSnapshot) => void) =>
     listen<AgentsSnapshot>("provider://agents", (event) => callback(event.payload)),
   wallpaperStatus: (callback: (status: WallpaperEngineStatus) => void) =>

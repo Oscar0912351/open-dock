@@ -15,6 +15,7 @@ pub fn migrate(value: serde_json::Value) -> Result<Config, String> {
 
     let mut value = value;
     strip_legacy_focus(&mut value);
+    backfill_reveal_on_hover(&mut value);
     map_legacy_layers(&mut value);
     let mut config = match version {
         1 | 2 | 3 => serde_json::from_value::<Config>(value).map_err(|error| error.to_string())?,
@@ -102,6 +103,23 @@ fn strip_legacy_focus(value: &mut serde_json::Value) {
     });
 }
 
+/// `revealOnHover` er tilføjet med Timer 3.0. Eksisterende timere skal have
+/// det slået TIL som standard, alle andre widgets FRA. Manglende nøgle
+/// udfyldes på JSON-niveau før typet parsing, så eksplicit gemte
+/// true/false-værdier bevares.
+fn backfill_reveal_on_hover(value: &mut serde_json::Value) {
+    let Some(widgets) = value.get_mut("widgets").and_then(|w| w.as_array_mut()) else {
+        return;
+    };
+    for widget in widgets.iter_mut() {
+        if widget.get("revealOnHover").is_none() {
+            widget["revealOnHover"] = serde_json::json!(
+                widget.get("kind").and_then(|k| k.as_str()) == Some("timer")
+            );
+        }
+    }
+}
+
 /// `normal`-laget er fjernet i v3 – widgets kan nu kun ligge på skrivebordet
 /// eller altid øverst. Gamle `normal`-widgets mappes til skrivebordslaget.
 fn map_legacy_layers(value: &mut serde_json::Value) {
@@ -137,5 +155,30 @@ pub fn sanitize(config: &mut Config) {
         if !widget.kind.allows_size(widget.size) {
             widget.size = widget.kind.default_size();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn backfill_reveal_on_hover_giver_timer_true_og_bevarer_explicitte_vaerdier() {
+        let mut value = serde_json::json!({
+            "widgets": [
+                { "kind": "timer" },
+                { "kind": "clock" },
+                { "kind": "timer", "revealOnHover": false },
+                { "kind": "note", "revealOnHover": true },
+                { "kind": "system" }
+            ]
+        });
+        backfill_reveal_on_hover(&mut value);
+        let widgets = value["widgets"].as_array().unwrap();
+        assert_eq!(widgets[0]["revealOnHover"], serde_json::json!(true));
+        assert_eq!(widgets[1]["revealOnHover"], serde_json::json!(false));
+        assert_eq!(widgets[2]["revealOnHover"], serde_json::json!(false));
+        assert_eq!(widgets[3]["revealOnHover"], serde_json::json!(true));
+        assert_eq!(widgets[4]["revealOnHover"], serde_json::json!(false));
     }
 }

@@ -14,7 +14,6 @@ import {
   SkipBack,
   SkipForward,
   Hourglass,
-  ArrowCounterClockwise,
   SpeakerSlash,
   Square,
 } from "@phosphor-icons/react";
@@ -88,10 +87,16 @@ import { resolveNowPlayingSettings } from "../kinds/nowPlaying/NowPlaying";
 import { formatTrackTime, Progress } from "../kinds/nowPlaying/Progress";
 import { useLiveMediaPosition } from "../kinds/nowPlaying/useLiveMediaPosition";
 import { formatCountdown, formatOvertime } from "../kinds/timer/formatDuration";
-import { useTimer } from "../kinds/timer/useTimer";
+import { sortTimers } from "../kinds/timer/sortTimers";
+import {
+  TimerInput,
+  TimerRow,
+  timerItemTitle,
+  timerRestMs,
+} from "../kinds/timer/Timer";
+import { useTimers } from "../kinds/timer/useTimers";
 import "../kinds/timer/timer.css";
 import { Sparkline } from "../kinds/system/Sparkline";
-import { Ring } from "../kinds/system/Ring";
 import { resolveSystemSettings } from "../kinds/system/System";
 import { WaveChart } from "../kinds/weather/WaveChart";
 import { resolveWeatherSettings } from "../kinds/weather/Weather";
@@ -112,6 +117,9 @@ export interface ClusterModuleSharedData {
   discord: { status: string; data: DiscordSnapshot | null };
   agents: { status: string; data: AgentsSnapshot | null };
   agentsNowMs: number;
+  /** Timer-moduler rapporterer pin-tilstand hit; shell aggregerer til
+      onPinVisibleChange ("vis kun når musen er over"). */
+  timerPin?: (moduleId: string, pinned: boolean) => void;
 }
 
 interface ModuleCardProps {
@@ -135,66 +143,48 @@ function viewTransitionStyle(id: string, preview?: boolean): CSSProperties | und
 const TimerClusterMod = memo(function TimerClusterMod({
   mod,
   mode,
+  widgetId,
+  editMode,
   preview,
+  timerPin,
   onToggleExpand,
 }: {
   mod: ClusterModule;
   mode: "compact" | "expanded";
+  widgetId: string;
+  editMode: boolean;
   preview?: boolean;
+  timerPin?: (moduleId: string, pinned: boolean) => void;
   onToggleExpand: (id: string) => void;
 }) {
   const onClick = (e: MouseEvent<HTMLDivElement>) => {
     if (!shouldIgnoreExpand(e)) onToggleExpand(mod.id);
   };
-  const { snapshot, nowMs } = useTimer(mod.id, !preview);
-  const [note, setNote] = useState("");
-  const noteLoaded = useRef(false);
+  const { snapshot, nowMs } = useTimers(preview ? null : mod.id, !preview);
+  const items = useMemo(() => snapshot?.items ?? [], [snapshot]);
+  const sorted = useMemo(() => sortTimers(items), [items]);
+  const next = sorted[0];
+  const [inputText, setInputText] = useState("");
+  const [inputEditing, setInputEditing] = useState(false);
+  const interactive = !editMode && !preview;
+  const full = items.length >= 8;
 
+  // Pin til "vis kun når musen er over": finished timer eller fokuseret input.
+  const pinned = Boolean(next?.status === "finished") || inputEditing;
   useEffect(() => {
-    if (preview || noteLoaded.current) return;
-    noteLoaded.current = true;
-    void ipc
-      .noteLoad(mod.id)
-      .then((content) => setNote(content.split(/\r?\n/)[0] ?? ""))
-      .catch(() => {});
-  }, [mod.id, preview]);
-
-  const saveNote = (text: string) => {
-    const clipped = text.replace(/\r?\n/g, " ").slice(0, 120);
-    setNote(clipped);
-    if (!preview) void ipc.noteSave(mod.id, clipped).catch(() => {});
-  };
-
-  const status = snapshot?.status ?? "idle";
-  const finished = status === "finished";
-  const remaining =
-    snapshot && status === "running" && snapshot.endsAt
-      ? Math.max(0, Number(snapshot.endsAt) - nowMs)
-      : snapshot
-        ? Math.max(0, Number(snapshot.remainingMs))
-        : 0;
-  const total = snapshot ? Math.max(1, Number(snapshot.totalMs)) : 1;
-  const overtime =
-    finished && snapshot?.finishedAt ? nowMs - Number(snapshot.finishedAt) : 0;
-  const progress = status === "running" ? Math.min(100, Math.max(0, (remaining / total) * 100)) : finished ? 0 : status === "paused" ? Math.min(100, (remaining / total) * 100) : 0;
-  const timeText = finished ? formatOvertime(overtime) : formatCountdown(remaining);
-
-  const ringEl = (ringSize: number, stroke: number, timePx: number) => (
-    <span className="tm-cring" aria-hidden="true">
-      <Ring size={ringSize} stroke={stroke} pct={progress}>
-        {timePx > 0 && status !== "idle" ? (
-          <span
-            className={`tm-ctime${finished ? " is-overtime" : ""}`}
-            style={{ fontSize: `calc(${timePx} * var(--u))` }}
-          >
-            {timeText}
-          </span>
-        ) : null}
-      </Ring>
-    </span>
-  );
+    timerPin?.(mod.id, pinned);
+  }, [timerPin, mod.id, pinned]);
+  useEffect(() => () => timerPin?.(mod.id, false), [timerPin, mod.id]);
 
   if (mode === "compact") {
+    const finished = next?.status === "finished";
+    const rest = next ? timerRestMs(next, nowMs) : 0;
+    const overtimeMs = next?.finishedAt != null ? Math.max(0, nowMs - next.finishedAt) : 0;
+    const timeText = !next
+      ? ""
+      : finished
+        ? formatOvertime(overtimeMs)
+        : formatCountdown(rest);
     return (
       <div
         className={`c-mod is-compact c-mod-timer${finished ? " is-finished" : ""}`}
@@ -203,23 +193,21 @@ const TimerClusterMod = memo(function TimerClusterMod({
       >
         <div className="row between">
           <div className="row g8">
-            {status === "idle" ? (
-              <Hourglass size="calc(15 * var(--u))" aria-hidden="true" />
+            <Hourglass size="calc(15 * var(--u))" aria-hidden="true" />
+            {!next ? (
+              <>
+                <span className="label">{t("timer.name")}</span>
+                <span className="micro">{t("timer.empty")}</span>
+              </>
             ) : (
-              ringEl(20, 2.4, 0)
+              <>
+                <span className="label trunc">{timerItemTitle(next)}</span>
+                <span className={`value tabular${finished ? " tm-overtime-ink" : ""}`}>
+                  {timeText}
+                </span>
+                {sorted.length > 1 && <span className="micro">+{sorted.length - 1}</span>}
+              </>
             )}
-            {status === "idle" ? (
-              <span className="label">{t("timer.name")}</span>
-            ) : (
-              <span className={`value tabular${finished ? " tm-overtime-ink" : ""}`}>{timeText}</span>
-            )}
-            {status === "paused" && <span className="micro">{t("timer.paused")}</span>}
-            {snapshot?.segment === "break" || snapshot?.segment === "longBreak" ? (
-              <span className="micro">
-                {snapshot.segment === "break" ? t("timer.break") : t("timer.longBreak")}
-              </span>
-            ) : null}
-            {note && status !== "idle" ? <span className="micro trunc">{note}</span> : null}
           </div>
           <HintBadge label={t("cluster.more")} />
         </div>
@@ -227,110 +215,37 @@ const TimerClusterMod = memo(function TimerClusterMod({
     );
   }
 
-  // Expanded (76u): ring 52u med tid til venstre, knapper + note til højre.
+  // Expanded (76u): næste TimerRow med handlinger + input (focusable via
+  // widget-vinduets id — samme mønster som NoteClusterMod).
+  const finished = next?.status === "finished";
   return (
     <div
       className={`c-mod is-exp c-mod-timer-exp${finished ? " is-finished" : ""}`}
       style={viewTransitionStyle(mod.id, preview)}
       onClick={onClick}
     >
-      <div className="row g10 tm-cluster-exp">
-        {ringEl(52, 4.5, 10)}
-        <div className="col g6 grow">
-          {status === "idle" ? (
-            <div className="row g6" data-no-expand>
-              <span className="label grow">{t("timer.name")}</span>
-              <button
-                type="button"
-                className="od-btn primary"
-                aria-label={t("timer.start")}
-                disabled={preview}
-                onClick={() => void ipc.timerStart(mod.id).catch(() => {})}
-              >
-                <Play size="calc(12 * var(--u))" weight="fill" aria-hidden="true" />
-              </button>
-            </div>
-          ) : (
-            <div className="row g4" data-no-expand>
-              {finished ? (
-                <>
-                  <button
-                    type="button"
-                    className="tm-chipbtn tm-chipbtn-mini"
-                    disabled={preview}
-                    onClick={() => void ipc.timerSnooze(mod.id, 5).catch(() => {})}
-                  >
-                    {t("timer.snooze")}
-                  </button>
-                  <button
-                    type="button"
-                    className="od-btn"
-                    aria-label={t("timer.stop")}
-                    disabled={preview}
-                    onClick={() => void ipc.timerDismiss(mod.id).catch(() => {})}
-                  >
-                    <Square size="calc(11 * var(--u))" weight="fill" aria-hidden="true" />
-                  </button>
-                </>
-              ) : (
-                <>
-                  {status === "running" ? (
-                    <button
-                      type="button"
-                      className="od-btn"
-                      aria-label={t("timer.pause")}
-                      disabled={preview}
-                      onClick={() => void ipc.timerPause(mod.id).catch(() => {})}
-                    >
-                      <Pause size="calc(12 * var(--u))" weight="fill" aria-hidden="true" />
-                    </button>
-                  ) : (
-                    <button
-                      type="button"
-                      className="od-btn primary"
-                      aria-label={t("timer.resume")}
-                      disabled={preview}
-                      onClick={() => void ipc.timerResume(mod.id).catch(() => {})}
-                    >
-                      <Play size="calc(12 * var(--u))" weight="fill" aria-hidden="true" />
-                    </button>
-                  )}
-                  <button
-                    type="button"
-                    className="od-btn"
-                    aria-label={t("timer.reset")}
-                    disabled={preview}
-                    onClick={() => void ipc.timerReset(mod.id).catch(() => {})}
-                  >
-                    <ArrowCounterClockwise size="calc(12 * var(--u))" aria-hidden="true" />
-                  </button>
-                  {(snapshot?.segment === "focus" || snapshot?.segment === "break") && (
-                    <button
-                      type="button"
-                      className="od-btn"
-                      aria-label={t("timer.skip")}
-                      disabled={preview}
-                      onClick={() => void ipc.timerSkip(mod.id).catch(() => {})}
-                    >
-                      <SkipForward size="calc(12 * var(--u))" weight="fill" aria-hidden="true" />
-                    </button>
-                  )}
-                </>
-              )}
-            </div>
-          )}
-          <input
-            className="tm-note tm-note-inline"
-            type="text"
-            value={note}
-            placeholder={t("timer.notePlaceholder")}
-            maxLength={120}
-            disabled={preview}
-            data-no-expand
-            onChange={(e) => saveNote(e.target.value)}
-            onClick={(e) => e.stopPropagation()}
+      <div className="col g6 tm-cluster-exp">
+        {next ? (
+          <TimerRow
+            timerId={mod.id}
+            item={next}
+            nowMs={nowMs}
+            size="c"
+            interactive={interactive}
           />
-        </div>
+        ) : (
+          <span className="micro">{t("timer.empty")}</span>
+        )}
+        <TimerInput
+          value={inputText}
+          onValueChange={setInputText}
+          timerId={mod.id}
+          focusId={widgetId}
+          placeholder={full ? t("timer.full") : t("timer.placeholderShort")}
+          disabled={!interactive || full}
+          showHint
+          onEditingChange={setInputEditing}
+        />
       </div>
     </div>
   );
@@ -426,7 +341,10 @@ export function ClusterModuleView({ mod, mode, shared, onToggleExpand }: ModuleC
         <TimerClusterMod
           mod={mod}
           mode={mode}
+          widgetId={shared.widgetId}
+          editMode={shared.editMode}
           preview={shared.preview}
+          timerPin={shared.timerPin}
           onToggleExpand={onToggleExpand}
         />
       );
@@ -551,9 +469,9 @@ const MediaClusterMod = memo(function MediaClusterMod({
   const isAnimating = playing && !pausedApp && !preview;
   const coverUrl = media?.artUrl ? toAssetUrl(media.artUrl) : "";
   const sourceArg = settings.preferredSource === "auto" ? null : settings.preferredSource;
-  const durMs = media ? Math.max(0, Number(media.durationMs)) : 0;
-  const anchorPos = media ? Math.max(0, Number(media.positionMs)) : 0;
-  const anchorUpdatedAt = media ? Number(media.updatedAt) : undefined;
+  const durMs = media ? Math.max(0, media.durationMs) : 0;
+  const anchorPos = media ? Math.max(0, media.positionMs) : 0;
+  const anchorUpdatedAt = media ? media.updatedAt : undefined;
   const displayPosMs = scrubMs ?? livePosMs;
 
   const title = media?.title || t("media.empty.title");
@@ -857,10 +775,10 @@ const SystemClusterMod = memo(function SystemClusterMod({
   };
   const settings = resolveSystemSettings(mod.settings);
   const cpuPct = sample ? Math.round(sample.cpu.usage) : 0;
-  const memPct = sample && Number(sample.mem.totalBytes) > 0
-    ? Math.round((Number(sample.mem.usedBytes) / Number(sample.mem.totalBytes)) * 100)
+  const memPct = sample && sample.mem.totalBytes > 0
+    ? Math.round((sample.mem.usedBytes / sample.mem.totalBytes) * 100)
     : 0;
-  const memGb = sample ? formatBytes(Number(sample.mem.usedBytes)) : t("state.dash");
+  const memGb = sample ? formatBytes(sample.mem.usedBytes) : t("state.dash");
   const gpuSupported = caps?.gpu ?? Boolean(sample?.gpu);
   const gpuPct = sample?.gpu?.usage !== null && sample?.gpu?.usage !== undefined
     ? Math.round(sample.gpu.usage)
@@ -1021,7 +939,7 @@ const WeatherClusterMod = memo(function WeatherClusterMod({
       .map((idx, i) => {
         if (i === 0) return t("weather.now");
         const item = hours[idx];
-        return item ? formatTime(new Date(Number(item.t)), tz).slice(0, 2) : "";
+        return item ? formatTime(new Date(item.t), tz).slice(0, 2) : "";
       });
 
     return (
@@ -1127,7 +1045,7 @@ const DiscordClusterMod = memo(function DiscordClusterMod({
 
   const callMs =
     inCall && data?.callStartedAt != null
-      ? Math.max(0, nowMs - Number(data.callStartedAt))
+      ? Math.max(0, nowMs - data.callStartedAt)
       : null;
   const timerStr = callMs !== null ? formatCallTimer(callMs) : null;
 

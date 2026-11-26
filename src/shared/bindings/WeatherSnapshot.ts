@@ -3,7 +3,7 @@ import type { WeatherCurrent } from "./WeatherCurrent";
 import type { WeatherDaily } from "./WeatherDaily";
 import type { WeatherHourly } from "./WeatherHourly";
 
-export type WeatherSnapshot = { locationId: string, fetchedAt: bigint, stale: boolean, error: string | null, current: WeatherCurrent | null, hourly: Array<WeatherHourly>, daily: Array<WeatherDaily>, 
+export type WeatherSnapshot = { locationId: string, fetchedAt: number, stale: boolean, error: string | null, current: WeatherCurrent | null, hourly: Array<WeatherHourly>, daily: Array<WeatherDaily>, 
 /**
  * Kilde-attribution vist i widgetten ("Yr.no" / "Open-Meteo").
  */

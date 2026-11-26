@@ -9,7 +9,7 @@ export function useSystemHistory(
   latestSample: SystemSample | null = null,
 ): SystemSample[] {
   const [history, setHistory] = useState<SystemSample[]>([]);
-  const [lastAppendedT, setLastAppendedT] = useState<bigint | null>(null);
+  const [lastAppendedT, setLastAppendedT] = useState<number | null>(null);
 
   useEffect(() => {
     if (!enabled) return;

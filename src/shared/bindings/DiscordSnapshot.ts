@@ -2,4 +2,4 @@
 import type { DiscordConnectionMode } from "./DiscordConnectionMode";
 import type { DiscordParticipant } from "./DiscordParticipant";
 
-export type DiscordSnapshot = { running: boolean, inCall: boolean, mode: DiscordConnectionMode, channelName: string | null, participants: Array<DiscordParticipant>, selfMute: boolean, selfDeaf: boolean, canControlVoice: boolean, callStartedAt: bigint | null, updatedAt: bigint, };
+export type DiscordSnapshot = { running: boolean, inCall: boolean, mode: DiscordConnectionMode, channelName: string | null, participants: Array<DiscordParticipant>, selfMute: boolean, selfDeaf: boolean, canControlVoice: boolean, callStartedAt: number | null, updatedAt: number, };

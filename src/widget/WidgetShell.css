@@ -113,11 +113,14 @@
 }
 .widget-root {
   opacity: 1;
-  transition: opacity 420ms var(--e-soft);
+  /* Asymmetrisk fade: reveal 180 ms (tilstanden UDEN klassen), skjul 420 ms
+     (tilstanden MED .is-hidden-idle). */
+  transition: opacity 180ms var(--e-soft);
 }
 .widget-root.is-hidden-idle {
   opacity: 0;
   pointer-events: none;
+  transition: opacity 420ms var(--e-soft);
 }
 .glass-plate {
   position: absolute;

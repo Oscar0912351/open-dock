@@ -55,6 +55,7 @@ pub fn set_edit_mode(app: &AppHandle, on: bool) -> Result<(), AppError> {
         log::warn!("Kunne ikke sende edit://mode: {error}");
     }
     super::fullscreen::trigger_check();
+    super::hover::poke();
     crate::tray::sync(app);
 
     Ok(())

@@ -3,6 +3,7 @@ pub mod backdrop_capture;
 pub mod drag;
 pub mod fullscreen;
 pub mod glass;
+pub mod hover;
 pub mod monitors;
 pub mod plate;
 pub mod showdesktop;
@@ -103,6 +104,7 @@ pub fn install(app: &AppHandle) -> Result<(), AppError> {
     wallpaper::install(app.clone());
     monitors::start_poll(app.clone());
     fullscreen::start(app.clone());
+    hover::start(app.clone());
     Ok(())
 }
 

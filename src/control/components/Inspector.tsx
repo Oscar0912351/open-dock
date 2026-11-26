@@ -412,6 +412,20 @@ function WidgetEditorDrawer({
               <span className="cc-field-help">{t("desktop.clickThroughHelp")}</span>
             </div>
 
+            <div className="cc-insp-field">
+              <div className="cc-insp-field-head">
+                <span className="cc-field-label">{t("desktop.revealOnHover")}</span>
+                <Switch
+                  checked={instance.revealOnHover}
+                  ariaLabel={t("desktop.revealOnHover")}
+                  onChange={(revealOnHover) =>
+                    void ipc.widgetUpdate(instance.id, { revealOnHover })
+                  }
+                />
+              </div>
+              <span className="cc-field-help">{t("desktop.revealOnHoverHelp")}</span>
+            </div>
+
             {monitorOptions.length > 1 && (
               <div className="cc-insp-field">
                 <span className="cc-field-label">{t("desktop.monitorLabelField")}</span>

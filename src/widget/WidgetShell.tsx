@@ -23,7 +23,7 @@ import "./WidgetShell.css";
 export type ShellSize = WidgetSize;
 export type ShellTheme = ThemeId;
 
-const SIZES: Record<WidgetSize, { width: number; height: number; paddingX: number; paddingY: number }> = {
+export const WIDGET_SIZES: Record<WidgetSize, { width: number; height: number; paddingX: number; paddingY: number }> = {
   pill: { width: 204, height: 48, paddingX: 12, paddingY: 8 },
   s: { width: 132, height: 132, paddingX: 14, paddingY: 14 },
   m: { width: 276, height: 132, paddingX: 14, paddingY: 14 },
@@ -141,7 +141,7 @@ export function WidgetShell({
   children,
 }: WidgetShellProps) {
   const contentRef = useRef<HTMLDivElement>(null);
-  const dimensions = SIZES[size];
+  const dimensions = WIDGET_SIZES[size];
   const rBase = clusterFrame ? CLUSTER_RADII[radius] : RADII[radius][size];
   const scrimAlpha = computeScrimAlpha(theme, glass?.luma ?? 0.15, autoContrast);
 

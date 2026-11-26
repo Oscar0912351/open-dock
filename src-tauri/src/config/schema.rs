@@ -284,8 +284,8 @@ pub enum WidgetSize {
 impl WidgetKind {
     pub fn allowed_sizes(self) -> &'static [WidgetSize] {
         match self {
-            Self::Clock | Self::Discord | Self::Timer => &[WidgetSize::Pill, WidgetSize::S, WidgetSize::M],
-            Self::NowPlaying | Self::System => {
+            Self::Clock | Self::Discord => &[WidgetSize::Pill, WidgetSize::S, WidgetSize::M],
+            Self::Timer | Self::NowPlaying | Self::System => {
                 &[WidgetSize::Pill, WidgetSize::S, WidgetSize::M, WidgetSize::L]
             }
             Self::Weather | Self::Note => &[WidgetSize::S, WidgetSize::M, WidgetSize::L],
@@ -609,6 +609,8 @@ pub struct WidgetInstance {
     pub layer: Layer,
     pub click_through: bool,
     #[serde(default)]
+    pub reveal_on_hover: bool,
+    #[serde(default)]
     pub theme_override: Option<ThemeId>,
     #[serde(default)]
     pub glass_override: Option<f32>,
@@ -652,6 +654,9 @@ impl WidgetInstance {
         if let Some(click_through) = patch.click_through {
             self.click_through = click_through;
         }
+        if let Some(reveal_on_hover) = patch.reveal_on_hover {
+            self.reveal_on_hover = reveal_on_hover;
+        }
         patch.theme_override.apply_to(&mut self.theme_override);
         patch
             .glass_override
@@ -676,6 +681,7 @@ pub struct WidgetPatch {
     pub scale: Option<f32>,
     pub layer: Option<Layer>,
     pub click_through: Option<bool>,
+    pub reveal_on_hover: Option<bool>,
     pub theme_override: PatchValue<ThemeId>,
     pub glass_override: PatchValue<f32>,
     pub glass_override_engine: PatchValue<GlassEngine>,

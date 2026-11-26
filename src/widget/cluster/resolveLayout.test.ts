@@ -245,7 +245,7 @@ function makeAgentSession(id: string, withTodo = false): AgentSession {
     todo: withTodo ? { done: 2, total: 4, current: "Step" } : null,
     pid: null,
     processRunning: true,
-    lastActiveMs: BigInt(1000),
+    lastActiveMs: 1000,
   };
 }
 
@@ -299,8 +299,8 @@ function makeDiscordSnapshot(
     selfMute: false,
     selfDeaf: false,
     canControlVoice,
-    callStartedAt: inCall ? BigInt(1000) : null,
-    updatedAt: BigInt(2000),
+    callStartedAt: inCall ? 1000 : null,
+    updatedAt: 2000,
   };
 }
 

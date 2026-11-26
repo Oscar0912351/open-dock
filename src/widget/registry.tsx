@@ -1,12 +1,25 @@
+import type { ReactNode } from "react";
+import type { Location } from "../shared/bindings/Location";
+import type { ThemeId } from "../shared/bindings/ThemeId";
 import type { WidgetKind } from "../shared/bindings/WidgetKind";
 import type { WidgetSize } from "../shared/bindings/WidgetSize";
-import { defaultAgentsSettings } from "./kinds/agents/Agents";
-import { defaultClockSettings } from "./kinds/clock/Clock";
-import { defaultNoteSettings } from "./kinds/note/Note";
-import { defaultTimerSettings } from "./kinds/timer/Timer";
-import { defaultNowPlayingSettings } from "./kinds/nowPlaying/NowPlaying";
-import { defaultSystemSettings } from "./kinds/system/System";
-import { defaultWeatherSettings } from "./kinds/weather/Weather";
+import { Agents, defaultAgentsSettings, resolveAgentsSettings } from "./kinds/agents/Agents";
+import {
+  Clock,
+  defaultClockSettings,
+  resolveClockSettings,
+  type ClockSize,
+} from "./kinds/clock/Clock";
+import { Discord } from "./kinds/discord/Discord";
+import { Note, defaultNoteSettings, resolveNoteSettings } from "./kinds/note/Note";
+import { Timer, defaultTimerSettings, resolveTimerSettings } from "./kinds/timer/Timer";
+import {
+  NowPlaying,
+  defaultNowPlayingSettings,
+  resolveNowPlayingSettings,
+} from "./kinds/nowPlaying/NowPlaying";
+import { System, defaultSystemSettings, resolveSystemSettings } from "./kinds/system/System";
+import { Weather, defaultWeatherSettings, resolveWeatherSettings } from "./kinds/weather/Weather";
 
 export type WidgetSettingField =
   | {
@@ -47,6 +60,26 @@ export type WidgetSettingField =
 
 export type FreeWidgetKind = Exclude<WidgetKind, "cluster">;
 
+/** Alt hvad en widget-komponent kan få brug for — samles ét sted pr. site
+    (widget-vindue eller kontrolcenter-preview) og gives videre til registryens
+    render-funktion, så kind→komponent-afhængigheden kun findes ét sted. */
+export interface WidgetRenderContext {
+  id: string;
+  /** Rå størrelse fra instansen — renderWidget clamper til allowedSizes før render. */
+  size: WidgetSize;
+  theme: ThemeId;
+  settings: Record<string, unknown>;
+  now: Date;
+  editMode: boolean;
+  preview: boolean;
+  pausedApp: boolean;
+  locations: Location[];
+  onAriaChange?: (aria: string) => void;
+  onAmbientChange?: (rgb: [number, number, number] | null) => void;
+  onHiddenIdleChange?: (hidden: boolean) => void;
+  onPinVisibleChange?: (pinned: boolean) => void;
+}
+
 export interface WidgetMeta {
   kind: FreeWidgetKind;
   name: string;
@@ -55,6 +88,7 @@ export interface WidgetMeta {
   defaultSize: WidgetSize;
   defaultSettings: Record<string, unknown>;
   settingsSchema: readonly WidgetSettingField[];
+  render: (ctx: WidgetRenderContext) => ReactNode;
 }
 
 export const WIDGET_REGISTRY: Record<FreeWidgetKind, WidgetMeta> = {
@@ -65,6 +99,14 @@ export const WIDGET_REGISTRY: Record<FreeWidgetKind, WidgetMeta> = {
     allowedSizes: ["pill", "s", "m"],
     defaultSize: "m",
     defaultSettings: { ...defaultClockSettings },
+    render: ({ now, settings, size, theme }) => (
+      <Clock
+        now={now}
+        settings={resolveClockSettings(settings)}
+        size={size as ClockSize}
+        theme={theme}
+      />
+    ),
     settingsSchema: [
       {
         key: "style",
@@ -89,6 +131,25 @@ export const WIDGET_REGISTRY: Record<FreeWidgetKind, WidgetMeta> = {
     allowedSizes: ["pill", "s", "m", "l"],
     defaultSize: "m",
     defaultSettings: { ...defaultNowPlayingSettings },
+    render: ({
+      size,
+      theme,
+      settings,
+      pausedApp,
+      onAmbientChange,
+      onHiddenIdleChange,
+      onAriaChange,
+    }) => (
+      <NowPlaying
+        size={size}
+        theme={theme}
+        settings={resolveNowPlayingSettings(settings)}
+        pausedApp={pausedApp}
+        onAmbientChange={onAmbientChange}
+        onHiddenIdleChange={onHiddenIdleChange}
+        onAriaChange={onAriaChange}
+      />
+    ),
     settingsSchema: [
       {
         key: "preferredSource",
@@ -111,6 +172,14 @@ export const WIDGET_REGISTRY: Record<FreeWidgetKind, WidgetMeta> = {
     allowedSizes: ["pill", "s", "m", "l"],
     defaultSize: "m",
     defaultSettings: { ...defaultSystemSettings },
+    render: ({ size, theme, settings, onAriaChange }) => (
+      <System
+        size={size}
+        theme={theme}
+        settings={resolveSystemSettings(settings)}
+        onAriaChange={onAriaChange}
+      />
+    ),
     settingsSchema: [
       { key: "metrics", type: "metrics", label: "Målinger" },
       {
@@ -137,6 +206,15 @@ export const WIDGET_REGISTRY: Record<FreeWidgetKind, WidgetMeta> = {
     allowedSizes: ["s", "m", "l"],
     defaultSize: "m",
     defaultSettings: { ...defaultWeatherSettings },
+    render: ({ size, theme, settings, locations, onAriaChange }) => (
+      <Weather
+        size={size}
+        theme={theme}
+        settings={resolveWeatherSettings(settings)}
+        locations={locations}
+        onAriaChange={onAriaChange}
+      />
+    ),
     settingsSchema: [
       { key: "locationId", type: "weatherLocation", label: "Sted" },
       {
@@ -166,6 +244,15 @@ export const WIDGET_REGISTRY: Record<FreeWidgetKind, WidgetMeta> = {
     allowedSizes: ["s", "m", "l"],
     defaultSize: "m",
     defaultSettings: { ...defaultNoteSettings },
+    render: ({ id, settings, editMode, preview, onAriaChange }) => (
+      <Note
+        id={id}
+        settings={resolveNoteSettings(settings)}
+        editMode={editMode}
+        preview={preview}
+        onAriaChange={onAriaChange}
+      />
+    ),
     settingsSchema: [
       { key: "title", type: "text", label: "Titel", placeholder: "Note", maxLength: 32 },
       {
@@ -192,25 +279,22 @@ export const WIDGET_REGISTRY: Record<FreeWidgetKind, WidgetMeta> = {
   timer: {
     kind: "timer",
     name: "Timer",
-    description: "Nedtælling eller pomodoro med en lille note og en blid lyd når tiden er gået.",
-    allowedSizes: ["pill", "s", "m"],
-    defaultSize: "s",
+    description: "Skriv fx 'pasta 10' og få besked når tiden er gået. Flere timere ad gangen.",
+    allowedSizes: ["pill", "s", "m", "l"],
+    defaultSize: "m",
     defaultSettings: { ...defaultTimerSettings },
+    render: ({ id, settings, size, editMode, preview, onAriaChange, onPinVisibleChange }) => (
+      <Timer
+        id={id}
+        settings={resolveTimerSettings(settings)}
+        size={size}
+        editMode={editMode}
+        preview={preview}
+        onAriaChange={onAriaChange}
+        onPinVisibleChange={onPinVisibleChange}
+      />
+    ),
     settingsSchema: [
-      {
-        key: "mode",
-        type: "segmented",
-        label: "Tilstand",
-        options: [
-          { value: "countdown", label: "Nedtælling" },
-          { value: "pomodoro", label: "Pomodoro" },
-        ],
-      },
-      { key: "durationMin", type: "slider", label: "Varighed", min: 1, max: 480, step: 1, unit: "min" },
-      { key: "focusMin", type: "slider", label: "Fokus", min: 5, max: 120, step: 5, unit: "min" },
-      { key: "breakMin", type: "slider", label: "Pause", min: 1, max: 30, step: 1, unit: "min" },
-      { key: "longBreakMin", type: "slider", label: "Lang pause", min: 5, max: 60, step: 5, unit: "min" },
-      { key: "rounds", type: "slider", label: "Runder", min: 2, max: 8, step: 1 },
       {
         key: "sound",
         type: "segmented",
@@ -223,7 +307,6 @@ export const WIDGET_REGISTRY: Record<FreeWidgetKind, WidgetMeta> = {
       },
       { key: "volume", type: "slider", label: "Lydstyrke", min: 0, max: 100, step: 5, unit: "%" },
       { key: "notify", type: "switch", label: "Notifikation" },
-      { key: "autoStartBreak", type: "switch", label: "Start pauser automatisk" },
     ],
   },
   discord: {
@@ -233,6 +316,9 @@ export const WIDGET_REGISTRY: Record<FreeWidgetKind, WidgetMeta> = {
     allowedSizes: ["pill", "s", "m"],
     defaultSize: "m",
     defaultSettings: {},
+    render: ({ size, theme, preview, onAriaChange }) => (
+      <Discord size={size} theme={theme} preview={preview} onAriaChange={onAriaChange} />
+    ),
     settingsSchema: [],
   },
   agents: {
@@ -243,6 +329,15 @@ export const WIDGET_REGISTRY: Record<FreeWidgetKind, WidgetMeta> = {
     allowedSizes: ["s", "m", "l"],
     defaultSize: "m",
     defaultSettings: { recentWindowMin: String(defaultAgentsSettings.recentWindowMin) },
+    render: ({ size, theme, settings, preview, onAriaChange }) => (
+      <Agents
+        size={size}
+        theme={theme}
+        settings={resolveAgentsSettings(settings)}
+        preview={preview}
+        onAriaChange={onAriaChange}
+      />
+    ),
     settingsSchema: [
       {
         key: "recentWindowMin",
@@ -291,3 +386,32 @@ export const CLUSTER_PRESETS: readonly ClusterPresetMeta[] = [
     width: 264,
   },
 ];
+
+const SIZE_ORDER: readonly WidgetSize[] = ["pill", "s", "m", "l"];
+
+/** Clamp til nærmeste tilladte størrelse — defensivt net mod legacy-configs,
+    da add/cycle-flows allerede kun uddeler tilladte størrelser. */
+export function clampSizeToAllowed(
+  size: WidgetSize,
+  allowed: readonly WidgetSize[],
+): WidgetSize {
+  if (allowed.includes(size)) return size;
+  const index = SIZE_ORDER.indexOf(size);
+  let best = allowed[0] ?? "m";
+  let bestDist = Infinity;
+  for (const candidate of allowed) {
+    const dist = Math.abs(SIZE_ORDER.indexOf(candidate) - index);
+    if (dist < bestDist) {
+      bestDist = dist;
+      best = candidate;
+    }
+  }
+  return best;
+}
+
+/** Én sandhed for kind→komponent: bruges af både widget-vinduet og
+    kontrolcentrets preview, så de to aldrig kan drifte fra hinanden. */
+export function renderWidget(kind: FreeWidgetKind, ctx: WidgetRenderContext): ReactNode {
+  const meta = WIDGET_REGISTRY[kind];
+  return meta.render({ ...ctx, size: clampSizeToAllowed(ctx.size, meta.allowedSizes) });
+}

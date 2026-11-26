@@ -7,4 +7,4 @@ import type { ThemeId } from "./ThemeId";
 import type { WidgetKind } from "./WidgetKind";
 import type { WidgetSize } from "./WidgetSize";
 
-export type WidgetInstance = { id: string, kind: WidgetKind, size: WidgetSize, scale: number, placement: Placement, layer: Layer, clickThrough: boolean, themeOverride: ThemeId | null, glassOverride: number | null, glassOverrideEngine: GlassEngine | null, settings: Record<string, unknown>, cluster: ClusterConfig | null, createdAt: bigint, };
+export type WidgetInstance = { id: string, kind: WidgetKind, size: WidgetSize, scale: number, placement: Placement, layer: Layer, clickThrough: boolean, revealOnHover: boolean, themeOverride: ThemeId | null, glassOverride: number | null, glassOverrideEngine: GlassEngine | null, settings: Record<string, unknown>, cluster: ClusterConfig | null, createdAt: number, };

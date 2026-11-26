@@ -5,4 +5,4 @@ import type { Layer } from "./Layer";
 import type { ThemeId } from "./ThemeId";
 import type { WidgetSize } from "./WidgetSize";
 
-export type WidgetPatch = { size?: WidgetSize, scale?: number, layer?: Layer, clickThrough?: boolean, themeOverride?: ThemeId | null, glassOverride?: number | null, glassOverrideEngine?: GlassEngine | null, settings?: Record<string, unknown>, cluster?: ClusterConfig | null, };
+export type WidgetPatch = { size?: WidgetSize, scale?: number, layer?: Layer, clickThrough?: boolean, revealOnHover?: boolean, themeOverride?: ThemeId | null, glassOverride?: number | null, glassOverrideEngine?: GlassEngine | null, settings?: Record<string, unknown>, cluster?: ClusterConfig | null, };

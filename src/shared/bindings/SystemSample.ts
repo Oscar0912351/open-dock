@@ -5,4 +5,4 @@ import type { GpuSample } from "./GpuSample";
 import type { MemSample } from "./MemSample";
 import type { NetSample } from "./NetSample";
 
-export type SystemSample = { t: bigint, uptimeS: bigint, cpu: CpuSample, mem: MemSample, gpu: GpuSample | null, net: NetSample, disk: DiskSample, };
+export type SystemSample = { t: number, uptimeS: number, cpu: CpuSample, mem: MemSample, gpu: GpuSample | null, net: NetSample, disk: DiskSample, };

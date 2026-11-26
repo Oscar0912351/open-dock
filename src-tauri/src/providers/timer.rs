@@ -1,19 +1,18 @@
-//! Timer-tilstand pr. widget-id, ejet af Rust.
+//! "Husk-timer" — flere navngivne timere pr. widget-id, ejet af Rust.
 //!
-//! Timeren lever uafhængigt af widget-vinduet: den fortsætter når widgetten
-//! genindlæses, når appen er på pause, og (via `timers.json`) når appen
+//! Timere lever uafhængigt af widget-vinduet: de fortsætter når widgetten
+//! genindlæses, når appen er på pause, og (via `timers.json` v2) når appen
 //! genstartes. Frontend tæller sekunder lokalt ud fra `ends_at` — der sendes
 //! ingen tick-events. Én tokio-task sover til nærmeste deadline og vækkes
 //! via `Notify` når tilstanden ændres.
 //!
-//! Segmenter: `countdown` (nedtælling) eller pomodoro-cyklussen
-//! `focus → break/longBreak`. Efter `rounds` fokus-runder kommer lang pause,
-//! og derefter er cyklussen færdig (idle). Fokus starter aldrig automatisk
-//! efter en pause — brugeren trykker play (matcher plan/06 §5).
-//!
-//! `round` er 1-baseret indeks for den aktuelle/senest afsluttede fokus-runde.
-//! Antal afsluttede runder til prik-UI'et: `round - 1` mens segment == focus,
-//! ellers `round`.
+//! Hver widget (eller klynge-modul) har op til 8 timere (`items`) plus en
+//! liste over de seneste navngivne varigheder (`recents`, maks 6) som
+//! frontend viser som ét-klik-chips. Når en timer udløber: én samlet lyd pr.
+//! scheduler-pass, notifikation pr. timer med dens navn, og rækken viser
+//! "+1 min"/"+5 min"/"Færdig" indtil brugeren fjerner den. Finished-timere
+//! ringer igen hvert 10. sekund i op til 60 sekunder (REPEAT_INTERVAL_MS /
+//! REPEAT_WINDOW_MS).
 
 use std::{collections::HashMap, fs, path::PathBuf};
 
@@ -24,13 +23,20 @@ use tokio::sync::Notify;
 use ts_rs::TS;
 use uuid::Uuid;
 
-use crate::config::schema::{Config, Language, WidgetKind};
+use crate::{
+    config::schema::{Config, Language, WidgetKind},
+    error::AppError,
+};
 
-const MAX_DURATION_MS: i64 = 12 * 60 * 60 * 1000; // 12 timer
-const MIN_DURATION_MS: i64 = 1000;
+const MIN_DURATION_MS: i64 = 1_000;
+const MAX_DURATION_MS: i64 = 24 * 60 * 60 * 1000; // 24 timer
+const MAX_ITEMS: usize = 8;
+const MAX_LABEL_CHARS: usize = 60;
+const MAX_RECENTS: usize = 6;
 const REPEAT_INTERVAL_MS: i64 = 10_000;
 const REPEAT_WINDOW_MS: i64 = 60_000;
 const PERSIST_FILE: &str = "timers.json";
+const PERSIST_VERSION: u32 = 2;
 
 fn now_ms() -> i64 {
     std::time::SystemTime::now()
@@ -42,120 +48,281 @@ fn now_ms() -> i64 {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export, export_to = "../../src/shared/bindings/")]
-pub enum TimerSegment {
-    Countdown,
-    Focus,
-    Break,
-    LongBreak,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../src/shared/bindings/")]
 pub enum TimerStatus {
-    Idle,
     Running,
     Paused,
     Finished,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export, export_to = "../../src/shared/bindings/")]
-pub struct TimerSnapshot {
-    pub widget_id: Uuid,
-    pub segment: TimerSegment,
+pub struct TimerItem {
+    pub id: Uuid,
+    pub label: String,
     pub status: TimerStatus,
+    /// Kun sat mens Running — epoch-ms for hvornår timeren udløber.
     pub ends_at: Option<i64>,
+    /// Paused: resterende tid. Running: resterende tid ved seneste commit.
+    /// Finished: 0.
     pub remaining_ms: i64,
+    /// Nævner for progress; vokser ved +min.
     pub total_ms: i64,
-    pub round: u8,
+    /// Oprindelig varighed — fallback-titel og recents.
+    pub initial_ms: i64,
+    pub created_at: i64,
     pub finished_at: Option<i64>,
+    /// Antal gentag-ringer afspillet for en finished timer (intern, persisteres
+    /// men sendes ikke til frontend).
+    #[serde(default)]
+    #[ts(skip)]
+    pub repeat_count: u8,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+impl TimerItem {
+    /// Næste gentag-ringetidspunkt for en finished timer (hver 10. s, op til
+    /// 60 s efter finished_at). `None` for ikke-finished eller uden for vinduet.
+    fn next_repeat_at(&self) -> Option<i64> {
+        if self.status != TimerStatus::Finished {
+            return None;
+        }
+        let finished_at = self.finished_at?;
+        let next = finished_at + (self.repeat_count as i64 + 1) * REPEAT_INTERVAL_MS;
+        if next <= finished_at + REPEAT_WINDOW_MS {
+            Some(next)
+        } else {
+            None
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
-struct TimerEntry {
-    segment: TimerSegment,
-    status: TimerStatus,
-    ends_at: Option<i64>,
-    remaining_ms: i64,
-    total_ms: i64,
-    round: u8,
-    finished_at: Option<i64>,
-    #[serde(default)]
-    repeat_count: u8,
-    /// Om den seneste fokus-runde blev fuldført naturligt. Skip sætter den ikke,
-    /// og rundtællingen stiger kun ved overgangen pause → fokus hvis den er sat.
-    #[serde(default)]
-    round_counted: bool,
+#[ts(export, export_to = "../../src/shared/bindings/")]
+pub struct RecentTimer {
+    pub label: String,
+    pub duration_ms: i64,
 }
 
-impl TimerEntry {
-    fn idle() -> Self {
-        Self {
-            segment: TimerSegment::Countdown,
-            status: TimerStatus::Idle,
-            ends_at: None,
-            remaining_ms: 0,
-            total_ms: 0,
-            round: 0,
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../src/shared/bindings/")]
+pub struct TimerListSnapshot {
+    pub widget_id: Uuid,
+    pub items: Vec<TimerItem>,
+    pub recents: Vec<RecentTimer>,
+}
+
+/// Timer-tilstanden for én widget (eller ét klynge-modul) — ren logik der
+/// tager `now` som parameter, så den kan unit-testes uden AppHandle.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct WidgetTimers {
+    items: Vec<TimerItem>,
+    recents: Vec<RecentTimer>,
+}
+
+impl WidgetTimers {
+    fn snapshot(&self, widget_id: Uuid) -> TimerListSnapshot {
+        TimerListSnapshot {
+            widget_id,
+            items: self.items.clone(),
+            recents: self.recents.clone(),
+        }
+    }
+
+    fn add(&mut self, raw_label: &str, duration_ms: i64, now: i64) -> Result<Uuid, AppError> {
+        let label: String = raw_label.trim().chars().take(MAX_LABEL_CHARS).collect();
+        if !(MIN_DURATION_MS..=MAX_DURATION_MS).contains(&duration_ms) {
+            return Err(AppError::Other(
+                "Tiden skal være mellem 1 sekund og 24 timer".into(),
+            ));
+        }
+        if self.items.len() >= MAX_ITEMS {
+            return Err(AppError::Other(
+                "Der kan højst køre 8 timere ad gangen".into(),
+            ));
+        }
+        let id = Uuid::new_v4();
+        self.items.push(TimerItem {
+            id,
+            label: label.clone(),
+            status: TimerStatus::Running,
+            ends_at: Some(now + duration_ms),
+            remaining_ms: duration_ms,
+            total_ms: duration_ms,
+            initial_ms: duration_ms,
+            created_at: now,
             finished_at: None,
             repeat_count: 0,
-            round_counted: false,
+        });
+        if !label.is_empty() {
+            let key = label.to_lowercase();
+            self.recents.retain(|r| r.label.to_lowercase() != key);
+            self.recents.insert(
+                0,
+                RecentTimer {
+                    label,
+                    duration_ms,
+                },
+            );
+            self.recents.truncate(MAX_RECENTS);
+        }
+        Ok(id)
+    }
+
+    fn pause(&mut self, item_id: Uuid, now: i64) -> bool {
+        let Some(item) = self.items.iter_mut().find(|i| i.id == item_id) else {
+            return false;
+        };
+        if item.status != TimerStatus::Running {
+            return false;
+        }
+        if let Some(ends) = item.ends_at {
+            item.remaining_ms = (ends - now).max(0);
+        }
+        item.ends_at = None;
+        item.status = TimerStatus::Paused;
+        true
+    }
+
+    fn resume(&mut self, item_id: Uuid, now: i64) -> bool {
+        let Some(item) = self.items.iter_mut().find(|i| i.id == item_id) else {
+            return false;
+        };
+        if item.status != TimerStatus::Paused || item.remaining_ms <= 0 {
+            return false;
+        }
+        item.ends_at = Some(now + item.remaining_ms);
+        item.status = TimerStatus::Running;
+        true
+    }
+
+    /// Justerer resterende tid med `delta_ms` (negativ = kortere).
+    /// Running: ny remaining måles fra nu, ends_at forskydes tilsvarende.
+    /// Finished: kun positiv delta genstarter timeren med delta som varighed.
+    fn adjust(&mut self, item_id: Uuid, delta_ms: i64, now: i64) -> bool {
+        let Some(item) = self.items.iter_mut().find(|i| i.id == item_id) else {
+            return false;
+        };
+        match item.status {
+            TimerStatus::Running => {
+                let rem = item
+                    .ends_at
+                    .map(|ends| (ends - now).max(0))
+                    .unwrap_or(item.remaining_ms);
+                let new = (rem + delta_ms).clamp(MIN_DURATION_MS, MAX_DURATION_MS);
+                item.ends_at = Some(now + new);
+                item.remaining_ms = new;
+                item.total_ms = (item.total_ms + (new - rem)).max(new);
+                true
+            }
+            TimerStatus::Paused => {
+                let rem = item.remaining_ms;
+                let new = (rem + delta_ms).clamp(MIN_DURATION_MS, MAX_DURATION_MS);
+                item.remaining_ms = new;
+                item.total_ms = (item.total_ms + (new - rem)).max(new);
+                true
+            }
+            TimerStatus::Finished => {
+                if delta_ms <= 0 {
+                    return false;
+                }
+                let new = delta_ms.clamp(MIN_DURATION_MS, MAX_DURATION_MS);
+                item.status = TimerStatus::Running;
+                item.ends_at = Some(now + new);
+                item.remaining_ms = new;
+                item.total_ms = new;
+                item.finished_at = None;
+                item.repeat_count = 0;
+                true
+            }
         }
     }
 
-    fn snapshot(&self, widget_id: Uuid) -> TimerSnapshot {
-        TimerSnapshot {
-            widget_id,
-            segment: self.segment,
-            status: self.status,
-            ends_at: self.ends_at,
-            remaining_ms: self.remaining_ms,
-            total_ms: self.total_ms,
-            round: self.round,
-            finished_at: self.finished_at,
+    fn remove(&mut self, item_id: Uuid) -> bool {
+        let before = self.items.len();
+        self.items.retain(|item| item.id != item_id);
+        self.items.len() != before
+    }
+
+    /// Markerer en running timer som færdig. `at` er den rigtige udløbstid,
+    /// så overtid tælles fra den — ikke fra behandlingstidspunktet.
+    fn finish(&mut self, item_id: Uuid, at: i64) -> bool {
+        let Some(item) = self.items.iter_mut().find(|i| i.id == item_id) else {
+            return false;
+        };
+        if item.status != TimerStatus::Running {
+            return false;
         }
+        item.status = TimerStatus::Finished;
+        item.ends_at = None;
+        item.remaining_ms = 0;
+        item.finished_at = Some(at);
+        item.repeat_count = 0;
+        true
+    }
+
+    /// Running-timere hvis ends_at er nået — returnerer (item-id, ends_at).
+    fn due(&self, now: i64) -> Vec<(Uuid, i64)> {
+        self.items
+            .iter()
+            .filter_map(|item| {
+                if item.status != TimerStatus::Running {
+                    return None;
+                }
+                item.ends_at
+                    .filter(|ends| *ends <= now)
+                    .map(|ends| (item.id, ends))
+            })
+            .collect()
+    }
+
+    /// Næste tidspunkt scheduler'en skal wake: minimum af fremtidige ends_at
+    /// (running) og næste repeat-ring (finished).
+    fn next_wake(&self, now: i64) -> Option<i64> {
+        let mut best: Option<i64> = None;
+        let mut consider = |candidate: i64| {
+            best = Some(best.map_or(candidate, |b| b.min(candidate)));
+        };
+        for item in &self.items {
+            if item.status == TimerStatus::Running {
+                if let Some(ends) = item.ends_at {
+                    if ends > now {
+                        consider(ends);
+                    }
+                }
+            }
+            if let Some(next) = item.next_repeat_at() {
+                consider(next);
+            }
+        }
+        best
     }
 }
 
-/// Indstillinger timeren læser fra widget-instansens settings ved brand-tidspunktet,
-/// så ændringer i kontrolcentret altid gælder for næste ring.
+/// timers.json v2: `{ "version": 2, "widgets": { "<uuid>": WidgetTimers } }`.
+#[derive(Debug, Serialize, Deserialize)]
+struct TimerFile {
+    version: u32,
+    #[serde(default)]
+    widgets: HashMap<Uuid, WidgetTimers>,
+}
+
+/// Indstillinger timeren læser fra widget-instansens (eller klynge-modulets)
+/// settings ved brand-tidspunktet, så ændringer i kontrolcentret altid
+/// gælder for næste ring. Kun lyd-relaterede felter — resten er væk med
+/// pomodoro.
 #[derive(Debug, Clone)]
 pub struct TimerSettings {
-    pub mode: TimerMode,
     pub sound: String,
     pub volume: u8,
     pub notify: bool,
-    pub focus_ms: i64,
-    pub break_ms: i64,
-    pub long_break_ms: i64,
-    pub rounds: u8,
-    pub auto_start_break: bool,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TimerMode {
-    Countdown,
-    Pomodoro,
 }
 
 impl TimerSettings {
     fn from_value(value: &serde_json::Value) -> Self {
-        let minutes = |key: &str, default: i64| -> i64 {
-            value
-                .get(key)
-                .and_then(|v| v.as_f64())
-                .map(|m| (m as i64).clamp(1, 180) * 60_000)
-                .unwrap_or(default * 60_000)
-        };
         Self {
-            mode: if value.get("mode").and_then(|v| v.as_str()) == Some("pomodoro") {
-                TimerMode::Pomodoro
-            } else {
-                TimerMode::Countdown
-            },
             sound: value
                 .get("sound")
                 .and_then(|v| v.as_str())
@@ -168,18 +335,6 @@ impl TimerSettings {
                 .unwrap_or(80),
             notify: value
                 .get("notify")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(true),
-            focus_ms: minutes("focusMin", 25),
-            break_ms: minutes("breakMin", 5),
-            long_break_ms: minutes("longBreakMin", 15),
-            rounds: value
-                .get("rounds")
-                .and_then(|v| v.as_u64())
-                .map(|v| v.clamp(2, 8) as u8)
-                .unwrap_or(4),
-            auto_start_break: value
-                .get("autoStartBreak")
                 .and_then(|v| v.as_bool())
                 .unwrap_or(true),
         }
@@ -211,7 +366,7 @@ fn find_timer_settings(config: &Config, id: Uuid) -> Option<serde_json::Value> {
 
 pub struct TimerManager {
     app: AppHandle,
-    entries: Mutex<HashMap<Uuid, TimerEntry>>,
+    entries: Mutex<HashMap<Uuid, WidgetTimers>>,
     rearm: Notify,
 }
 
@@ -231,8 +386,10 @@ impl TimerManager {
 
     fn persist(&self) {
         let entries = self.entries.lock();
-        let map: &HashMap<Uuid, TimerEntry> = &entries;
-        let payload = match serde_json::to_vec_pretty(map) {
+        let payload = match serde_json::to_vec_pretty(&TimerFile {
+            version: PERSIST_VERSION,
+            widgets: entries.clone(),
+        }) {
             Ok(bytes) => bytes,
             Err(error) => {
                 log::warn!(target: "timer", "Kunne ikke serialisere timers.json: {error}");
@@ -260,16 +417,18 @@ impl TimerManager {
         }
     }
 
-    /// Opdaterer tilstand, persisterer, emitter og vækker scheduleren.
-    fn commit(&self, id: Uuid, mutate: impl FnOnce(&mut TimerEntry)) {
-        {
+    /// Opdaterer tilstanden for `id`, persisterer, emitter og vækker
+    /// scheduleren. `entries.entry(id).or_default()` opretter en tom post ved
+    /// behov — harmløs, forsvinder ved næste reload hvis den forbliver tom.
+    fn commit<R>(&self, id: Uuid, mutate: impl FnOnce(&mut WidgetTimers) -> R) -> R {
+        let result = {
             let mut entries = self.entries.lock();
-            let entry = entries.entry(id).or_insert_with(TimerEntry::idle);
-            mutate(entry);
-        }
+            mutate(entries.entry(id).or_default())
+        };
         self.persist();
         self.emit(id);
         self.rearm.notify_one();
+        result
     }
 
     pub fn settings_for(&self, id: Uuid) -> TimerSettings {
@@ -279,124 +438,53 @@ impl TimerManager {
             .unwrap_or_default()
     }
 
-    pub fn snapshot(&self, id: Uuid) -> TimerSnapshot {
-        let entries = self.entries.lock();
-        entries
+    pub fn snapshot(&self, id: Uuid) -> TimerListSnapshot {
+        self.entries
+            .lock()
             .get(&id)
-            .map(|entry| entry.snapshot(id))
-            .unwrap_or_else(|| TimerEntry::idle().snapshot(id))
+            .map(|timers| timers.snapshot(id))
+            .unwrap_or_else(|| TimerListSnapshot {
+                widget_id: id,
+                items: Vec::new(),
+                recents: Vec::new(),
+            })
     }
 
-    pub fn start(&self, id: Uuid, duration_ms: Option<i64>) {
-        let settings = self.settings_for(id);
+    pub fn add(&self, id: Uuid, label: &str, duration_ms: i64) -> Result<(), AppError> {
         let now = now_ms();
-        self.commit(id, |entry| {
-            match settings.mode {
-                TimerMode::Countdown => {
-                    let duration = duration_ms
-                        .map(|d| d.clamp(MIN_DURATION_MS, MAX_DURATION_MS))
-                        .or(if entry.total_ms >= MIN_DURATION_MS {
-                            Some(entry.total_ms)
-                        } else {
-                            None
-                        })
-                        .unwrap_or(25 * 60_000);
-                    entry.segment = TimerSegment::Countdown;
-                    entry.total_ms = duration;
-                    entry.round = 0;
-                }
-                TimerMode::Pomodoro => {
-                    entry.segment = TimerSegment::Focus;
-                    entry.total_ms = settings.focus_ms;
-                    entry.round = 1;
-                }
-            }
-            entry.status = TimerStatus::Running;
-            entry.remaining_ms = entry.total_ms;
-            entry.ends_at = Some(now + entry.total_ms);
-            entry.finished_at = None;
-            entry.repeat_count = 0;
-        });
+        self.commit(id, |timers| timers.add(label, duration_ms, now))
+            .map(|_| ())
     }
 
-    pub fn pause(&self, id: Uuid) {
+    pub fn pause(&self, id: Uuid, item: Uuid) {
         let now = now_ms();
-        self.commit(id, |entry| {
-            if entry.status != TimerStatus::Running {
-                return;
-            }
-            if let Some(ends_at) = entry.ends_at {
-                entry.remaining_ms = (ends_at - now).max(0);
-            }
-            entry.ends_at = None;
-            entry.status = TimerStatus::Paused;
+        self.commit(id, |timers| {
+            timers.pause(item, now);
         });
     }
 
-    pub fn resume(&self, id: Uuid) {
+    pub fn resume(&self, id: Uuid, item: Uuid) {
         let now = now_ms();
-        self.commit(id, |entry| {
-            if entry.status != TimerStatus::Paused || entry.remaining_ms <= 0 {
-                return;
-            }
-            entry.ends_at = Some(now + entry.remaining_ms);
-            entry.status = TimerStatus::Running;
+        self.commit(id, |timers| {
+            timers.resume(item, now);
         });
     }
 
-    pub fn reset(&self, id: Uuid) {
-        self.commit(id, |entry| {
-            let total = entry.total_ms;
-            let segment = entry.segment;
-            *entry = TimerEntry::idle();
-            entry.total_ms = total;
-            entry.segment = segment;
-        });
-    }
-
-    pub fn dismiss(&self, id: Uuid) {
-        self.commit(id, |entry| {
-            if entry.status != TimerStatus::Finished {
-                return;
-            }
-            let total = entry.total_ms;
-            *entry = TimerEntry::idle();
-            entry.total_ms = total;
-        });
-    }
-
-    /// Snooze starter altid en kort nedtælling — uanset tilstand.
-    pub fn snooze(&self, id: Uuid, minutes: i64) {
+    pub fn adjust(&self, id: Uuid, item: Uuid, delta_ms: i64) {
         let now = now_ms();
-        let duration = (minutes.clamp(1, 60)) * 60_000;
-        self.commit(id, |entry| {
-            entry.segment = TimerSegment::Countdown;
-            entry.status = TimerStatus::Running;
-            entry.total_ms = duration;
-            entry.remaining_ms = duration;
-            entry.ends_at = Some(now + duration);
-            entry.round = 0;
-            entry.finished_at = None;
-            entry.repeat_count = 0;
+        self.commit(id, |timers| {
+            timers.adjust(item, delta_ms, now);
         });
     }
 
-    /// Pomodoro: spring til næste segment uden at runden tæller som afsluttet
-    /// på samme måde — men overgangen er den samme som ved en egentlig udløb.
-    pub fn skip(&self, id: Uuid) {
-        let entry_state = {
-            let entries = self.entries.lock();
-            entries.get(&id).map(|entry| (entry.segment, entry.status))
-        };
-        let Some((segment, status)) = entry_state else {
-            return;
-        };
-        if status == TimerStatus::Idle {
-            return;
-        }
-        self.advance_segment(id, segment, false);
+    /// Fjerner én timer-række (ikke hele widgetten — det er `remove`).
+    pub fn remove_item(&self, id: Uuid, item: Uuid) {
+        self.commit(id, |timers| {
+            timers.remove(item);
+        });
     }
 
+    /// Fjerner hele widgettens timer-post — bruges af widget_remove.
     pub fn remove(&self, id: Uuid) {
         let existed = {
             let mut entries = self.entries.lock();
@@ -408,97 +496,92 @@ impl TimerManager {
         }
     }
 
-    /// Overgangslogik når et segment udløber (eller skippes).
-    /// `counted` = udløbet naturligt (vs. skip — samme overgang, men skip
-    /// ringer ikke og viser ikke notifikation).
-    fn advance_segment(&self, id: Uuid, segment: TimerSegment, counted: bool) {
-        let settings = self.settings_for(id);
-        self.commit(id, |entry| {
-            entry.ends_at = None;
-            entry.finished_at = None;
-            entry.repeat_count = 0;
-            match segment {
-                TimerSegment::Focus => {
-                    let last_round = entry.round >= settings.rounds;
-                    entry.segment = if last_round {
-                        TimerSegment::LongBreak
-                    } else {
-                        TimerSegment::Break
-                    };
-                    entry.total_ms = if last_round {
-                        settings.long_break_ms
-                    } else {
-                        settings.break_ms
-                    };
-                    entry.remaining_ms = entry.total_ms;
-                    if settings.auto_start_break && counted {
-                        entry.ends_at = Some(now_ms() + entry.total_ms);
-                        entry.status = TimerStatus::Running;
-                    } else {
-                        // Venter på brugeren: viser næste segment klar til start.
-                        entry.status = TimerStatus::Paused;
-                    }
+    /// Én scheduler-pass over alle widgets: timers der er udløbet finishes
+    /// med deres rigtige ends_at, med én samlet lyd og én notifikation pr.
+    /// timer. `due` er (widget-id, item-id, ends_at).
+    fn finish_due(&self, due: Vec<(Uuid, Uuid, i64)>) {
+        if due.is_empty() {
+            return;
+        }
+        let mut finished: Vec<(Uuid, String)> = Vec::new();
+        {
+            let mut entries = self.entries.lock();
+            for (widget_id, item_id, ends_at) in &due {
+                let Some(timers) = entries.get_mut(widget_id) else {
+                    continue;
+                };
+                if timers.finish(*item_id, *ends_at) {
+                    let label = timers
+                        .items
+                        .iter()
+                        .find(|item| item.id == *item_id)
+                        .map(|item| item.label.clone())
+                        .unwrap_or_default();
+                    finished.push((*widget_id, label));
                 }
-                TimerSegment::Break => {
-                    entry.segment = TimerSegment::Focus;
-                    if entry.round_counted {
-                        entry.round = entry.round.saturating_add(1).min(settings.rounds);
-                    }
-                    entry.round_counted = false;
-                    entry.total_ms = settings.focus_ms;
-                    entry.remaining_ms = entry.total_ms;
-                    // Fokus starter aldrig automatisk efter en pause.
-                    entry.status = TimerStatus::Paused;
-                }
-                TimerSegment::LongBreak => {
-                    let total = settings.focus_ms;
-                    *entry = TimerEntry::idle();
-                    entry.total_ms = total;
-                }
-                TimerSegment::Countdown => {}
             }
-        });
+        }
+        if finished.is_empty() {
+            return;
+        }
+        // Én lyd pr. pass uanset antal udløbne timere — første berørte
+        // widgets indstillinger afgør lyd og volumen.
+        let first_settings = self.settings_for(finished[0].0);
+        super::sound::play(&self.app, &first_settings.sound, first_settings.volume);
+        for (widget_id, label) in &finished {
+            if self.settings_for(*widget_id).notify {
+                self.notify_finished(label);
+            }
+        }
+        self.persist();
+        let mut emitted: Vec<Uuid> = Vec::new();
+        for (widget_id, _) in &finished {
+            if !emitted.contains(widget_id) {
+                emitted.push(*widget_id);
+                self.emit(*widget_id);
+            }
+        }
+        self.rearm.notify_one();
     }
 
-    /// Kaldes når ends_at nås: lyd + notifikation + overgang/ringetilstand.
-    fn fire(&self, id: Uuid) {
-        let settings = self.settings_for(id);
-        let (segment, total_ms) = {
-            let entries = self.entries.lock();
-            match entries.get(&id) {
-                Some(entry) => (entry.segment, entry.total_ms),
-                None => return,
-            }
-        };
-
-        super::sound::play(&self.app, &settings.sound, settings.volume);
-        if settings.notify {
-            self.notify_finished(id, segment, &settings);
+    /// Gentag-ringer for finished-timere: én lyd pr. pass, repeat_count
+    /// inkrementeres på alle forfaldne. `due` er (widget-id, item-id).
+    fn ring_repeats(&self, due: Vec<(Uuid, Uuid)>) {
+        if due.is_empty() {
+            return;
         }
-
-        if segment == TimerSegment::Countdown {
+        let mut affected: Vec<Uuid> = Vec::new();
+        {
+            let mut entries = self.entries.lock();
             let now = now_ms();
-            self.commit(id, |entry| {
-                entry.status = TimerStatus::Finished;
-                entry.ends_at = None;
-                entry.remaining_ms = 0;
-                entry.total_ms = total_ms;
-                entry.finished_at = Some(now);
-                entry.repeat_count = 0;
-            });
-        } else {
-            // En naturligt fuldført fokus-runde tæller — skip gør ikke (plan/06 §5).
-            if segment == TimerSegment::Focus {
-                let mut entries = self.entries.lock();
-                if let Some(entry) = entries.get_mut(&id) {
-                    entry.round_counted = true;
+            for (widget_id, item_id) in &due {
+                let Some(timers) = entries.get_mut(widget_id) else {
+                    continue;
+                };
+                let Some(item) = timers.items.iter_mut().find(|i| i.id == *item_id) else {
+                    continue;
+                };
+                if item.next_repeat_at().is_some_and(|t| t <= now) {
+                    item.repeat_count = item.repeat_count.saturating_add(1);
+                    if !affected.contains(widget_id) {
+                        affected.push(*widget_id);
+                    }
                 }
             }
-            self.advance_segment(id, segment, true);
         }
+        if affected.is_empty() {
+            return;
+        }
+        let settings = self.settings_for(affected[0]);
+        super::sound::play(&self.app, &settings.sound, settings.volume);
+        self.persist();
+        for widget_id in &affected {
+            self.emit(*widget_id);
+        }
+        self.rearm.notify_one();
     }
 
-    fn notify_finished(&self, id: Uuid, segment: TimerSegment, settings: &TimerSettings) {
+    fn notify_finished(&self, label: &str) {
         use tauri_plugin_notification::NotificationExt;
         let language = self
             .app
@@ -507,20 +590,15 @@ impl TimerManager {
             .get()
             .general
             .language;
-        let note = self.read_note(id);
-        let (title, fallback) = match (language, segment) {
-            (Language::En, TimerSegment::Countdown) => ("Time is up", "Your timer is done"),
-            (Language::En, TimerSegment::Focus) => ("Focus done", "Time for a break"),
-            (Language::En, TimerSegment::Break | TimerSegment::LongBreak) => {
-                ("Break is over", "Ready for the next round")
-            }
-            (Language::Da, TimerSegment::Countdown) => ("Tiden er gået", "Din timer er færdig"),
-            (Language::Da, TimerSegment::Focus) => ("Fokus færdig", "Tid til en pause"),
-            (Language::Da, TimerSegment::Break | TimerSegment::LongBreak) => {
-                ("Pausen er ovre", "Klar til næste runde")
-            }
+        let (title, fallback) = match language {
+            Language::En => ("Time is up", "Your timer is done"),
+            Language::Da => ("Tiden er gået", "Din timer er færdig"),
         };
-        let body = note.unwrap_or_else(|| fallback.to_string());
+        let body = if label.trim().is_empty() {
+            fallback.to_string()
+        } else {
+            label.to_string()
+        };
         if let Err(error) = self
             .app
             .notification()
@@ -531,70 +609,48 @@ impl TimerManager {
         {
             log::warn!(target: "timer", "Kunne ikke vise timer-notifikation: {error}");
         }
-        let _ = settings;
     }
 
-    fn read_note(&self, id: Uuid) -> Option<String> {
-        let notes_dir = self.app.state::<crate::state::AppState>().config.notes_dir();
-        let path = notes_dir.join(format!("{id}.txt"));
-        let content = fs::read_to_string(path).ok()?;
-        let first_line = content.lines().next()?.trim();
-        if first_line.is_empty() {
-            return None;
-        }
-        let truncated: String = first_line.chars().take(120).collect();
-        Some(truncated)
-    }
-
-    /// Næste ringetidspunkt for en finished-countdown (gentagelse hvert 10. s,
-    /// op til 60 s efter finished_at). `None` hvis vinduet er ovre.
-    fn next_repeat_at(entry: &TimerEntry) -> Option<i64> {
-        if entry.status != TimerStatus::Finished || entry.segment != TimerSegment::Countdown {
-            return None;
-        }
-        let finished_at = entry.finished_at?;
-        let next = finished_at + (entry.repeat_count as i64 + 1) * REPEAT_INTERVAL_MS;
-        if next <= finished_at + REPEAT_WINDOW_MS {
-            Some(next)
-        } else {
-            None
-        }
-    }
-
-    /// Ved opstart: fyr timere der udløb mens appen var lukket.
-    /// De ringer én gang og viser notifikation — ellers ville brugeren aldrig høre dem.
+    /// Ved opstart: fyr timere der udløb mens appen var lukket — samme
+    /// due-behandling som scheduler-passet.
     fn fire_overdue(&self) {
         let now = now_ms();
-        let overdue: Vec<Uuid> = {
+        let due: Vec<(Uuid, Uuid, i64)> = {
             let entries = self.entries.lock();
             entries
                 .iter()
-                .filter(|(_, entry)| {
-                    entry.status == TimerStatus::Running
-                        && entry.ends_at.is_some_and(|ends| ends <= now)
+                .flat_map(|(widget_id, timers)| {
+                    timers
+                        .due(now)
+                        .into_iter()
+                        .map(|(item_id, ends_at)| (*widget_id, item_id, ends_at))
+                        .collect::<Vec<_>>()
                 })
-                .map(|(id, _)| *id)
                 .collect()
         };
-        for id in overdue {
-            log::info!(target: "timer", "Timer {id} udløb mens appen var lukket — fyrer nu");
-            self.fire(id);
+        for (_, item_id, _) in &due {
+            log::info!(target: "timer", "Timer {item_id} udløb mens appen var lukket — fyrer nu");
+        }
+        self.finish_due(due);
+    }
+}
+
+fn decode_persist(bytes: &[u8]) -> HashMap<Uuid, WidgetTimers> {
+    match serde_json::from_slice::<TimerFile>(bytes) {
+        Ok(file) if file.version == PERSIST_VERSION => file.widgets,
+        _ => {
+            log::info!(target: "timer", "timers.json fra tidligere format ignoreres");
+            HashMap::new()
         }
     }
 }
 
-fn load_persisted() -> HashMap<Uuid, TimerEntry> {
+fn load_persisted() -> HashMap<Uuid, WidgetTimers> {
     let path = crate::paths::data_root().join(PERSIST_FILE);
     let Ok(bytes) = fs::read(&path) else {
         return HashMap::new();
     };
-    match serde_json::from_slice::<HashMap<Uuid, TimerEntry>>(&bytes) {
-        Ok(map) => map,
-        Err(error) => {
-            log::warn!(target: "timer", "timers.json var korrupt ({error}) — starter forfra");
-            HashMap::new()
-        }
-    }
+    decode_persist(&bytes)
 }
 
 /// Installerer manageren som Tauri-state og starter scheduler-loopet.
@@ -610,65 +666,30 @@ pub fn install(app: &AppHandle) {
             let manager = app_handle.state::<TimerManager>();
             let now = now_ms();
             let mut wake_at: Option<i64> = None;
-            let mut due: Vec<Uuid> = Vec::new();
-            let mut repeat_due: Vec<Uuid> = Vec::new();
+            let mut due: Vec<(Uuid, Uuid, i64)> = Vec::new();
+            let mut repeat_due: Vec<(Uuid, Uuid)> = Vec::new();
 
             {
                 let entries = manager.entries.lock();
-                for (id, entry) in entries.iter() {
-                    if entry.status == TimerStatus::Running {
-                        if let Some(ends) = entry.ends_at {
-                            if ends <= now {
-                                due.push(*id);
-                            } else {
-                                wake_at = Some(wake_at.map_or(ends, |w: i64| w.min(ends)));
+                for (widget_id, timers) in entries.iter() {
+                    for (item_id, ends_at) in timers.due(now) {
+                        due.push((*widget_id, item_id, ends_at));
+                    }
+                    for item in &timers.items {
+                        if let Some(next) = item.next_repeat_at() {
+                            if next <= now {
+                                repeat_due.push((*widget_id, item.id));
                             }
                         }
                     }
-                    if let Some(next_ring) = TimerManager::next_repeat_at(entry) {
-                        if next_ring <= now {
-                            repeat_due.push(*id);
-                        } else {
-                            wake_at = Some(wake_at.map_or(next_ring, |w: i64| w.min(next_ring)));
-                        }
+                    if let Some(next) = timers.next_wake(now) {
+                        wake_at = Some(wake_at.map_or(next, |w: i64| w.min(next)));
                     }
                 }
             }
 
-            for id in due {
-                // Gen-tjek under lås: tilstanden kan have ændret sig siden scanningen.
-                let still_due = {
-                    let entries = manager.entries.lock();
-                    entries.get(&id).is_some_and(|entry| {
-                        entry.status == TimerStatus::Running
-                            && entry.ends_at.is_some_and(|ends| ends <= now_ms())
-                    })
-                };
-                if still_due {
-                    manager.fire(id);
-                }
-            }
-
-            for id in repeat_due {
-                let should_ring = {
-                    let mut entries = manager.entries.lock();
-                    if let Some(entry) = entries.get_mut(&id) {
-                        if TimerManager::next_repeat_at(entry).is_some_and(|t| t <= now_ms()) {
-                            entry.repeat_count = entry.repeat_count.saturating_add(1);
-                            true
-                        } else {
-                            false
-                        }
-                    } else {
-                        false
-                    }
-                };
-                if should_ring {
-                    let settings = manager.settings_for(id);
-                    super::sound::play(&manager.app, &settings.sound, settings.volume);
-                    manager.persist();
-                }
-            }
+            manager.finish_due(due);
+            manager.ring_repeats(repeat_due);
 
             // notify_one() gemmer én permit selv uden ventere, så en commit der
             // lander mens vi behandler, vækker os straks ved næste await.
@@ -694,26 +715,237 @@ pub fn install(app: &AppHandle) {
 mod tests {
     use super::*;
 
-    #[test]
-    fn repeat_schedule_stops_after_window() {
-        let mut entry = TimerEntry::idle();
-        entry.status = TimerStatus::Finished;
-        entry.finished_at = Some(1_000);
-        entry.repeat_count = 0;
-        assert_eq!(TimerManager::next_repeat_at(&entry), Some(11_000));
-        entry.repeat_count = 5;
-        assert_eq!(TimerManager::next_repeat_at(&entry), Some(61_000));
-        entry.repeat_count = 6;
-        assert_eq!(TimerManager::next_repeat_at(&entry), None);
+    const NOW: i64 = 1_000_000;
+
+    fn timers() -> WidgetTimers {
+        WidgetTimers::default()
+    }
+
+    fn running(timers: &mut WidgetTimers, label: &str, duration_ms: i64) -> Uuid {
+        timers.add(label, duration_ms, NOW).expect("add skal virke")
+    }
+
+    fn item_mut<'a>(timers: &'a mut WidgetTimers, id: Uuid) -> &'a mut TimerItem {
+        timers.items.iter_mut().find(|i| i.id == id).expect("item")
+    }
+
+    fn item(timers: &WidgetTimers, id: Uuid) -> &TimerItem {
+        timers.items.iter().find(|i| i.id == id).expect("item")
     }
 
     #[test]
-    fn repeat_only_for_countdown() {
-        let mut entry = TimerEntry::idle();
-        entry.status = TimerStatus::Finished;
-        entry.segment = TimerSegment::Focus;
-        entry.finished_at = Some(1_000);
-        assert_eq!(TimerManager::next_repeat_at(&entry), None);
+    fn add_ok_running() {
+        let mut t = timers();
+        let id = running(&mut t, "Pasta", 600_000);
+        let it = item(&t, id);
+        assert_eq!(it.status, TimerStatus::Running);
+        assert_eq!(it.ends_at, Some(NOW + 600_000));
+        assert_eq!(it.remaining_ms, 600_000);
+        assert_eq!(it.total_ms, 600_000);
+        assert_eq!(it.initial_ms, 600_000);
+        assert_eq!(it.created_at, NOW);
+        assert_eq!(it.label, "Pasta");
+    }
+
+    #[test]
+    fn add_trimmer_label_og_kapper_ved_60_tegn() {
+        let mut t = timers();
+        let long = format!("  {}  ", "x".repeat(80));
+        let id = t.add(&long, 60_000, NOW).unwrap();
+        assert_eq!(item(&t, id).label.chars().count(), 60);
+        let id2 = t.add("  te  ", 60_000, NOW).unwrap();
+        assert_eq!(item(&t, id2).label, "te");
+    }
+
+    #[test]
+    fn add_afviser_varigheder_uden_for_omraade() {
+        let mut t = timers();
+        assert!(t.add("a", 999, NOW).is_err());
+        assert!(t.add("a", 0, NOW).is_err());
+        assert!(t.add("a", 86_400_001, NOW).is_err());
+        assert!(t.add("a", 1_000, NOW).is_ok());
+        assert!(t.add("a", 86_400_000, NOW).is_ok());
+    }
+
+    #[test]
+    fn add_maks_otte_timere() {
+        let mut t = timers();
+        for i in 0..8 {
+            assert!(t.add(&format!("t{i}"), 60_000, NOW).is_ok());
+        }
+        assert!(t.add("for mange", 60_000, NOW).is_err());
+    }
+
+    #[test]
+    fn recents_dedupe_rækkefølge_max6() {
+        let mut t = timers();
+        running(&mut t, "Pasta", 600_000);
+        running(&mut t, "Te", 90_000);
+        running(&mut t, "pasta", 300_000); // case-insensitiv dedupe
+        assert_eq!(t.recents.len(), 2);
+        assert_eq!(t.recents[0].label, "pasta");
+        assert_eq!(t.recents[0].duration_ms, 300_000);
+        assert_eq!(t.recents[1].label, "Te");
+        // seks forskellige navne, nyeste først, ældste ryger ud
+        let mut t2 = timers();
+        for i in 0..7 {
+            running(&mut t2, &format!("navn{i}"), 60_000);
+        }
+        assert_eq!(t2.recents.len(), 6);
+        assert_eq!(t2.recents[0].label, "navn6");
+        assert!(!t2.recents.iter().any(|r| r.label == "navn0"));
+    }
+
+    #[test]
+    fn tom_label_kommer_ikke_i_recents() {
+        let mut t = timers();
+        running(&mut t, "   ", 60_000);
+        assert!(t.recents.is_empty());
+        running(&mut t, "", 60_000);
+        assert!(t.recents.is_empty());
+    }
+
+    #[test]
+    fn pause_resume() {
+        let mut t = timers();
+        let id = running(&mut t, "a", 600_000);
+        // 100s inde i en 600s timer
+        let later = NOW + 100_000;
+        assert!(t.pause(id, later));
+        let it = item(&t, id);
+        assert_eq!(it.status, TimerStatus::Paused);
+        assert_eq!(it.ends_at, None);
+        assert_eq!(it.remaining_ms, 500_000);
+        // pause på paused = no-op
+        assert!(!t.pause(id, later));
+        // resume
+        let later2 = later + 50_000;
+        assert!(t.resume(id, later2));
+        let it = item(&t, id);
+        assert_eq!(it.status, TimerStatus::Running);
+        assert_eq!(it.ends_at, Some(later2 + 500_000));
+        // resume på running = no-op
+        assert!(!t.resume(id, later2));
+    }
+
+    #[test]
+    fn adjust_running_plus_minus() {
+        let mut t = timers();
+        let id = running(&mut t, "a", 600_000);
+        // 100s tilbage
+        let now = NOW + 500_000;
+        assert!(t.adjust(id, 60_000, now)); // +1 min → 160s
+        let it = item(&t, id);
+        assert_eq!(it.ends_at, Some(now + 160_000));
+        assert_eq!(it.remaining_ms, 160_000);
+        assert_eq!(it.total_ms, 660_000); // total vokser med delta
+        assert!(t.adjust(id, -60_000, now)); // -1 min → 100s
+        let it = item(&t, id);
+        assert_eq!(it.remaining_ms, 100_000);
+        assert_eq!(it.ends_at, Some(now + 100_000));
+        assert_eq!(it.total_ms, 600_000);
+    }
+
+    #[test]
+    fn adjust_clamper_til_1s() {
+        let mut t = timers();
+        let id = running(&mut t, "a", 60_000);
+        let now = NOW + 59_500; // 500ms tilbage
+        assert!(t.adjust(id, -60_000, now));
+        let it = item(&t, id);
+        assert_eq!(it.remaining_ms, 1_000);
+        assert_eq!(it.ends_at, Some(now + 1_000));
+    }
+
+    #[test]
+    fn adjust_paused() {
+        let mut t = timers();
+        let id = running(&mut t, "a", 600_000);
+        let now = NOW + 100_000;
+        t.pause(id, now);
+        assert!(t.adjust(id, 60_000, now + 10_000));
+        let it = item(&t, id);
+        assert_eq!(it.status, TimerStatus::Paused);
+        assert_eq!(it.ends_at, None);
+        assert_eq!(it.remaining_ms, 560_000); // 500k + 60k
+        assert_eq!(it.total_ms, 660_000);
+    }
+
+    #[test]
+    fn adjust_finished_genstarter_ved_positiv_delta() {
+        let mut t = timers();
+        let id = running(&mut t, "a", 600_000);
+        let ends = NOW + 600_000;
+        assert!(t.finish(id, ends));
+        let now = ends + 30_000;
+        // negativ delta på finished = no-op
+        assert!(!t.adjust(id, -60_000, now));
+        assert_eq!(item(&t, id).status, TimerStatus::Finished);
+        // +5 min genstarter
+        assert!(t.adjust(id, 300_000, now));
+        let it = item(&t, id);
+        assert_eq!(it.status, TimerStatus::Running);
+        assert_eq!(it.ends_at, Some(now + 300_000));
+        assert_eq!(it.remaining_ms, 300_000);
+        assert_eq!(it.total_ms, 300_000);
+        assert_eq!(it.finished_at, None);
+        assert_eq!(it.repeat_count, 0);
+        // initial_ms bevares
+        assert_eq!(it.initial_ms, 600_000);
+    }
+
+    #[test]
+    fn finish_og_due() {
+        let mut t = timers();
+        let id1 = running(&mut t, "a", 60_000);
+        let id2 = running(&mut t, "b", 120_000);
+        let id3 = running(&mut t, "c", 30_000);
+        t.pause(id3, NOW);
+        let now = NOW + 70_000;
+        let due = t.due(now);
+        assert_eq!(due, vec![(id1, NOW + 60_000)]);
+        // finish sætter finished_at til udløbstid
+        assert!(t.finish(id1, NOW + 60_000));
+        let it = item(&t, id1);
+        assert_eq!(it.status, TimerStatus::Finished);
+        assert_eq!(it.finished_at, Some(NOW + 60_000));
+        assert_eq!(it.remaining_ms, 0);
+        assert_eq!(it.ends_at, None);
+        // id2 udløber ved 120s, id3 er paused
+        assert_eq!(t.due(now + 60_000), vec![(id2, NOW + 120_000)]);
+    }
+
+    #[test]
+    fn next_repeat_at_vindue() {
+        let mut t = timers();
+        let id = running(&mut t, "a", 60_000);
+        let finished_at = NOW + 60_000;
+        assert!(t.finish(id, finished_at));
+        let it = item(&t, id);
+        assert_eq!(it.next_repeat_at(), Some(finished_at + 10_000));
+        item_mut(&mut t, id).repeat_count = 5;
+        assert_eq!(item(&t, id).next_repeat_at(), Some(finished_at + 60_000));
+        item_mut(&mut t, id).repeat_count = 6;
+        assert_eq!(item(&t, id).next_repeat_at(), None);
+        // kun finished
+        let id2 = running(&mut t, "b", 60_000);
+        assert_eq!(item(&t, id2).next_repeat_at(), None);
+    }
+
+    #[test]
+    fn next_wake_tager_min_af_ends_og_repeat() {
+        let mut t = timers();
+        let running_id = running(&mut t, "a", 100_000);
+        let finished_id = running(&mut t, "b", 50_000);
+        t.finish(finished_id, NOW + 50_000);
+        // finished repeat ved +60s, running ends ved +100s → wake = 60s
+        assert_eq!(t.next_wake(NOW), Some(NOW + 60_000));
+        // efter running fjernes står kun repeat tilbage
+        t.remove(running_id);
+        assert_eq!(t.next_wake(NOW), Some(NOW + 60_000));
+        // uden noget → None
+        let t2 = timers();
+        assert_eq!(t2.next_wake(NOW), None);
     }
 
     #[test]
@@ -721,18 +953,51 @@ mod tests {
         let settings = TimerSettings::from_value(&serde_json::json!({}));
         assert_eq!(settings.sound, "chime");
         assert_eq!(settings.volume, 80);
-        assert_eq!(settings.focus_ms, 25 * 60_000);
-        assert!(matches!(settings.mode, TimerMode::Countdown));
+        assert!(settings.notify);
     }
 
     #[test]
-    fn settings_parse_pomodoro() {
+    fn settings_parse_volume_clamp() {
         let settings = TimerSettings::from_value(&serde_json::json!({
-            "mode": "pomodoro", "focusMin": 50, "rounds": 6, "volume": 140
+            "sound": "marimba", "volume": 140, "notify": false
         }));
-        assert!(matches!(settings.mode, TimerMode::Pomodoro));
-        assert_eq!(settings.focus_ms, 50 * 60_000);
-        assert_eq!(settings.rounds, 6);
+        assert_eq!(settings.sound, "marimba");
         assert_eq!(settings.volume, 100);
+        assert!(!settings.notify);
+        let settings2 = TimerSettings::from_value(&serde_json::json!({ "volume": 30 }));
+        assert_eq!(settings2.volume, 30);
+    }
+
+    #[test]
+    fn remove_item() {
+        let mut t = timers();
+        let id = running(&mut t, "a", 60_000);
+        assert!(t.remove(id));
+        assert!(!t.remove(id));
+        assert!(t.items.is_empty());
+    }
+
+    #[test]
+    fn persist_v1_fil_ignoreres() {
+        // gammelt format: bart HashMap<Uuid, TimerEntry> uden version/widgets
+        let v1 = br#"{"550e8400-e29b-41d4-a716-446655440000":{"label":"old","durationMs":60000}}"#;
+        assert!(decode_persist(v1).is_empty());
+        // forkert version
+        let wrong_version = br#"{"version":1,"widgets":{}}"#;
+        assert!(decode_persist(wrong_version).is_empty());
+        // ødelagt json
+        assert!(decode_persist(b"not json").is_empty());
+        // gyldig v2
+        let mut t = timers();
+        running(&mut t, "a", 60_000);
+        let widget_id = Uuid::new_v4();
+        let file = TimerFile {
+            version: PERSIST_VERSION,
+            widgets: HashMap::from([(widget_id, t)]),
+        };
+        let bytes = serde_json::to_vec(&file).unwrap();
+        let decoded = decode_persist(&bytes);
+        assert_eq!(decoded.len(), 1);
+        assert_eq!(decoded[&widget_id].items.len(), 1);
     }
 }

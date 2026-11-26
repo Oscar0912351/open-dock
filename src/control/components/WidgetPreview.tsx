@@ -12,24 +12,10 @@ import type { WidgetSize } from "../../shared/bindings/WidgetSize";
 import { toAssetUrl } from "../../shared/ipc";
 import { ClusterShell } from "../../widget/cluster/ClusterShell";
 import { computeClusterTargetHeight, DEFAULT_CLUSTER_SIGNALS, resolveModuleModes } from "../../widget/cluster/resolveLayout";
-import { Agents, resolveAgentsSettings } from "../../widget/kinds/agents/Agents";
-import { Clock, resolveClockSettings } from "../../widget/kinds/clock/Clock";
+import { resolveClockSettings } from "../../widget/kinds/clock/Clock";
 import { useClock } from "../../widget/kinds/clock/useClock";
-import { Discord } from "../../widget/kinds/discord/Discord";
-import { Note, resolveNoteSettings } from "../../widget/kinds/note/Note";
-import { Timer, resolveTimerSettings } from "../../widget/kinds/timer/Timer";
-import { NowPlaying, resolveNowPlayingSettings } from "../../widget/kinds/nowPlaying/NowPlaying";
-import { resolveSystemSettings, System } from "../../widget/kinds/system/System";
-import { resolveWeatherSettings, Weather } from "../../widget/kinds/weather/Weather";
-import { WIDGET_REGISTRY } from "../../widget/registry";
-import { WidgetShell, type ClusterFrameInfo, type GlassPlacementInfo } from "../../widget/WidgetShell";
-
-const SIZE_DIMS: Record<WidgetSize, { width: number; height: number }> = {
-  pill: { width: 204, height: 48 },
-  s: { width: 132, height: 132 },
-  m: { width: 276, height: 132 },
-  l: { width: 276, height: 276 },
-};
+import { renderWidget, WIDGET_REGISTRY } from "../../widget/registry";
+import { WidgetShell, WIDGET_SIZES, type ClusterFrameInfo, type GlassPlacementInfo } from "../../widget/WidgetShell";
 
 export interface WidgetPreviewProps {
   id?: string;
@@ -139,12 +125,13 @@ export const WidgetPreview = memo(function WidgetPreview({
       },
       layer: "desktop",
       clickThrough: false,
+      revealOnHover: false,
       themeOverride,
       glassOverride,
       glassOverrideEngine: null,
       settings: settings ?? defaultSettings,
       cluster,
-      createdAt: BigInt(0),
+      createdAt: 0,
     };
   }, [instance, id, kind, size, monitors, themeOverride, glassOverride, settings, cluster]);
 
@@ -169,7 +156,7 @@ export const WidgetPreview = memo(function WidgetPreview({
       );
       return { width: cluster.width, height: h };
     }
-    return SIZE_DIMS[size];
+    return WIDGET_SIZES[size];
   }, [kind, cluster, clusterFrame, size]);
 
   const targetMonitor = useMemo(() => {
@@ -233,99 +220,39 @@ export const WidgetPreview = memo(function WidgetPreview({
     [clusterFrame],
   );
 
-  const renderWidget = () => {
-    switch (kind) {
-      case "clock":
-        return (
-          <Clock
-            now={now}
-            settings={clockSettings}
-            size={size === "l" ? "m" : size}
-            theme={effectiveTheme}
-          />
-        );
-      case "nowPlaying":
-        return (
-          <NowPlaying
-            size={size}
-            theme={effectiveTheme}
-            settings={resolveNowPlayingSettings(settings)}
-            pausedApp={true}
-            onAmbientChange={handleAmbientChange}
-          />
-        );
-      case "system":
-        return (
-          <System
-            size={size}
-            theme={effectiveTheme}
-            settings={resolveSystemSettings(settings)}
-          />
-        );
-      case "weather":
-        return (
-          <Weather
-            size={size === "pill" ? "s" : size}
-            theme={effectiveTheme}
-            settings={resolveWeatherSettings(settings)}
-            locations={locations}
-          />
-        );
-      case "note":
-        return (
-          <Note
-            id={id}
-            settings={resolveNoteSettings(settings)}
-            editMode={false}
-            preview
-          />
-        );
-      case "timer":
-        return (
-          <Timer
-            id={id}
-            settings={resolveTimerSettings(settings)}
-            size={size === "l" ? "m" : size}
-            editMode={false}
-            preview
-          />
-        );
-      case "discord":
-        return (
-          <Discord
-            size={size === "l" ? "m" : size}
-          />
-        );
-      case "agents":
-        return (
-          <Agents
-            size={size === "pill" ? "s" : size}
-            settings={resolveAgentsSettings(settings)}
-            preview
-          />
-        );
-      case "cluster":
-        if (!cluster) return null;
-        return (
-          <ClusterShell
-            instance={syntheticInstance}
-            cluster={cluster}
-            theme={effectiveTheme}
-            motion={appearance.motion}
-            editMode={false}
-            pausedApp={true}
-            locations={locations}
-            preview
-            previewShowAll={previewShowAll}
-            onClusterFrameChange={handleClusterFrameChange}
-            onAmbientChange={handleAmbientChange}
-            onAriaChange={() => {}}
-            registerTransitionEnd={registerTransitionEnd}
-          />
-        );
-      default:
-        return null;
+  const renderContent = () => {
+    if (kind === "cluster") {
+      if (!cluster) return null;
+      return (
+        <ClusterShell
+          instance={syntheticInstance}
+          cluster={cluster}
+          theme={effectiveTheme}
+          motion={appearance.motion}
+          editMode={false}
+          pausedApp={true}
+          locations={locations}
+          preview
+          previewShowAll={previewShowAll}
+          onClusterFrameChange={handleClusterFrameChange}
+          onAmbientChange={handleAmbientChange}
+          onAriaChange={() => {}}
+          registerTransitionEnd={registerTransitionEnd}
+        />
+      );
     }
+    return renderWidget(kind, {
+      id,
+      size,
+      theme: effectiveTheme,
+      settings: settings ?? {},
+      now,
+      editMode: false,
+      preview: true,
+      pausedApp: true,
+      locations,
+      onAmbientChange: handleAmbientChange,
+    });
   };
 
   const inner = (
@@ -364,7 +291,7 @@ export const WidgetPreview = memo(function WidgetPreview({
           glass={plateInfo}
           clusterFrame={shellClusterFrame}
         >
-          {renderWidget()}
+          {renderContent()}
         </WidgetShell>
       </div>
     </div>

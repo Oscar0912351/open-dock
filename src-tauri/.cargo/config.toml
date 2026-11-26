@@ -2,3 +2,8 @@
 # Se plan/09-optimering.md §2.2. MSVC link.exe er den serielle hale i hver build.
 [target.x86_64-pc-windows-msvc]
 linker = "rust-lld.exe"
+
+# i64/u64 serialiseres som JSON-numbers af serde_json — bindings skal afspejle runtime.
+# Epoch-ms og byte-værdier passer i f64 (2^53). Fjerner behovet for Number()-casts i frontend.
+[env]
+TS_RS_LARGE_INT = "number"

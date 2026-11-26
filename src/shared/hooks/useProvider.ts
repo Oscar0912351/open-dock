@@ -26,24 +26,6 @@ export interface ProviderResult<T> {
 
 const LOADING_REVEAL_MS = 300;
 
-interface ChannelState {
-  data: unknown | null;
-  failed: boolean;
-}
-
-interface SharedChannel {
-  kind: ProviderKind;
-  key: string | null;
-  state: ChannelState;
-  listeners: Set<(next: ChannelState) => void>;
-  unlisten?: () => void;
-  subscribed: boolean;
-  receivedEvent: boolean;
-  disposed: boolean;
-}
-
-const channels = new Map<string, SharedChannel>();
-
 function openEventListener(
   kind: ProviderKind,
   normalizedKey: string | null,
@@ -65,81 +47,6 @@ function openEventListener(
     return on.discord((payload) => onPayload(payload));
   }
   return on.agents((payload) => onPayload(payload));
-}
-
-function retainChannel(
-  subId: string,
-  kind: ProviderKind,
-  normalizedKey: string | null,
-  listener: (next: ChannelState) => void,
-): { initial: ChannelState; release: () => void } {
-  let ch = channels.get(subId);
-  if (!ch) {
-    ch = {
-      kind,
-      key: normalizedKey,
-      state: { data: null, failed: false },
-      listeners: new Set(),
-      subscribed: false,
-      receivedEvent: false,
-      disposed: false,
-    };
-    channels.set(subId, ch);
-
-    const channel = ch;
-    const notify = (next: ChannelState) => {
-      if (channel.disposed) return;
-      channel.state = next;
-      for (const cb of channel.listeners) {
-        cb(next);
-      }
-    };
-
-    void (async () => {
-      try {
-        const dispose = await openEventListener(kind, normalizedKey, (payload, failed = false) => {
-          channel.receivedEvent = true;
-          notify({ data: payload, failed });
-        });
-        if (channel.disposed) {
-          dispose();
-          return;
-        }
-        channel.unlisten = dispose;
-
-        const snapshot = await ipc.providerSubscribe(kind, normalizedKey);
-        channel.subscribed = true;
-        if (channel.disposed) {
-          void ipc.providerUnsubscribe(kind, normalizedKey).catch(() => {});
-          return;
-        }
-        if (snapshot && !channel.receivedEvent) {
-          notify({ data: snapshot, failed: false });
-        }
-      } catch (reason: unknown) {
-        if (channel.disposed) return;
-        notify({ data: null, failed: true });
-        void reportError(`useProvider (${kind}): ${String(reason)}`);
-      }
-    })();
-  }
-
-  ch.listeners.add(listener);
-  const retained = ch;
-  return {
-    initial: retained.state,
-    release: () => {
-      retained.listeners.delete(listener);
-      if (retained.listeners.size === 0 && !retained.disposed) {
-        retained.disposed = true;
-        channels.delete(subId);
-        retained.unlisten?.();
-        if (retained.subscribed) {
-          void ipc.providerUnsubscribe(retained.kind, retained.key).catch(() => {});
-        }
-      }
-    },
-  };
 }
 
 function deriveStatus<K extends ProviderKind>(
@@ -168,6 +75,13 @@ function deriveStatus<K extends ProviderKind>(
   return "ready";
 }
 
+/**
+ * Tynd abonnements-hook: lytter på provider-events og parrer ét
+ * subscribe/unsubscribe pr. effekt. Refcounting og deduplikering af selve
+ * provideren ejes af Rust-scheduleren (pr. window-label, emit deduplikeres pr.
+ * vindue) — der er bevidst ingen frontend-cache oveni, så der kun er én
+ * sandhed om hvem der abonnerer.
+ */
 export function useProvider<K extends ProviderKind>(
   kind: K,
   key?: string | null,
@@ -182,15 +96,7 @@ export function useProvider<K extends ProviderKind>(
     data: ProviderDataMap[K] | null;
     failed: boolean;
     showSkeleton: boolean;
-  }>(() => {
-    const existing = subId ? channels.get(subId)?.state : undefined;
-    return {
-      subId,
-      data: (existing?.data as ProviderDataMap[K] | null) ?? null,
-      failed: existing?.failed ?? false,
-      showSkeleton: false,
-    };
-  });
+  }>({ subId: null, data: null, failed: false, showSkeleton: false });
 
   useEffect(() => {
     if (!subId) {
@@ -198,42 +104,78 @@ export function useProvider<K extends ProviderKind>(
     }
 
     let active = true;
+    let unlisten: (() => void) | null = null;
+    // Om subscribe-invoke'et har fuldført — kun da må der unsubscribe'es,
+    // ellers ville vi spise en anden komponents refcount i samme vindue.
+    let subscribed = false;
+
     const skeletonTimer = window.setTimeout(() => {
       if (active) {
         setState((prev) =>
-          prev.subId === subId
-            ? { ...prev, showSkeleton: true }
-            : { subId, data: null, failed: false, showSkeleton: true },
+          prev.subId === subId ? { ...prev, showSkeleton: true } : { subId, data: null, failed: false, showSkeleton: true },
         );
       }
     }, LOADING_REVEAL_MS);
 
-    const { initial, release } = retainChannel(subId, kind, normalizedKey, (next) => {
-      if (!active) return;
-      setState({
-        subId,
-        data: next.data as ProviderDataMap[K] | null,
-        failed: next.failed,
-        showSkeleton: false,
-      });
-    });
-
-    if (initial.data !== null || initial.failed) {
-      queueMicrotask(() => {
-        if (!active) return;
-        setState({
-          subId,
-          data: initial.data as ProviderDataMap[K] | null,
-          failed: initial.failed,
-          showSkeleton: false,
+    void (async () => {
+      let dispose: (() => void) | null = null;
+      try {
+        dispose = await openEventListener(kind, normalizedKey, (payload, failed = false) => {
+          if (!active) return;
+          setState({
+            subId,
+            data: payload as ProviderDataMap[K],
+            failed,
+            showSkeleton: false,
+          });
         });
+      } catch (reason: unknown) {
+        if (active) {
+          setState({ subId, data: null, failed: true, showSkeleton: false });
+          void reportError(`useProvider (${kind}): ${String(reason)}`);
+        }
+        return;
+      }
+      if (!active) {
+        dispose();
+        return;
+      }
+      unlisten = dispose;
+    })();
+
+    void ipc
+      .providerSubscribe(kind, normalizedKey)
+      .then((snapshot) => {
+        subscribed = true;
+        if (!active) {
+          // Cleanup nåede før svaret — par subscribe/unsubscribe med det samme,
+          // så unsubscribe altid sendes efter subscribe på Rust-siden.
+          void ipc.providerUnsubscribe(kind, normalizedKey).catch(() => {});
+          return;
+        }
+        if (snapshot) {
+          setState({
+            subId,
+            data: snapshot as ProviderDataMap[K],
+            failed: false,
+            showSkeleton: false,
+          });
+        }
+      })
+      .catch((reason: unknown) => {
+        if (!active) return;
+        setState({ subId, data: null, failed: true, showSkeleton: false });
+        void reportError(`useProvider (${kind}): ${String(reason)}`);
       });
-    }
 
     return () => {
       active = false;
       window.clearTimeout(skeletonTimer);
-      release();
+      unlisten?.();
+      if (subscribed) {
+        subscribed = false;
+        void ipc.providerUnsubscribe(kind, normalizedKey).catch(() => {});
+      }
     };
   }, [kind, normalizedKey, subId]);
 

@@ -215,7 +215,7 @@ mod tests {
             media::{MediaAction, MediaSnapshot, PlaybackStatus, RepeatMode},
             scheduler::{ProviderKind, ProviderSnapshot},
             system::{CpuSample, DiskSample, GpuSample, MemSample, NetSample, SystemSample},
-            timer::{TimerSegment, TimerSnapshot, TimerStatus},
+            timer::{RecentTimer, TimerItem, TimerListSnapshot, TimerStatus},
             weather::{GeoResult, WeatherCurrent, WeatherDaily, WeatherHourly, WeatherSnapshot},
         },
         wallpaper::{
@@ -316,9 +316,10 @@ mod tests {
         AgentTodoProgress::export_all(&config).unwrap();
         AgentSession::export_all(&config).unwrap();
         AgentsSnapshot::export_all(&config).unwrap();
-        TimerSegment::export_all(&config).unwrap();
         TimerStatus::export_all(&config).unwrap();
-        TimerSnapshot::export_all(&config).unwrap();
+        TimerItem::export_all(&config).unwrap();
+        RecentTimer::export_all(&config).unwrap();
+        TimerListSnapshot::export_all(&config).unwrap();
         crate::update::ReleaseManifest::export_all(&config).unwrap();
         crate::update::UpdateCheckState::export_all(&config).unwrap();
         crate::update::UpdateStatus::export_all(&config).unwrap();

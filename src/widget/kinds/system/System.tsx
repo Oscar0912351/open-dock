@@ -101,7 +101,7 @@ export function System({ size, theme, settings, onAriaChange }: SystemProps) {
   useEffect(() => {
     if (!sample || !onAriaChange) return;
     const cpuBucket = Math.round(sample.cpu.usage / 5) * 5;
-    const memGb = Math.round(Number(sample.mem.usedBytes) / (1024 * 1024 * 1024));
+    const memGb = Math.round(sample.mem.usedBytes / (1024 * 1024 * 1024));
     const gpuBucket =
       sample.gpu?.usage !== null && sample.gpu?.usage !== undefined
         ? Math.round(sample.gpu.usage / 5) * 5
@@ -111,8 +111,8 @@ export function System({ size, theme, settings, onAriaChange }: SystemProps) {
     lastAriaBucketRef.current = bucketKey;
 
     const cpuStr = `${Math.round(sample.cpu.usage)} procent`;
-    const used = formatBytes(Number(sample.mem.usedBytes));
-    const total = formatBytes(Number(sample.mem.totalBytes));
+    const used = formatBytes(sample.mem.usedBytes);
+    const total = formatBytes(sample.mem.totalBytes);
     const gpuStr =
       sample.gpu?.usage !== null && sample.gpu?.usage !== undefined
         ? `, GPU ${Math.round(sample.gpu.usage)} procent`
@@ -160,8 +160,8 @@ export function System({ size, theme, settings, onAriaChange }: SystemProps) {
         };
       }
       case "mem": {
-        const used = Number(sample.mem.usedBytes);
-        const total = Math.max(1, Number(sample.mem.totalBytes));
+        const used = sample.mem.usedBytes;
+        const total = Math.max(1, sample.mem.totalBytes);
         const ratio = Math.min(1, Math.max(0, used / total));
         const pct = ratio * 100;
         const usedShort = formatBytes(used).replace(/\u202F?(B|kB|MB|GB|TB)$/, "");
@@ -217,7 +217,7 @@ export function System({ size, theme, settings, onAriaChange }: SystemProps) {
         const used = sample.gpu?.vramUsedBytes;
         const total = sample.gpu?.vramTotalBytes;
         const supported =
-          (caps?.vram ?? true) && used !== null && used !== undefined && total !== null && total !== undefined && Number(total) > 0;
+          (caps?.vram ?? true) && used !== null && used !== undefined && total !== null && total !== undefined && total > 0;
         if (!supported) {
           return {
             key: "vram",
@@ -233,8 +233,8 @@ export function System({ size, theme, settings, onAriaChange }: SystemProps) {
             tempValue: null,
           };
         }
-        const u = Number(used);
-        const tot = Number(total);
+        const u = used;
+        const tot = total;
         const pct = Math.min(100, Math.max(0, (u / tot) * 100));
         return {
           key: "vram",
@@ -391,7 +391,7 @@ export function System({ size, theme, settings, onAriaChange }: SystemProps) {
   }
 
   if (size === "m") {
-    const uptimeS = Number(sample.uptimeS);
+    const uptimeS = sample.uptimeS;
     const hours = Math.floor(uptimeS / 3600);
     const mins = Math.floor((uptimeS % 3600) / 60);
     const cols = settings.metrics.slice(0, 3);
@@ -502,13 +502,13 @@ function sustainedHighMs(
   current: SystemSample,
   metric: SystemMetric,
 ): number {
-  let earliest = Number(current.t);
+  let earliest = current.t;
   for (let i = history.length - 1; i >= 0; i--) {
     const row = history[i];
     if (!row || extractHistoryPct(row, metric) < 95) break;
-    earliest = Number(row.t);
+    earliest = row.t;
   }
-  return Math.max(0, Number(current.t) - earliest);
+  return Math.max(0, current.t - earliest);
 }
 
 function extractHistoryPct(sample: SystemSample, metric: SystemMetric): number {
@@ -516,14 +516,14 @@ function extractHistoryPct(sample: SystemSample, metric: SystemMetric): number {
     case "cpu":
       return Math.min(100, Math.max(0, sample.cpu.usage));
     case "mem": {
-      const total = Math.max(1, Number(sample.mem.totalBytes));
-      return Math.min(100, Math.max(0, (Number(sample.mem.usedBytes) / total) * 100));
+      const total = Math.max(1, sample.mem.totalBytes);
+      return Math.min(100, Math.max(0, (sample.mem.usedBytes / total) * 100));
     }
     case "gpu":
       return Math.min(100, Math.max(0, sample.gpu?.usage ?? 0));
     case "vram": {
-      const total = Math.max(1, Number(sample.gpu?.vramTotalBytes ?? 1));
-      return Math.min(100, Math.max(0, (Number(sample.gpu?.vramUsedBytes ?? 0) / total) * 100));
+      const total = Math.max(1, sample.gpu?.vramTotalBytes ?? 1);
+      return Math.min(100, Math.max(0, (sample.gpu?.vramUsedBytes ?? 0 / total) * 100));
     }
     case "net":
       return sample.net.rxBps / 1024;

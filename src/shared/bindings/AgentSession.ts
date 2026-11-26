@@ -26,7 +26,7 @@ project: string | null, status: AgentStatus,
 /**
  * Epoch ms for seneste aktivitet.
  */
-lastActiveMs: bigint, 
+lastActiveMs: number, 
 /**
  * Kort dansk handlingstekst (fx "Redigerer filer", "Stiller et spørgsmål").
  */

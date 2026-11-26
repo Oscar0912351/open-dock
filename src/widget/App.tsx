@@ -9,22 +9,15 @@ import { ipc, on, toAssetUrl } from "../shared/ipc";
 import { reportError } from "../shared/logging";
 import { ClusterShell } from "./cluster/ClusterShell";
 import { StateError } from "./components/States";
-import { WIDGET_REGISTRY } from "./registry";
+import { renderWidget, WIDGET_REGISTRY } from "./registry";
 import {
   computeScrimAlpha,
   WidgetShell,
   type ClusterFrameInfo,
   type GlassPlacementInfo,
 } from "./WidgetShell";
-import { Agents, resolveAgentsSettings } from "./kinds/agents/Agents";
-import { Clock, resolveClockSettings } from "./kinds/clock/Clock";
+import { resolveClockSettings } from "./kinds/clock/Clock";
 import { useClock } from "./kinds/clock/useClock";
-import { Discord } from "./kinds/discord/Discord";
-import { Note, resolveNoteSettings } from "./kinds/note/Note";
-import { Timer, resolveTimerSettings } from "./kinds/timer/Timer";
-import { NowPlaying, resolveNowPlayingSettings } from "./kinds/nowPlaying/NowPlaying";
-import { resolveSystemSettings, System } from "./kinds/system/System";
-import { resolveWeatherSettings, Weather } from "./kinds/weather/Weather";
 
 interface WidgetAppProps {
   id: string;
@@ -38,6 +31,14 @@ export function WidgetApp({ id }: WidgetAppProps) {
   const [locations, setLocations] = useState<Location[]>([]);
   const [ambientColor, setAmbientColor] = useState<[number, number, number] | null>(null);
   const [hiddenIdle, setHiddenIdle] = useState(false);
+  // Start som false: Rust emitter kun ved ændring, og det første event kan
+  // gå tabt hvis webview'ens lytter ikke var registreret endnu. De første
+  // 4 s er widgetten alligevel synlig (bootGrace); Rust gen-emitter
+  // tilstanden hvert ~2. s, så den rigtige tilstand når frem.
+  const [hoverInside, setHoverInside] = useState(false);
+  const [bootGrace, setBootGrace] = useState(true);
+  const [pinnedVisible, setPinnedVisible] = useState(false);
+  const hoverHideTimerRef = useRef<number | null>(null);
   const [ariaLabel, setAriaLabel] = useState<string | undefined>(undefined);
   const [clusterFrame, setClusterFrame] = useState<ClusterFrameInfo | null>(null);
   const [selectedWidgetId, setSelectedWidgetId] = useState<string | null>(null);
@@ -74,6 +75,7 @@ export function WidgetApp({ id }: WidgetAppProps) {
 
   const instance = boot?.instance;
   const kind = instance?.kind ?? "clock";
+  const isEditing = boot?.editMode ?? false;
   const clockSettings = resolveClockSettings(kind === "clock" ? instance?.settings : undefined);
   const now = useClock(kind === "clock" && clockSettings.showSeconds, kind === "clock");
 
@@ -129,13 +131,30 @@ export function WidgetApp({ id }: WidgetAppProps) {
     };
   }, [id, setPaused]);
 
+  // "Vis kun når musen er over": widgetten er helt skjult + klik-igennem
+  // indtil Rust melder markøren over vinduet. Pinnet synlig når der er en
+  // finished-timer, inputtet er fokuseret, edit-mode kører, eller i de første
+  // 4 s efter boot (bootGrace).
+  const revealOnHover = instance?.revealOnHover ?? false;
+  const peekHidden = Boolean(
+    revealOnHover && !hoverInside && !pinnedVisible && !isEditing && !bootGrace,
+  );
+  const effectiveHiddenIdle =
+    ((kind === "nowPlaying" || kind === "cluster") && hiddenIdle) || peekHidden;
+  const idleHiddenActive = effectiveHiddenIdle && !isEditing;
+
   const prevIdleHiddenRef = useRef(false);
   useEffect(() => {
     if (!id || !boot) return;
-    if (prevIdleHiddenRef.current === hiddenIdle) return;
-    prevIdleHiddenRef.current = hiddenIdle;
-    void ipc.widgetSetIdleHidden(id, hiddenIdle).catch(() => {});
-  }, [id, hiddenIdle, boot]);
+    if (prevIdleHiddenRef.current === idleHiddenActive) return;
+    prevIdleHiddenRef.current = idleHiddenActive;
+    void ipc.widgetSetIdleHidden(id, idleHiddenActive).catch(() => {});
+  }, [id, idleHiddenActive, boot]);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => setBootGrace(false), 4_000);
+    return () => window.clearTimeout(timer);
+  }, []);
 
   useEffect(() => {
     if (!id) return;
@@ -308,15 +327,44 @@ export function WidgetApp({ id }: WidgetAppProps) {
       void reportError(`edit://dragging: ${String(reason)}`);
     });
 
+    on.widgetHover((state) => {
+      if (!active) return;
+      if (state.inside) {
+        // Ind = vises med det samme — afbryd en ventende skjulning.
+        if (hoverHideTimerRef.current !== null) {
+          window.clearTimeout(hoverHideTimerRef.current);
+          hoverHideTimerRef.current = null;
+        }
+        setHoverInside(true);
+      } else {
+        // Ud = 600 ms grace før widgetten skjules igen.
+        if (hoverHideTimerRef.current !== null) {
+          window.clearTimeout(hoverHideTimerRef.current);
+        }
+        hoverHideTimerRef.current = window.setTimeout(() => {
+          hoverHideTimerRef.current = null;
+          setHoverInside(false);
+        }, 600);
+      }
+    }).then((dispose) => {
+      if (active) unlisteners.push(dispose);
+      else dispose();
+    }).catch((reason: unknown) => {
+      void reportError(`widget://hover: ${String(reason)}`);
+    });
+
     return () => {
       active = false;
+      if (hoverHideTimerRef.current !== null) {
+        window.clearTimeout(hoverHideTimerRef.current);
+        hoverHideTimerRef.current = null;
+      }
       for (const dispose of unlisteners) {
         dispose();
       }
     };
   }, [id]);
 
-  const isEditing = boot?.editMode ?? false;
   const isSelected = selectedWidgetId === id;
   const isDragging = draggingWidgetId === id;
   const canCycleSize =
@@ -419,8 +467,7 @@ export function WidgetApp({ id }: WidgetAppProps) {
       : null;
 
   const effectiveAmbient = kind === "nowPlaying" || kind === "cluster" ? ambientColor : null;
-  const effectiveHiddenIdle = (kind === "nowPlaying" || kind === "cluster") && hiddenIdle;
-  const backdropVisible = !(effectiveHiddenIdle && !isEditing);
+  const backdropVisible = !idleHiddenActive;
   const activeClusterFrame = kind === "cluster" ? shellClusterFrame : null;
   const needsWeatherSprite = kind === "weather" || kind === "cluster" || kind === "timer";
 
@@ -445,7 +492,7 @@ export function WidgetApp({ id }: WidgetAppProps) {
           typeof window.matchMedia === "function" &&
           window.matchMedia("(prefers-reduced-motion: reduce)").matches);
       void ipc
-        .widgetSetBackdropVisible(id, backdropVisible, reducedMotion ? 0 : 420)
+        .widgetSetBackdropVisible(id, backdropVisible, reducedMotion ? 0 : backdropVisible ? 180 : 420)
         .catch(() => {});
     }
   }, [id, liveBackdrop, backdropVisible, appearance?.motion]);
@@ -470,7 +517,7 @@ export function WidgetApp({ id }: WidgetAppProps) {
         paused={paused}
         ariaLabel={ariaLabel}
         ambientColor={effectiveAmbient}
-        hiddenIdle={effectiveHiddenIdle && !isEditing}
+        hiddenIdle={idleHiddenActive}
         isEditing={isEditing}
         isSelected={isSelected}
         isDragging={isDragging}
@@ -498,83 +545,42 @@ export function WidgetApp({ id }: WidgetAppProps) {
       >
         {error ? (
           <StateError title={error} />
-        ) : !instance ? null : kind === "clock" ? (
-          <Clock
-            now={now}
-            settings={clockSettings}
-            size={size === "l" ? "m" : size}
-            theme={theme}
-          />
-        ) : kind === "nowPlaying" ? (
-          <NowPlaying
-            size={size}
-            theme={theme}
-            settings={resolveNowPlayingSettings(instance.settings)}
-            pausedApp={paused}
-            onAmbientChange={setAmbientColor}
-            onHiddenIdleChange={setHiddenIdle}
-            onAriaChange={setAriaLabel}
-          />
-        ) : kind === "system" ? (
-          <System
-            size={size}
-            theme={theme}
-            settings={resolveSystemSettings(instance.settings)}
-            onAriaChange={setAriaLabel}
-          />
-        ) : kind === "weather" ? (
-          <Weather
-            size={size}
-            theme={theme}
-            settings={resolveWeatherSettings(instance.settings)}
-            locations={locations}
-            onAriaChange={setAriaLabel}
-          />
-        ) : kind === "discord" ? (
-          <Discord
-            size={size}
-            theme={theme}
-            onAriaChange={setAriaLabel}
-          />
-        ) : kind === "agents" ? (
-          <Agents
-            size={size}
-            theme={theme}
-            settings={resolveAgentsSettings(instance.settings)}
-            onAriaChange={setAriaLabel}
-          />
-        ) : kind === "timer" ? (
-          <Timer
-            id={instance.id}
-            settings={resolveTimerSettings(instance.settings)}
-            size={size === "l" ? "m" : size}
-            editMode={boot?.editMode ?? false}
-            onAriaChange={setAriaLabel}
-          />
-        ) : kind === "note" ? (
-          <Note
-            id={instance.id}
-            settings={resolveNoteSettings(instance.settings)}
-            editMode={boot?.editMode ?? false}
-            onAriaChange={setAriaLabel}
-          />
-        ) : kind === "cluster" && instance.cluster ? (
-          <ClusterShell
-            instance={instance}
-            cluster={instance.cluster}
-            theme={theme}
-            motion={appearance?.motion ?? "full"}
-            editMode={boot?.editMode ?? false}
-            pausedApp={paused}
-            liveBackdrop={liveBackdrop}
-            locations={locations}
-            onClusterFrameChange={setClusterFrame}
-            onAmbientChange={setAmbientColor}
-            onAriaChange={setAriaLabel}
-            registerTransitionEnd={registerClusterTransitionEnd}
-          />
+        ) : !instance ? null : kind === "cluster" ? (
+          instance.cluster ? (
+            <ClusterShell
+              instance={instance}
+              cluster={instance.cluster}
+              theme={theme}
+              motion={appearance?.motion ?? "full"}
+              editMode={boot?.editMode ?? false}
+              pausedApp={paused}
+              liveBackdrop={liveBackdrop}
+              locations={locations}
+              onClusterFrameChange={setClusterFrame}
+              onAmbientChange={setAmbientColor}
+              onAriaChange={setAriaLabel}
+              onPinVisibleChange={setPinnedVisible}
+              registerTransitionEnd={registerClusterTransitionEnd}
+            />
+          ) : (
+            <StateError title={t("error.widgetBoot")} />
+          )
         ) : (
-          <StateError title={t("error.widgetBoot")} />
+          renderWidget(kind, {
+            id: instance.id,
+            size,
+            theme,
+            settings: instance.settings,
+            now,
+            editMode: boot?.editMode ?? false,
+            preview: false,
+            pausedApp: paused,
+            locations,
+            onAriaChange: setAriaLabel,
+            onAmbientChange: setAmbientColor,
+            onHiddenIdleChange: setHiddenIdle,
+            onPinVisibleChange: setPinnedVisible,
+          })
         )}
       </WidgetShell>
     </>

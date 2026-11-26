@@ -9,6 +9,7 @@ mod sources;
 mod sqlite;
 
 use std::{
+    collections::HashMap,
     sync::{
         atomic::{AtomicBool, Ordering},
         Arc,
@@ -181,6 +182,51 @@ fn unix_now_ms() -> i64 {
         .unwrap_or(0)
 }
 
+#[derive(Default)]
+struct SessionOrderMemory {
+    positions: HashMap<String, u64>,
+    next: u64,
+}
+
+impl SessionOrderMemory {
+    fn apply(&mut self, sessions: &mut [AgentSession]) {
+        for session in sessions.iter() {
+            if !self.positions.contains_key(&session.id) {
+                self.positions.insert(session.id.clone(), self.next);
+                self.next = self.next.saturating_add(1);
+            }
+        }
+        sessions.sort_by(|a, b| {
+            b.status_rank()
+                .cmp(&a.status_rank())
+                .then_with(|| {
+                    let a_pos = self.positions.get(&a.id).copied().unwrap_or(u64::MAX);
+                    let b_pos = self.positions.get(&b.id).copied().unwrap_or(u64::MAX);
+                    a_pos.cmp(&b_pos)
+                })
+                .then_with(|| a.id.cmp(&b.id))
+        });
+    }
+}
+
+fn same_session_for_ui(a: &AgentSession, b: &AgentSession) -> bool {
+    a.id == b.id
+        && a.agent == b.agent
+        && a.agent_label == b.agent_label
+        && a.title == b.title
+        && a.project == b.project
+        && a.status == b.status
+        && a.detail == b.detail
+        && a.subagent_count == b.subagent_count
+        && a.todo == b.todo
+        && a.pid == b.pid
+        && a.process_running == b.process_running
+}
+
+fn same_sessions_for_ui(a: &[AgentSession], b: &[AgentSession]) -> bool {
+    a.len() == b.len() && a.iter().zip(b.iter()).all(|(x, y)| same_session_for_ui(x, y))
+}
+
 fn run_agents_thread(
     app: AppHandle,
     stop_signal: Arc<(Mutex<bool>, Condvar)>,
@@ -188,6 +234,7 @@ fn run_agents_thread(
 ) {
     let paths = AgentPaths::from_env();
     let mut cache = SourceCache::default();
+    let mut order_memory = SessionOrderMemory::default();
     let mut last_emitted_sessions: Option<Vec<AgentSession>> = None;
 
     let (stop_lock, stop_cvar) = &*stop_signal;
@@ -197,7 +244,8 @@ fn run_agents_thread(
         }
         let now = unix_now_ms();
         let procs = ProcessIndex::scan_tracked();
-        let sessions = scan_all_sessions(&paths, &procs, now, Some(&mut cache));
+        let mut sessions = scan_all_sessions(&paths, &procs, now, Some(&mut cache));
+        order_memory.apply(&mut sessions);
         let any_active = sessions
             .iter()
             .any(|s| matches!(s.status, AgentStatus::Working | AgentStatus::Waiting));
@@ -207,7 +255,11 @@ fn run_agents_thread(
         };
         *latest.lock() = Some(snapshot.clone());
 
-        if last_emitted_sessions.as_deref() != Some(sessions.as_slice()) {
+        let changed_for_ui = last_emitted_sessions
+            .as_deref()
+            .map(|prev| !same_sessions_for_ui(prev, sessions.as_slice()))
+            .unwrap_or(true);
+        if changed_for_ui {
             last_emitted_sessions = Some(sessions);
             super::scheduler::emit_provider(
                 &app,
@@ -297,6 +349,69 @@ mod tests {
             fs::create_dir_all(parent).unwrap();
         }
         fs::write(path, body).unwrap();
+    }
+
+    fn test_session(id: &str, status: AgentStatus, last_active_ms: i64) -> AgentSession {
+        AgentSession {
+            id: id.to_string(),
+            agent: "devin".to_string(),
+            agent_label: "Devin".to_string(),
+            title: None,
+            project: None,
+            status,
+            last_active_ms,
+            detail: None,
+            subagent_count: 0,
+            todo: None,
+            pid: None,
+            process_running: true,
+        }
+    }
+
+    #[test]
+    fn session_order_is_stable_when_only_activity_timing_changes() {
+        let mut memory = SessionOrderMemory::default();
+        let mut first = vec![
+            test_session("devin:a", AgentStatus::Working, 100),
+            test_session("devin:b", AgentStatus::Working, 200),
+            test_session("devin:c", AgentStatus::Ready, 300),
+        ];
+        memory.apply(&mut first);
+        assert_eq!(
+            first.iter().map(|s| s.id.as_str()).collect::<Vec<_>>(),
+            vec!["devin:a", "devin:b", "devin:c"]
+        );
+
+        let mut second = vec![
+            test_session("devin:b", AgentStatus::Working, 500),
+            test_session("devin:a", AgentStatus::Working, 400),
+            test_session("devin:c", AgentStatus::Ready, 600),
+        ];
+        memory.apply(&mut second);
+        assert_eq!(
+            second.iter().map(|s| s.id.as_str()).collect::<Vec<_>>(),
+            vec!["devin:a", "devin:b", "devin:c"]
+        );
+    }
+
+    #[test]
+    fn ui_comparison_ignores_last_active_but_not_visible_changes() {
+        let a = vec![test_session("devin:a", AgentStatus::Working, 100)];
+        let mut b = vec![test_session("devin:a", AgentStatus::Working, 2_100)];
+        assert!(same_sessions_for_ui(&a, &b));
+
+        b[0].detail = Some("Redigerer filer".to_string());
+        assert!(!same_sessions_for_ui(&a, &b));
+
+        let reordered = vec![
+            test_session("devin:b", AgentStatus::Working, 100),
+            test_session("devin:a", AgentStatus::Working, 100),
+        ];
+        let original_order = vec![
+            test_session("devin:a", AgentStatus::Working, 100),
+            test_session("devin:b", AgentStatus::Working, 100),
+        ];
+        assert!(!same_sessions_for_ui(&original_order, &reordered));
     }
 
     #[test]
@@ -582,6 +697,308 @@ mod tests {
         assert_eq!(done.status, AgentStatus::Ready);
         assert_eq!(done.detail.as_deref(), Some("Klar til svar"));
         assert!(done.todo.is_none(), "Stale færdig todo før ny prompt skal ignoreres");
+    }
+
+    #[test]
+    fn devin_subagent_activity_overrides_stale_session_timestamp() {
+        let td = TestDir::new("devin_subagent");
+        let paths = td.paths();
+        let db = paths.devin_db.as_ref().unwrap();
+        fs::create_dir_all(db.parent().unwrap()).unwrap();
+        let conn = Connection::open(db).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE sessions (
+                id TEXT PRIMARY KEY,
+                working_directory TEXT NOT NULL,
+                backend_type TEXT NOT NULL,
+                model TEXT NOT NULL,
+                agent_mode TEXT NOT NULL,
+                created_at INTEGER NOT NULL,
+                last_activity_at INTEGER NOT NULL,
+                title TEXT,
+                hidden INTEGER NOT NULL DEFAULT 0
+            );
+            CREATE TABLE message_nodes (
+                row_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT NOT NULL,
+                node_id INTEGER NOT NULL,
+                chat_message TEXT NOT NULL,
+                created_at INTEGER NOT NULL
+            );
+            CREATE TABLE tool_call_state (
+                session_id TEXT NOT NULL,
+                tool_call_id TEXT NOT NULL,
+                tool_call_json TEXT,
+                tool_call_update_json TEXT,
+                PRIMARY KEY (session_id, tool_call_id)
+            );
+            CREATE TABLE subagent_heads (
+                session_id TEXT NOT NULL,
+                agent_id TEXT NOT NULL,
+                chain_node_id INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL,
+                PRIMARY KEY (session_id, agent_id)
+            );
+            CREATE TABLE live_row_times (
+                session_id TEXT NOT NULL,
+                row_key TEXT NOT NULL,
+                started_at TEXT NOT NULL,
+                PRIMARY KEY (session_id, row_key)
+            );",
+        )
+        .unwrap();
+
+        let now_sec: i64 = 1_795_305_000;
+        let now_ms = now_sec * 1000;
+        conn.execute(
+            "INSERT INTO sessions VALUES ('s-sub', 'C:\\Users\\oscar\\proj', 'acp', 'm', 'a', ?1, ?1, 'Med subagent', 0)",
+            [now_sec - 1200],
+        )
+        .unwrap();
+        // Fyld listen med nyere hovedsessioner, så den stale subagent-session kun
+        // findes via subagent_heads og ikke via de 12 nyeste sessions-rækker.
+        for i in 0..12 {
+            conn.execute(
+                "INSERT INTO sessions VALUES (?1, 'C:\\Users\\oscar\\proj', 'acp', 'm', 'a', ?2, ?2, 'Filler', 0)",
+                (format!("s-filler-{i}"), now_sec - i64::from(i)),
+            )
+            .unwrap();
+        }
+        conn.execute(
+            "INSERT INTO message_nodes (session_id, node_id, chat_message, created_at) VALUES ('s-sub', 1, ?1, ?2)",
+            (
+                r#"{"role":"user","content":"Start","metadata":{"is_user_input":1}}"#,
+                now_sec - 1200,
+            ),
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO message_nodes (session_id, node_id, chat_message, created_at) VALUES ('s-sub', 3, ?1, ?2)",
+            (
+                r#"{"role":"assistant","content":"","tool_calls":[{"id":"sk1","name":"exec"}]}"#,
+                now_sec - 700,
+            ),
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO message_nodes (session_id, node_id, chat_message, created_at) VALUES ('s-sub', 4, ?1, ?2)",
+            (
+                r#"{"role":"assistant","content":"Hovedsvaret er givet","tool_calls":[]}"#,
+                now_sec - 600,
+            ),
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO subagent_heads VALUES ('s-sub', 'sidekick', 3, ?1)",
+            [now_sec - 5],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO live_row_times VALUES ('s-sub', 'tool:sk::call-1', ?1)",
+            [(now_sec - 5).to_string()],
+        )
+        .unwrap();
+
+        let procs = ProcessIndex::from_exes(&["devin.exe"]);
+        let res = sources::scan_devin(db, &procs, now_ms);
+        assert_eq!(res.len(), 13);
+        let sub = res.iter().find(|s| s.id == "devin:s-sub").unwrap();
+        assert_eq!(sub.status, AgentStatus::Working);
+        assert_eq!(sub.detail.as_deref(), Some("Kører underagent"));
+        assert_eq!(sub.subagent_count, 1);
+        assert_eq!(sub.last_active_ms, (now_sec - 5) * 1000);
+
+        conn.execute(
+            "INSERT INTO message_nodes (session_id, node_id, chat_message, created_at) VALUES ('s-sub', 5, ?1, ?2)",
+            (
+                r#"{"role":"assistant","content":"Sidekick er færdig","tool_calls":[]}"#,
+                now_sec - 4,
+            ),
+        )
+        .unwrap();
+        conn.execute(
+            "UPDATE subagent_heads SET chain_node_id = 5, updated_at = ?1 WHERE session_id = 's-sub'",
+            [now_sec - 4],
+        )
+        .unwrap();
+
+        let done = sources::scan_devin(db, &procs, now_ms);
+        let done_sub = done.iter().find(|s| s.id == "devin:s-sub").unwrap();
+        assert_eq!(done_sub.status, AgentStatus::Ready);
+        assert_eq!(done_sub.subagent_count, 0);
+    }
+
+    #[test]
+    fn devin_status_follows_main_chain_instead_of_newer_side_branch() {
+        let td = TestDir::new("devin_main_chain");
+        let paths = td.paths();
+        let db = paths.devin_db.as_ref().unwrap();
+        fs::create_dir_all(db.parent().unwrap()).unwrap();
+        let conn = Connection::open(db).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE sessions (
+                id TEXT PRIMARY KEY,
+                working_directory TEXT NOT NULL,
+                backend_type TEXT NOT NULL,
+                model TEXT NOT NULL,
+                agent_mode TEXT NOT NULL,
+                created_at INTEGER NOT NULL,
+                last_activity_at INTEGER NOT NULL,
+                title TEXT,
+                main_chain_id INTEGER,
+                hidden INTEGER NOT NULL DEFAULT 0
+            );
+            CREATE TABLE message_nodes (
+                row_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT NOT NULL,
+                node_id INTEGER NOT NULL,
+                parent_node_id INTEGER,
+                chat_message TEXT NOT NULL,
+                created_at INTEGER NOT NULL
+            );
+            CREATE TABLE tool_call_state (
+                session_id TEXT NOT NULL,
+                tool_call_id TEXT NOT NULL,
+                tool_call_json TEXT,
+                tool_call_update_json TEXT,
+                PRIMARY KEY (session_id, tool_call_id)
+            );",
+        )
+        .unwrap();
+
+        let now_sec: i64 = 1_795_305_000;
+        let now_ms = now_sec * 1000;
+        conn.execute(
+            "INSERT INTO sessions (id, working_directory, backend_type, model, agent_mode, created_at, last_activity_at, title, main_chain_id, hidden) VALUES ('s-chain', 'C:\\Users\\oscar\\proj', 'acp', 'm', 'a', ?1, ?1, 'Gren-test', 5, 0)",
+            [now_sec - 5],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO message_nodes (session_id, node_id, parent_node_id, chat_message, created_at) VALUES ('s-chain', 1, NULL, ?1, ?2)",
+            (
+                r#"{"role":"user","content":"Start","metadata":{"is_user_input":1}}"#,
+                now_sec - 30,
+            ),
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO message_nodes (session_id, node_id, parent_node_id, chat_message, created_at) VALUES ('s-chain', 2, 1, ?1, ?2)",
+            (
+                r#"{"role":"assistant","content":"","tool_calls":[{"id":"t1","name":"exec"}]}"#,
+                now_sec - 20,
+            ),
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO message_nodes (session_id, node_id, parent_node_id, chat_message, created_at) VALUES ('s-chain', 3, 2, ?1, ?2)",
+            (
+                r#"{"role":"tool","content":"ok"}"#,
+                now_sec - 10,
+            ),
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO message_nodes (session_id, node_id, parent_node_id, chat_message, created_at) VALUES ('s-chain', 4, 1, ?1, ?2)",
+            (
+                r#"{"role":"assistant","content":"Sidegrenen ser færdig ud","tool_calls":[]}"#,
+                now_sec - 4,
+            ),
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO message_nodes (session_id, node_id, parent_node_id, chat_message, created_at) VALUES ('s-chain', 5, 3, ?1, ?2)",
+            (
+                r#"{"role":"assistant","content":"","tool_calls":[],"metadata":{"query_label":"title"}}"#,
+                now_sec - 3,
+            ),
+        )
+        .unwrap();
+
+        let procs = ProcessIndex::from_exes(&["devin.exe"]);
+        let res = sources::scan_devin(db, &procs, now_ms);
+        assert_eq!(res.len(), 1);
+        assert_eq!(res[0].status, AgentStatus::Working);
+        assert_ne!(res[0].detail.as_deref(), Some("Klar til svar"));
+    }
+
+    #[test]
+    fn devin_live_rows_keep_active_generation_working_until_final_message() {
+        let td = TestDir::new("devin_live_rows");
+        let paths = td.paths();
+        let db = paths.devin_db.as_ref().unwrap();
+        fs::create_dir_all(db.parent().unwrap()).unwrap();
+        let conn = Connection::open(db).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE sessions (
+                id TEXT PRIMARY KEY,
+                working_directory TEXT NOT NULL,
+                backend_type TEXT NOT NULL,
+                model TEXT NOT NULL,
+                agent_mode TEXT NOT NULL,
+                created_at INTEGER NOT NULL,
+                last_activity_at INTEGER NOT NULL,
+                title TEXT,
+                hidden INTEGER NOT NULL DEFAULT 0
+            );
+            CREATE TABLE message_nodes (
+                row_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT NOT NULL,
+                node_id INTEGER NOT NULL,
+                chat_message TEXT NOT NULL,
+                created_at INTEGER NOT NULL
+            );
+            CREATE TABLE tool_call_state (
+                session_id TEXT NOT NULL,
+                tool_call_id TEXT NOT NULL,
+                tool_call_json TEXT,
+                tool_call_update_json TEXT,
+                PRIMARY KEY (session_id, tool_call_id)
+            );
+            CREATE TABLE live_row_times (
+                session_id TEXT NOT NULL,
+                row_key TEXT NOT NULL,
+                started_at TEXT NOT NULL,
+                PRIMARY KEY (session_id, row_key)
+            );",
+        )
+        .unwrap();
+
+        let now_sec: i64 = 1_795_305_000;
+        let now_ms = now_sec * 1000;
+        conn.execute(
+            "INSERT INTO sessions VALUES ('s-live', 'C:\\Users\\oscar\\proj', 'acp', 'm', 'a', ?1, ?1, 'Live generation', 0)",
+            [now_sec - 30],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO message_nodes (session_id, node_id, chat_message, created_at) VALUES ('s-live', 1, ?1, ?2)",
+            (
+                r#"{"role":"assistant","content":"Tidligere svar","tool_calls":[]}"#,
+                now_sec - 30,
+            ),
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO live_row_times VALUES ('s-live', 'thought:new-turn', ?1)",
+            [(now_sec - 5).to_string()],
+        )
+        .unwrap();
+
+        let procs = ProcessIndex::from_exes(&["devin.exe"]);
+        let active = sources::scan_devin(db, &procs, now_ms);
+        assert_eq!(active[0].status, AgentStatus::Working);
+        assert_eq!(active[0].detail.as_deref(), Some("Arbejder…"));
+
+        conn.execute(
+            "INSERT INTO message_nodes (session_id, node_id, chat_message, created_at) VALUES ('s-live', 2, ?1, ?2)",
+            (
+                r#"{"role":"assistant","content":"Nyt færdigt svar","tool_calls":[]}"#,
+                now_sec - 2,
+            ),
+        )
+        .unwrap();
+        let done = sources::scan_devin(db, &procs, now_ms);
+        assert_eq!(done[0].status, AgentStatus::Ready);
     }
 
     #[test]

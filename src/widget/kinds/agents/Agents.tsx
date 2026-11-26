@@ -57,7 +57,7 @@ export function filterAgentSessions(
       return true;
     }
     if (windowMs <= 0) return false;
-    return Math.max(0, nowMs - Number(session.lastActiveMs)) <= windowMs;
+    return Math.max(0, nowMs - session.lastActiveMs) <= windowMs;
   });
 }
 
@@ -140,7 +140,7 @@ export function agentStatusLine(session: AgentSession, nowMs: number): string {
   if (session.status === "waiting") {
     return session.detail ?? t("agents.waiting");
   }
-  const ago = Math.max(0, nowMs - Number(session.lastActiveMs));
+  const ago = Math.max(0, nowMs - session.lastActiveMs);
   if (session.status === "ready") {
     if (session.todo && ago < 60_000) {
       return t("agents.readyTodos", {

@@ -63,7 +63,6 @@ impl Default for UpdateTracker {
 #[ts(export, export_to = "../../src/shared/bindings/")]
 pub struct ReleaseManifest {
     pub version: String,
-    #[ts(type = "number")]
     pub build_id: i64,
     pub url: String,
     pub sha256: String,
@@ -72,7 +71,6 @@ pub struct ReleaseManifest {
     /// tilliden kommer fra den indlejrede offentlige nøgle, ikke kanalen.
     #[serde(default)]
     pub signature: String,
-    #[ts(type = "number")]
     pub size: u64,
     #[serde(default)]
     pub notes: Option<String>,
@@ -100,11 +98,9 @@ pub enum UpdateCheckState {
 #[ts(export, export_to = "../../src/shared/bindings/")]
 pub struct UpdateStatus {
     pub state: UpdateCheckState,
-    #[ts(type = "number | null")]
     pub current_build_id: Option<i64>,
     pub version: String,
     pub latest: Option<ReleaseManifest>,
-    #[ts(type = "number")]
     pub checked_at: i64,
 }
 
@@ -112,9 +108,7 @@ pub struct UpdateStatus {
 #[serde(rename_all = "camelCase")]
 #[ts(export, export_to = "../../src/shared/bindings/")]
 pub struct UpdateProgress {
-    #[ts(type = "number")]
     pub downloaded: u64,
-    #[ts(type = "number")]
     pub total: u64,
 }
 

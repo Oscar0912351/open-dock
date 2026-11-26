@@ -12,9 +12,9 @@ function makeSnapshot(overrides: Partial<MediaSnapshot> = {}): MediaSnapshot {
     album: "Album",
     artUrl: null,
     artColor: null,
-    positionMs: BigInt(10_000),
-    durationMs: BigInt(60_000),
-    updatedAt: BigInt(1_000),
+    positionMs: 10_000,
+    durationMs: 60_000,
+    updatedAt: 1_000,
     canPlayPause: true,
     canNext: true,
     canPrev: true,
@@ -29,26 +29,26 @@ function makeSnapshot(overrides: Partial<MediaSnapshot> = {}): MediaSnapshot {
 
 describe("computeLivePositionMs", () => {
   it("interpolates elapsed time while playing", () => {
-    const snap = makeSnapshot({ positionMs: BigInt(10_000), updatedAt: BigInt(1_000) });
+    const snap = makeSnapshot({ positionMs: 10_000, updatedAt: 1_000 });
     expect(computeLivePositionMs(snap, 6_500)).toBe(15_500);
   });
 
   it("clamps interpolated position to durationMs", () => {
     const snap = makeSnapshot({
-      positionMs: BigInt(55_000),
-      durationMs: BigInt(60_000),
-      updatedAt: BigInt(1_000),
+      positionMs: 55_000,
+      durationMs: 60_000,
+      updatedAt: 1_000,
     });
     expect(computeLivePositionMs(snap, 20_000)).toBe(60_000);
   });
 
   it("does not advance position when paused or stopped", () => {
-    const paused = makeSnapshot({ status: "paused", positionMs: BigInt(12_000), updatedAt: BigInt(1_000) });
+    const paused = makeSnapshot({ status: "paused", positionMs: 12_000, updatedAt: 1_000 });
     expect(computeLivePositionMs(paused, 9_000)).toBe(12_000);
   });
 
   it("handles clock skew where nowMs precedes updatedAt", () => {
-    const snap = makeSnapshot({ positionMs: BigInt(10_000), updatedAt: BigInt(5_000) });
+    const snap = makeSnapshot({ positionMs: 10_000, updatedAt: 5_000 });
     expect(computeLivePositionMs(snap, 3_000)).toBe(10_000);
   });
 

@@ -1,20 +1,22 @@
 import { useEffect, useRef, useState } from "react";
-import type { TimerSnapshot } from "../../../shared/bindings/TimerSnapshot";
+import type { TimerListSnapshot } from "../../../shared/bindings/TimerListSnapshot";
 import { ipc, on } from "../../../shared/ipc";
 
-export interface TimerData {
-  snapshot: TimerSnapshot | null;
-  /** Opdateres cirka hvert sekund mens timeren er aktiv — bruges til lokal nedtælling. */
+export interface TimerListData {
+  snapshot: TimerListSnapshot | null;
+  /** Opdateres cirka hvert sekund mens en timer kører eller er færdig — bruges til lokal nedtælling. */
   nowMs: number;
 }
 
 /**
- * Data-hook til timer-widgetten. Rust ejer sandheden: vi henter ét snapshot
- * ved mount og lytter på `timer://state`. Sekunderne tælles lokalt ud fra
- * `endsAt`/`finishedAt`, så der ikke går tick-trafik over IPC.
+ * Data-hook til timer-widgetten (og klynge-timer-modulet). Rust ejer
+ * sandheden: vi henter ét snapshot ved mount og lytter på `timer://state`.
+ * Sekunderne tælles lokalt ud fra `endsAt`/`finishedAt`, så der ikke går
+ * tick-trafik over IPC. `id` er widget-id eller klynge-modul-id;
+ * `enabled=false` (preview) springer al IPC over.
  */
-export function useTimer(id: string | null, enabled = true): TimerData {
-  const [snapshot, setSnapshot] = useState<TimerSnapshot | null>(null);
+export function useTimers(id: string | null, enabled = true): TimerListData {
+  const [snapshot, setSnapshot] = useState<TimerListSnapshot | null>(null);
   const [nowMs, setNowMs] = useState(() => Date.now());
 
   useEffect(() => {
@@ -49,7 +51,8 @@ export function useTimer(id: string | null, enabled = true): TimerData {
   }, [id, enabled]);
 
   const ticking =
-    snapshot !== null && (snapshot.status === "running" || snapshot.status === "finished");
+    snapshot !== null &&
+    snapshot.items.some((item) => item.status === "running" || item.status === "finished");
 
   const tickingRef = useRef(ticking);
   tickingRef.current = ticking;

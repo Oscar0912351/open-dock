@@ -24,6 +24,8 @@ import { useSystemHistory } from "../kinds/system/useSystemHistory";
 import { resolveWeatherSettings } from "../kinds/weather/Weather";
 import type { ClusterFrameInfo } from "../WidgetShell";
 import { ClusterModuleView, ClusterPillBarHeader, type ClusterModuleSharedData } from "./CompactModules";
+import { useHysteresisSignal } from "./useHysteresisSignal";
+import { useMediaActivitySignal } from "./useMediaActivity";
 import {
   computeClusterTargetHeight,
   DEFAULT_CLUSTER_SIGNALS,
@@ -47,6 +49,9 @@ interface ClusterShellProps {
   onClusterFrameChange: (frame: ClusterFrameInfo | null) => void;
   onAmbientChange: (rgb: [number, number, number] | null) => void;
   onAriaChange: (aria: string | undefined) => void;
+  /** Aggregateret pin fra timer-moduler — holder klyngen synlig under
+      "vis kun når musen er over". */
+  onPinVisibleChange?: (pinned: boolean) => void;
   registerTransitionEnd: (handler: (() => void) | null) => void;
 }
 
@@ -89,6 +94,7 @@ export function ClusterShell({
   onClusterFrameChange,
   onAmbientChange,
   onAriaChange,
+  onPinVisibleChange,
   registerTransitionEnd,
 }: ClusterShellProps) {
   const hasMedia = cluster.modules.some((m) => m.kind === "nowPlaying");
@@ -129,212 +135,74 @@ export function ClusterShell({
   }, [hasSystem]);
 
   const [manualExpandedId, setManualExpandedId] = useState<string | null>(null);
-  const [mediaActive, setMediaActive] = useState(false);
-  const [systemHighLoad, setSystemHighLoad] = useState(false);
-  const [agentsActive, setAgentsActive] = useState(false);
-  const [discordInCall, setDiscordInCall] = useState(false);
+
+  // Timer-moduler rapporterer pin-tilstand via shared.timerPin; klyngen er
+  // pinnet når mindst én timer-modul er det (finished eller fokuseret input).
+  const timerPinsRef = useRef(new Set<string>());
+  const [anyTimerPinned, setAnyTimerPinned] = useState(false);
+  const reportTimerPin = useCallback((moduleId: string, pinned: boolean) => {
+    const pins = timerPinsRef.current;
+    if (pinned) pins.add(moduleId);
+    else pins.delete(moduleId);
+    setAnyTimerPinned(pins.size > 0);
+  }, []);
+  useEffect(() => {
+    onPinVisibleChange?.(anyTimerPinned);
+  }, [anyTimerPinned, onPinVisibleChange]);
+  useEffect(() => () => onPinVisibleChange?.(false), [onPinVisibleChange]);
 
   const motionRef = useRef(motion);
   useEffect(() => {
     motionRef.current = motion;
   }, [motion]);
 
-  const mediaActiveRef = useRef(false);
-  useEffect(() => {
-    mediaActiveRef.current = mediaActive;
-  }, [mediaActive]);
+  const applyTransition = useCallback(
+    (update: () => void) => runViewTransition(motionRef.current, preview, update),
+    [preview],
+  );
 
-  const prevMediaStatusRef = useRef<string | undefined>(undefined);
-  const mediaPauseTimerRef = useRef<number | null>(null);
-  const loadTimerRef = useRef<number | null>(null);
-  const agentsIdleTimerRef = useRef<number | null>(null);
-
-  // Afspiller-signal: aktiv mens den spiller eller én gang i 10 s ved pause (uden at genåbne efter kollaps)
-  useEffect(() => {
-    if (!hasMedia) {
-      if (mediaPauseTimerRef.current !== null) {
-        window.clearTimeout(mediaPauseTimerRef.current);
-        mediaPauseTimerRef.current = null;
-      }
-      prevMediaStatusRef.current = undefined;
-      if (mediaActiveRef.current) {
-        const timer = window.setTimeout(() => {
-          runViewTransition(motionRef.current, preview, () => setMediaActive(false));
-        }, 0);
-        return () => window.clearTimeout(timer);
-      }
-      return;
-    }
-
-    const status = media.data?.status ?? "none";
-
-    if (status === "playing") {
-      if (mediaPauseTimerRef.current !== null) {
-        window.clearTimeout(mediaPauseTimerRef.current);
-        mediaPauseTimerRef.current = null;
-      }
-      prevMediaStatusRef.current = "playing";
-      if (!mediaActiveRef.current) {
-        const timer = window.setTimeout(() => {
-          runViewTransition(motionRef.current, preview, () => {
-            setMediaActive(true);
-            setManualExpandedId(null);
-          });
-        }, 0);
-        return () => window.clearTimeout(timer);
-      }
-      return;
-    }
-
-    if (status === "paused") {
-      const enteredPause = prevMediaStatusRef.current !== "paused";
-      if (!enteredPause) {
-        return;
-      }
-
-      if (mediaPauseTimerRef.current !== null) {
-        window.clearTimeout(mediaPauseTimerRef.current);
-      }
-      mediaPauseTimerRef.current = window.setTimeout(() => {
-        mediaPauseTimerRef.current = null;
-        if (mediaActiveRef.current) {
-          runViewTransition(motionRef.current, preview, () => setMediaActive(false));
-        }
-      }, 10_000);
-
-      const timer = window.setTimeout(() => {
-        prevMediaStatusRef.current = "paused";
-        if (!mediaActiveRef.current) {
-          runViewTransition(motionRef.current, preview, () => {
-            setMediaActive(true);
-            setManualExpandedId(null);
-          });
-        }
-      }, 0);
-      return () => {
-        window.clearTimeout(timer);
-      };
-    }
-
-    // "stopped" eller "none"
-    if (mediaPauseTimerRef.current !== null) {
-      window.clearTimeout(mediaPauseTimerRef.current);
-      mediaPauseTimerRef.current = null;
-    }
-    prevMediaStatusRef.current = status;
-    if (mediaActiveRef.current) {
-      const timer = window.setTimeout(() => {
-        runViewTransition(motionRef.current, preview, () => setMediaActive(false));
-      }, 0);
-      return () => window.clearTimeout(timer);
-    }
-  }, [hasMedia, media.data?.status, preview]);
-
-  // System-signal: CPU >= 80 % eller GPU >= 80 % i mindst 3 sekunder
-  useEffect(() => {
-    if (!hasSystem) {
-      if (loadTimerRef.current !== null) {
-        window.clearTimeout(loadTimerRef.current);
-        loadTimerRef.current = null;
-      }
-      return;
-    }
-    const cpu = system.data?.cpu.usage ?? 0;
-    const gpu = system.data?.gpu?.usage ?? 0;
-    const isHot = cpu >= 80 || gpu >= 80;
-
-    if (isHot) {
-      if (!systemHighLoad && loadTimerRef.current === null) {
-        loadTimerRef.current = window.setTimeout(() => {
-          loadTimerRef.current = null;
-          runViewTransition(motionRef.current, preview, () => setSystemHighLoad(true));
-        }, 3_000);
-      }
-    } else {
-      if (loadTimerRef.current !== null) {
-        window.clearTimeout(loadTimerRef.current);
-        loadTimerRef.current = null;
-      }
-      if (systemHighLoad) {
-        const timer = window.setTimeout(() => {
-          runViewTransition(motionRef.current, preview, () => setSystemHighLoad(false));
-        }, 0);
-        return () => window.clearTimeout(timer);
-      }
-    }
-  }, [hasSystem, system.data?.cpu.usage, system.data?.gpu?.usage, systemHighLoad, preview]);
-
-  // Agent-signal: aktiv når mindst én agent arbejder eller venter (rolig 4 s kollaps-hysterese)
-  useEffect(() => {
-    if (!hasAgents) {
-      if (agentsIdleTimerRef.current !== null) {
-        window.clearTimeout(agentsIdleTimerRef.current);
-        agentsIdleTimerRef.current = null;
-      }
-      if (agentsActive) {
-        const timer = window.setTimeout(() => {
-          runViewTransition(motionRef.current, preview, () => setAgentsActive(false));
-        }, 0);
-        return () => window.clearTimeout(timer);
-      }
-      return;
-    }
-
-    const busy = Boolean(
-      agents.data?.sessions.some(
-        (s) => s.status === "working" || s.status === "waiting",
-      ),
+  const clearManualExpansion = useCallback(() => setManualExpandedId(null), []);
+  const clearDiscordManualExpansion = useCallback(() => {
+    setManualExpandedId((prev) =>
+      prev && cluster.modules.some((m) => m.id === prev && m.kind === "discord") ? null : prev,
     );
+  }, [cluster.modules]);
 
-    if (busy) {
-      if (agentsIdleTimerRef.current !== null) {
-        window.clearTimeout(agentsIdleTimerRef.current);
-        agentsIdleTimerRef.current = null;
-      }
-      if (!agentsActive) {
-        const timer = window.setTimeout(() => {
-          runViewTransition(motionRef.current, preview, () => setAgentsActive(true));
-        }, 0);
-        return () => window.clearTimeout(timer);
-      }
-      return;
-    }
+  // Afspiller: aktiv mens den spiller eller i 10 s efter pause-start
+  const mediaActive = useMediaActivitySignal({
+    enabled: hasMedia,
+    status: media.data?.status,
+    apply: applyTransition,
+    onEnter: clearManualExpansion,
+  });
 
-    if (agentsActive && agentsIdleTimerRef.current === null) {
-      agentsIdleTimerRef.current = window.setTimeout(() => {
-        agentsIdleTimerRef.current = null;
-        runViewTransition(motionRef.current, preview, () => setAgentsActive(false));
-      }, 4_000);
-    }
-  }, [hasAgents, agents.data?.sessions, agentsActive, preview]);
+  // System: CPU eller GPU >= 80 % i mindst 3 sekunder
+  const systemHighLoad = useHysteresisSignal({
+    input:
+      hasSystem &&
+      ((system.data?.cpu.usage ?? 0) >= 80 || (system.data?.gpu?.usage ?? 0) >= 80),
+    enterMs: 3_000,
+    apply: applyTransition,
+  });
 
-  useEffect(() => {
-    return () => {
-      prevMediaStatusRef.current = undefined;
-      if (mediaPauseTimerRef.current !== null) window.clearTimeout(mediaPauseTimerRef.current);
-      if (loadTimerRef.current !== null) window.clearTimeout(loadTimerRef.current);
-      if (agentsIdleTimerRef.current !== null) window.clearTimeout(agentsIdleTimerRef.current);
-    };
-  }, []);
+  // Agenter: mindst én arbejder eller venter (rolig 4 s kollaps-hysterese)
+  const agentsActive = useHysteresisSignal({
+    input:
+      hasAgents &&
+      Boolean(
+        agents.data?.sessions.some((s) => s.status === "working" || s.status === "waiting"),
+      ),
+    exitMs: 4_000,
+    apply: applyTransition,
+  });
 
-  // Discord-signal: aktiv mens du er i et call
-  useEffect(() => {
-    const active = hasDiscord && Boolean(discord.data?.inCall);
-    if (active === discordInCall) return;
-    const timer = window.setTimeout(() => {
-      runViewTransition(motionRef.current, preview, () => {
-        setDiscordInCall(active);
-        setManualExpandedId((prev) => {
-          if (active) return null;
-          if (prev && cluster.modules.some((m) => m.id === prev && m.kind === "discord")) {
-            return null;
-          }
-          return prev;
-        });
-      });
-    }, 0);
-    return () => window.clearTimeout(timer);
-  }, [hasDiscord, discord.data?.inCall, discordInCall, preview, cluster.modules]);
+  // Discord: aktiv mens du er i et call
+  const discordInCall = useHysteresisSignal({
+    input: hasDiscord && Boolean(discord.data?.inCall),
+    apply: applyTransition,
+    onEnter: clearManualExpansion,
+    onExit: clearDiscordManualExpansion,
+  });
 
   const [agentsNowMs, setAgentsNowMs] = useState(() => Date.now());
   const rawAgentsSessions = agents.data?.sessions;
@@ -706,6 +574,7 @@ export function ClusterShell({
     discord: { status: discord.status, data: discord.data },
     agents: { status: agents.status, data: agents.data },
     agentsNowMs,
+    timerPin: reportTimerPin,
   };
 
   if (isPillBar) {
