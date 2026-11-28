@@ -1,12 +1,12 @@
 import { ipc } from "./ipc";
-import { reportError } from "./logging";
+import { fireIpc, reportError, reportFailure } from "./logging";
 
 export function installErrorReporting(context: string): void {
   window.addEventListener("error", (event) => {
     void reportError(`${context}: ${event.message}`);
   });
   window.addEventListener("unhandledrejection", (event) => {
-    void reportError(`${context}: ${String(event.reason)}`);
+    reportFailure(context, event.reason);
   });
 }
 
@@ -17,6 +17,6 @@ export function installDevtoolsShortcut(): void {
     const isF12 = event.key === "F12";
     if (!isCtrlShiftI && !isF12) return;
     event.preventDefault();
-    void ipc.appToggleDevtools().catch(() => {});
+    fireIpc(ipc.appToggleDevtools(), "app_toggle_devtools");
   });
 }

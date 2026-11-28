@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { ClusterConfig } from "../../shared/bindings/ClusterConfig";
 import type { MotionPreset } from "../../shared/bindings/MotionPreset";
 import { ipc } from "../../shared/ipc";
+import { fireIpc, reportFailure } from "../../shared/logging";
 
 interface UseClusterWindowResizeOptions {
   initialIdleHeight: number;
@@ -57,9 +58,10 @@ export function useClusterWindowResize({
       }
       setTransitionKind("idle");
       if (preview) return;
-      void ipc
-        .clusterSetWindowSize(instanceId, cluster.width, nextH, cluster.anchor)
-        .catch(() => {});
+      fireIpc(
+        ipc.clusterSetWindowSize(instanceId, cluster.width, nextH, cluster.anchor),
+        `cluster_set_window_size (${instanceId})`,
+      );
     },
     [instanceId, cluster.width, cluster.anchor, preview],
   );
@@ -77,9 +79,10 @@ export function useClusterWindowResize({
       } else {
         setTransitionKind("idle");
         if (liveBackdropRef.current && !preview) {
-          void ipc
-            .widgetAnimateBackdropBox(instanceId, 0, 0, cluster.anchor, 0)
-            .catch(() => {});
+          fireIpc(
+            ipc.widgetAnimateBackdropBox(instanceId, 0, 0, cluster.anchor, 0),
+            `widget_animate_backdrop_box (${instanceId})`,
+          );
         }
       }
     });
@@ -125,7 +128,9 @@ export function useClusterWindowResize({
       if (shouldReduceMotion(motion)) {
         void ipc
           .clusterSetWindowSize(instanceId, cluster.width, targetHeightU, cluster.anchor)
-          .catch(() => {})
+          .catch((reason: unknown) =>
+            reportFailure(`cluster_set_window_size (${instanceId})`, reason),
+          )
           .finally(() => {
             if (resizeSeqRef.current === seq) {
               updateBoxHeight(targetHeightU);
@@ -136,14 +141,17 @@ export function useClusterWindowResize({
 
       void ipc
         .clusterSetWindowSize(instanceId, cluster.width, targetHeightU, cluster.anchor)
-        .catch(() => {})
+        .catch((reason: unknown) =>
+          reportFailure(`cluster_set_window_size (${instanceId})`, reason),
+        )
         .finally(() => {
           if (resizeSeqRef.current === seq) {
             updateBoxHeight(targetHeightU);
             if (liveBackdrop && Math.abs(fromH - targetHeightU) >= 0.25) {
-              void ipc
-                .widgetAnimateBackdropBox(instanceId, fromH, targetHeightU, cluster.anchor, 340)
-                .catch(() => {});
+              fireIpc(
+                ipc.widgetAnimateBackdropBox(instanceId, fromH, targetHeightU, cluster.anchor, 340),
+                `widget_animate_backdrop_box (${instanceId})`,
+              );
             }
           }
         });
@@ -167,9 +175,10 @@ export function useClusterWindowResize({
         updateBoxHeight(targetHeightU);
         pendingCollapseTargetRef.current = targetHeightU;
         if (liveBackdrop && Math.abs(fromH - targetHeightU) >= 0.25) {
-          void ipc
-            .widgetAnimateBackdropBox(instanceId, fromH, targetHeightU, cluster.anchor, 280)
-            .catch(() => {});
+          fireIpc(
+            ipc.widgetAnimateBackdropBox(instanceId, fromH, targetHeightU, cluster.anchor, 280),
+            `widget_animate_backdrop_box (${instanceId})`,
+          );
         }
         collapseTimerRef.current = window.setTimeout(() => {
           const target = pendingCollapseTargetRef.current;
@@ -187,9 +196,10 @@ export function useClusterWindowResize({
       setTransitionKind("expand");
       updateBoxHeight(targetHeightU);
       if (liveBackdrop && !shouldReduceMotion(motion) && Math.abs(fromH - targetHeightU) >= 0.25) {
-        void ipc
-          .widgetAnimateBackdropBox(instanceId, fromH, targetHeightU, cluster.anchor, 340)
-          .catch(() => {});
+        fireIpc(
+          ipc.widgetAnimateBackdropBox(instanceId, fromH, targetHeightU, cluster.anchor, 340),
+          `widget_animate_backdrop_box (${instanceId})`,
+        );
       }
     });
     return () => window.cancelAnimationFrame(frame);

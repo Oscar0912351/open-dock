@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { TimerListSnapshot } from "../../../shared/bindings/TimerListSnapshot";
 import { ipc, on } from "../../../shared/ipc";
+import { reportFailure } from "../../../shared/logging";
 
 export interface TimerListData {
   snapshot: TimerListSnapshot | null;
@@ -29,7 +30,7 @@ export function useTimers(id: string | null, enabled = true): TimerListData {
       .then((initial) => {
         if (active) setSnapshot(initial);
       })
-      .catch(() => {});
+      .catch((reason: unknown) => reportFailure(`timer_get (${id})`, reason));
 
     on.timerState((next) => {
       if (!active || next.widgetId !== id) return;
@@ -42,7 +43,7 @@ export function useTimers(id: string | null, enabled = true): TimerListData {
         if (active) dispose = un;
         else un();
       })
-      .catch(() => {});
+      .catch((reason: unknown) => reportFailure("timer://state", reason));
 
     return () => {
       active = false;
@@ -119,7 +120,7 @@ export function useClusterTimers(ids: readonly string[], enabled: boolean): Clus
             return next;
           });
         })
-        .catch(() => {});
+        .catch((reason: unknown) => reportFailure(`timer_get (${id})`, reason));
     }
 
     on.timerState((next) => {
@@ -135,7 +136,7 @@ export function useClusterTimers(ids: readonly string[], enabled: boolean): Clus
         if (active) dispose = un;
         else un();
       })
-      .catch(() => {});
+      .catch((reason: unknown) => reportFailure("timer://state", reason));
 
     return () => {
       active = false;

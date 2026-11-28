@@ -2,6 +2,7 @@ import { CheckSquare, Square } from "@phosphor-icons/react";
 import { useCallback, useEffect, useRef, useState, type CSSProperties, type KeyboardEvent } from "react";
 import { t } from "../../../shared/i18n";
 import { ipc } from "../../../shared/ipc";
+import { fireIpc, reportFailure } from "../../../shared/logging";
 import "./note.css";
 
 export interface NoteSettings {
@@ -105,7 +106,8 @@ export function Note({ id, settings, editMode, preview = false, onAriaChange }: 
         latestTextRef.current = content;
         setLoaded(true);
       })
-      .catch(() => {
+      .catch((reason: unknown) => {
+        reportFailure(`note_load (${id})`, reason);
         if (active) setLoaded(true);
       });
     return () => {
@@ -126,7 +128,8 @@ export function Note({ id, settings, editMode, preview = false, onAriaChange }: 
           window.clearTimeout(retryTimerRef.current);
           retryTimerRef.current = null;
         }
-      } catch {
+      } catch (reason) {
+        reportFailure(`note_save (${id})`, reason);
         setSaveFailed(true);
         if (retryTimerRef.current === null) {
           retryTimerRef.current = window.setTimeout(() => {
@@ -176,8 +179,8 @@ export function Note({ id, settings, editMode, preview = false, onAriaChange }: 
         if (!preview) {
           try {
             await ipc.widgetSetFocusable(id, true);
-          } catch {
-            // Ignore focusable toggle failure in non-window preview context.
+          } catch (reason) {
+            reportFailure(`widget_set_focusable (${id})`, reason);
           }
         }
         setFocused(true);
@@ -191,7 +194,7 @@ export function Note({ id, settings, editMode, preview = false, onAriaChange }: 
     setFocused(false);
     flushSave();
     if (!preview) {
-      void ipc.widgetSetFocusable(id, false).catch(() => {});
+      fireIpc(ipc.widgetSetFocusable(id, false), `widget_set_focusable (${id})`);
     }
   }, [flushSave, id, preview]);
 

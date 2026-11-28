@@ -24,7 +24,7 @@ import type { WidgetSize } from "../../shared/bindings/WidgetSize";
 import type { Location } from "../../shared/bindings/Location";
 import { t } from "../../shared/i18n";
 import { ipc, toAssetUrl } from "../../shared/ipc";
-import { reportError } from "../../shared/logging";
+import { reportFailure } from "../../shared/logging";
 import { CLUSTER_PRESETS, WIDGET_REGISTRY, type FreeWidgetKind } from "../../widget/registry";
 import { Button } from "../components/Button";
 import { getOverlayPortalRoot } from "../components/Drawer";
@@ -276,7 +276,7 @@ export function Gallery() {
         onAction: () => setRoute("desktop", created.id),
       });
     } catch (reason) {
-      void reportError(`widgetAdd (${kind}): ${String(reason)}`);
+      reportFailure(`widget_add (${kind})`, reason);
     }
   };
 
@@ -358,7 +358,7 @@ export function Gallery() {
       });
       return true;
     } catch (reason) {
-      void reportError(`widgetUpdate (${widgetId}): ${String(reason)}`);
+      reportFailure(`widget_update (${widgetId})`, reason);
       pushToast({ message: t("gallery.custom.saveError") });
       return false;
     }

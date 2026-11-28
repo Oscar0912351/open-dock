@@ -1620,6 +1620,172 @@ mod tests {
         assert_ne!(s3d.status, AgentStatus::Waiting);
     }
 
+    fn setup_opencode_db(db: &Path, now: i64) {
+        fs::create_dir_all(db.parent().unwrap()).unwrap();
+        let conn = Connection::open(db).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE session_v2 (
+                id TEXT PRIMARY KEY,
+                parent_id TEXT,
+                directory TEXT NOT NULL DEFAULT '',
+                title TEXT,
+                time_created INTEGER NOT NULL DEFAULT 0,
+                time_updated INTEGER NOT NULL DEFAULT 0,
+                time_busy INTEGER,
+                time_idle INTEGER,
+                idle_outcome TEXT,
+                time_archived INTEGER
+            );
+            CREATE TABLE session_message (
+                id TEXT PRIMARY KEY,
+                session_id TEXT NOT NULL,
+                type TEXT,
+                seq INTEGER NOT NULL DEFAULT 0,
+                time_created INTEGER NOT NULL DEFAULT 0,
+                time_updated INTEGER NOT NULL DEFAULT 0,
+                data TEXT
+            );",
+        )
+        .unwrap();
+
+        // s1: busy top-level med ét busy barn (underagent).
+        conn.execute(
+            "INSERT INTO session_v2 (id, parent_id, directory, title, time_created, time_updated, time_busy) \
+             VALUES ('s1', NULL, 'C:/Users/oscar/Desktop/APPS', 'Fix bug', ?1, ?2, ?2)",
+            rusqlite::params![now - 300_000, now - 2_000],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO session_v2 (id, parent_id, directory, title, time_created, time_updated, time_busy) \
+             VALUES ('c1', 's1', 'C:/Users/oscar/Desktop/APPS', 'child', ?1, ?2, ?2)",
+            rusqlite::params![now - 200_000, now - 1_000],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO session_message (id, session_id, type, seq, time_created, time_updated, data) \
+             VALUES ('m1', 's1', 'assistant', 1, ?1, ?1, ?2)",
+            rusqlite::params![
+                now - 2_000,
+                r#"{"content":[{"type":"tool","name":"shell","state":{"status":"running"}}]}"#
+            ],
+        )
+        .unwrap();
+
+        // s2: busy med question-værktøj i gang.
+        conn.execute(
+            "INSERT INTO session_v2 (id, parent_id, directory, title, time_created, time_updated, time_busy) \
+             VALUES ('s2', NULL, 'D:/work/Proj', 'Spørgsmål', ?1, ?2, ?2)",
+            rusqlite::params![now - 300_000, now - 3_000],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO session_message (id, session_id, type, seq, time_created, time_updated, data) \
+             VALUES ('m2', 's2', 'assistant', 1, ?1, ?1, ?2)",
+            rusqlite::params![
+                now - 3_000,
+                r#"{"content":[{"type":"tool","name":"question","state":{"status":"running"}}]}"#
+            ],
+        )
+        .unwrap();
+
+        // s3: idle, succeeded → Ready.
+        conn.execute(
+            "INSERT INTO session_v2 (id, parent_id, directory, title, time_created, time_updated, time_busy, time_idle, idle_outcome) \
+             VALUES ('s3', NULL, 'D:/work/Done', 'Færdig', ?1, ?2, ?3, ?2, 'succeeded')",
+            rusqlite::params![now - 300_000, now - 30_000, now - 60_000],
+        )
+        .unwrap();
+
+        // s4: idle, interrupted → Idle.
+        conn.execute(
+            "INSERT INTO session_v2 (id, parent_id, directory, title, time_created, time_updated, time_busy, time_idle, idle_outcome) \
+             VALUES ('s4', NULL, 'D:/work/Stop', 'Afbudt', ?1, ?2, ?3, ?2, 'interrupted')",
+            rusqlite::params![now - 300_000, now - 20_000, now - 50_000],
+        )
+        .unwrap();
+
+        // s5: arkiveret → udelades.
+        conn.execute(
+            "INSERT INTO session_v2 (id, parent_id, directory, title, time_created, time_updated, time_archived) \
+             VALUES ('s5', NULL, 'D:/work/Arch', 'Arkiv', ?1, ?2, ?1)",
+            rusqlite::params![now - 10_000, now - 5_000],
+        )
+        .unwrap();
+
+        // s6: for gammel og ikke busy → udelades.
+        conn.execute(
+            "INSERT INTO session_v2 (id, parent_id, directory, title, time_created, time_updated) \
+             VALUES ('s6', NULL, 'D:/work/Old', 'Gammel', ?1, ?1)",
+            rusqlite::params![now - 2 * 60 * 60 * 1000],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn detects_opencode_sessions_from_sqlite() {
+        let td = TestDir::new("opencode");
+        let paths = td.paths();
+        let now: i64 = 1_795_469_200_000;
+        setup_opencode_db(&paths.opencode_db, now);
+
+        let procs = ProcessIndex::from_exes(&["OpenCode.exe"]);
+        let sessions = sources::scan_opencode(&paths, &procs, now);
+
+        let ids: Vec<&str> = sessions.iter().map(|s| s.id.as_str()).collect();
+        assert!(!ids.contains(&"opencode:c1"), "underagent-session må ikke vises: {ids:?}");
+        assert!(!ids.contains(&"opencode:s5"), "arkiveret udelades: {ids:?}");
+        assert!(!ids.contains(&"opencode:s6"), "gammel udelades: {ids:?}");
+
+        let s1 = sessions.iter().find(|s| s.id == "opencode:s1").unwrap();
+        assert_eq!(s1.status, AgentStatus::Working);
+        assert_eq!(s1.detail.as_deref(), Some("Kører kommando"));
+        assert_eq!(s1.subagent_count, 1);
+        assert_eq!(s1.agent_label, "OpenCode");
+        assert_eq!(s1.title.as_deref(), Some("Fix bug"));
+        assert_eq!(s1.project.as_deref(), Some("APPS"));
+
+        let s2 = sessions.iter().find(|s| s.id == "opencode:s2").unwrap();
+        assert_eq!(s2.status, AgentStatus::Waiting);
+        assert_eq!(s2.detail.as_deref(), Some("Stiller et spørgsmål"));
+
+        let s3 = sessions.iter().find(|s| s.id == "opencode:s3").unwrap();
+        assert_eq!(s3.status, AgentStatus::Ready);
+        assert_eq!(s3.detail.as_deref(), Some("Klar til svar"));
+
+        let s4 = sessions.iter().find(|s| s.id == "opencode:s4").unwrap();
+        assert_eq!(s4.status, AgentStatus::Idle);
+        assert_eq!(s4.detail, None);
+    }
+
+    #[test]
+    fn opencode_busy_without_process_is_not_working() {
+        let td = TestDir::new("opencode-dead");
+        let paths = td.paths();
+        let now: i64 = 1_795_469_200_000;
+        setup_opencode_db(&paths.opencode_db, now);
+
+        let dead = sources::scan_opencode(&paths, &ProcessIndex::empty(), now);
+        let s1 = dead.iter().find(|s| s.id == "opencode:s1").unwrap();
+        assert_ne!(s1.status, AgentStatus::Working);
+        assert_ne!(s1.status, AgentStatus::Waiting);
+        let s2 = dead.iter().find(|s| s.id == "opencode:s2").unwrap();
+        assert_ne!(s2.status, AgentStatus::Working);
+        assert_ne!(s2.status, AgentStatus::Waiting);
+    }
+
+    #[test]
+    fn opencode_cli_sidecar_counts_as_running() {
+        let td = TestDir::new("opencode-cli");
+        let paths = td.paths();
+        let now: i64 = 1_795_469_200_000;
+        setup_opencode_db(&paths.opencode_db, now);
+
+        let procs = ProcessIndex::from_exes(&["opencode-cli.exe"]);
+        let sessions = sources::scan_opencode(&paths, &procs, now);
+        let s1 = sessions.iter().find(|s| s.id == "opencode:s1").unwrap();
+        assert_eq!(s1.status, AgentStatus::Working);
+    }
+
     #[test]
     #[ignore = "Kører mod brugerens rigtige lokale databaser"]
     fn live_scan_smoke() {

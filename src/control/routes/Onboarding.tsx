@@ -5,6 +5,7 @@ import type { ThemeId } from "../../shared/bindings/ThemeId";
 import { t } from "../../shared/i18n";
 import { DockLogo } from "../../shared/icons/DockLogo";
 import { ipc, toAssetUrl } from "../../shared/ipc";
+import { errorMessage } from "../../shared/logging";
 import { Button } from "../components/Button";
 import { Drawer } from "../components/Drawer";
 import { Input } from "../components/Input";
@@ -104,7 +105,7 @@ export function Onboarding() {
         setRoute(addedWidgets ? "desktop" : "gallery");
         pushToast({ message: t("toast.onboardingDone"), durationMs: 5000 });
       } catch (err: unknown) {
-        pushToast({ message: String(err) });
+        pushToast({ message: errorMessage(err) });
       } finally {
         setBusy(false);
       }
@@ -184,7 +185,7 @@ export function Onboarding() {
       await finishOnboarding(true);
     } catch (err: unknown) {
       setBusy(false);
-      pushToast({ message: String(err) });
+      pushToast({ message: errorMessage(err) });
     }
   };
 
@@ -196,7 +197,7 @@ export function Onboarding() {
       await finishOnboarding(false);
     } catch (err: unknown) {
       setBusy(false);
-      pushToast({ message: String(err) });
+      pushToast({ message: errorMessage(err) });
     }
   };
 
@@ -209,7 +210,7 @@ export function Onboarding() {
       await finishOnboarding(true);
     } catch (err: unknown) {
       setBusy(false);
-      pushToast({ message: String(err) });
+      pushToast({ message: errorMessage(err) });
     }
   };
 

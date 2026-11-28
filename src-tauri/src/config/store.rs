@@ -27,7 +27,7 @@ pub const RESTORED_DEFAULTS_MESSAGE: &str =
 
 pub struct ConfigStore {
     dir: PathBuf,
-    config: RwLock<Config>,
+    config: RwLock<Arc<Config>>,
     app: Option<AppHandle>,
     save_seq: AtomicU64,
     revision: AtomicU64,
@@ -106,7 +106,7 @@ impl ConfigStore {
 
         Self {
             dir,
-            config: RwLock::new(config),
+            config: RwLock::new(Arc::new(config)),
             app,
             save_seq: AtomicU64::new(0),
             revision: AtomicU64::new(0),
@@ -118,8 +118,8 @@ impl ConfigStore {
         }
     }
 
-    pub fn get(&self) -> Config {
-        self.config.read().clone()
+    pub fn get(&self) -> Arc<Config> {
+        Arc::clone(&self.config.read())
     }
 
     pub fn read_with<R>(&self, f: impl FnOnce(&Config) -> R) -> R {
@@ -164,10 +164,10 @@ impl ConfigStore {
         F: FnOnce(&mut Config) -> Result<R, AppError>,
     {
         let mut guard = self.config.write();
-        let mut candidate = guard.clone();
+        let mut candidate = Config::clone(&guard);
         let result = f(&mut candidate)?;
         migrate::sanitize(&mut candidate);
-        *guard = candidate;
+        *guard = Arc::new(candidate);
         self.revision.fetch_add(1, Ordering::AcqRel);
         Ok(result)
     }
@@ -184,10 +184,10 @@ impl ConfigStore {
             let Some(mut emitted) = self.emitted.try_lock() else { return };
             let (revision, snapshot) = {
                 let guard = self.config.read();
-                (self.revision.load(Ordering::Acquire), guard.clone())
+                (self.revision.load(Ordering::Acquire), Arc::clone(&*guard))
             };
             if revision > *emitted {
-                if let Err(error) = app.emit("config://changed", &snapshot) {
+                if let Err(error) = app.emit("config://changed", &*snapshot) {
                     log::warn!("Kunne ikke sende config://changed: {error}");
                 }
                 *emitted = revision;
@@ -201,8 +201,16 @@ impl ConfigStore {
         let mut changed = false;
         {
             let mut guard = self.config.write();
-            if let Some(target) = guard.widgets.iter_mut().find(|w| w.id == id) {
-                if (target.placement.x - x).abs() > 0.25 || (target.placement.y - y).abs() > 0.25 {
+            let needs_update = guard.widgets.iter().any(|w| {
+                w.id == id
+                    && ((w.placement.x - x).abs() > 0.25 || (w.placement.y - y).abs() > 0.25)
+            });
+            if needs_update {
+                if let Some(target) = Arc::make_mut(&mut *guard)
+                    .widgets
+                    .iter_mut()
+                    .find(|w| w.id == id)
+                {
                     target.placement.x = x;
                     target.placement.y = y;
                     changed = true;
@@ -229,7 +237,7 @@ impl ConfigStore {
         }
 
         let snapshot = self.get();
-        write_atomic(&self.dir, &snapshot)?;
+        write_atomic(&self.dir, snapshot.as_ref())?;
 
         if !backup_path.exists() {
             let _ = fs::copy(&config_path, &backup_path);
@@ -403,6 +411,32 @@ mod tests {
             Some(RESTORED_BACKUP_MESSAGE)
         );
         assert_no_tmp_files(&dir);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn arc_snapshots_are_stable_and_quiet_placement_is_copy_on_write() {
+        let dir = temp_config_dir("arc_config");
+        let store = Arc::new(ConfigStore::load_from_dir(dir.clone(), None, None));
+        let before = store.get();
+        store
+            .mutate(|cfg| {
+                cfg.widgets.push(defaults::default_widget(WidgetKind::Clock, None));
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(before.widgets.len(), 0);
+        assert_eq!(store.get().widgets.len(), 1);
+
+        let snapshot = store.get();
+        let widget = &snapshot.widgets[0];
+        store.update_placement_quiet(
+            widget.id,
+            widget.placement.x + 0.1,
+            widget.placement.y + 0.1,
+        );
+        assert!(Arc::ptr_eq(&store.get(), &snapshot));
 
         let _ = fs::remove_dir_all(&dir);
     }

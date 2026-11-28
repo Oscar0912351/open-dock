@@ -2,6 +2,7 @@ import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import type { EventCallback, UnlistenFn } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
+import { reportFailure } from "./logging";
 import type { AgentsSnapshot } from "./bindings/AgentsSnapshot";
 import type { Appearance } from "./bindings/Appearance";
 import type { AppearancePatch } from "./bindings/AppearancePatch";
@@ -242,6 +243,20 @@ export const on = {
   updateProgress: (callback: (progress: UpdateProgress) => void) =>
     listenHere<UpdateProgress>("update://progress", (event) => callback(event.payload)),
 };
+
+/** Registrerer flere lyttere; returnerer én dispose. Lyttere der når at
+    resolve efter dispose afmeldes straks; registreringsfejl logges. */
+export function subscribeAll(entries: ReadonlyArray<readonly [context: string, pending: Promise<UnlistenFn>]>): () => void {
+  let disposed = false;
+  const unlisteners: UnlistenFn[] = [];
+  for (const [context, pending] of entries) {
+    pending.then(
+      (un) => { if (disposed) un(); else unlisteners.push(un); },
+      (reason: unknown) => reportFailure(context, reason),
+    );
+  }
+  return () => { disposed = true; for (const un of unlisteners.splice(0)) un(); };
+}
 
 export const windowControls = {
   minimize: () => getCurrentWindow().minimize(),

@@ -11,6 +11,7 @@ import type { WidgetInstance } from "../../shared/bindings/WidgetInstance";
 import { useProvider } from "../../shared/hooks/useProvider";
 import { t } from "../../shared/i18n";
 import { ipc } from "../../shared/ipc";
+import { reportFailure } from "../../shared/logging";
 import { resolveClockSettings } from "../kinds/clock/Clock";
 import { useClock } from "../kinds/clock/useClock";
 import {
@@ -126,7 +127,7 @@ export function ClusterShell({
       .then((caps) => {
         if (active) setSystemCaps(caps);
       })
-      .catch(() => {});
+      .catch((reason: unknown) => reportFailure("system_caps", reason));
     return () => {
       active = false;
     };

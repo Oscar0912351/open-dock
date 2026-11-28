@@ -14,6 +14,7 @@ import {
 import { useProvider } from "../../../shared/hooks/useProvider";
 import { t } from "../../../shared/i18n";
 import { ipc } from "../../../shared/ipc";
+import { reportFailure } from "../../../shared/logging";
 import { Skeleton, StateError } from "../../components/States";
 import { Ring, type MetricTone } from "./Ring";
 import { Sparkline } from "./Sparkline";
@@ -92,7 +93,7 @@ export function System({ size, theme, settings, onAriaChange }: SystemProps) {
       .then((c) => {
         if (active) setCaps(c);
       })
-      .catch(() => {});
+      .catch((reason: unknown) => reportFailure("system_caps", reason));
     return () => {
       active = false;
     };

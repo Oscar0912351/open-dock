@@ -11,6 +11,7 @@ import { getDateTimeFormatter } from "../../shared/format";
 import { t } from "../../shared/i18n";
 import { DockLogo } from "../../shared/icons/DockLogo";
 import { ipc, on, toAssetUrl } from "../../shared/ipc";
+import { errorMessage, reportFailure } from "../../shared/logging";
 import { Button } from "../components/Button";
 import { Card, SettingRow } from "../components/Card";
 import { ConfirmDialog } from "../components/Drawer";
@@ -19,14 +20,6 @@ import { Segmented } from "../components/Segmented";
 import { Select } from "../components/Select";
 import { Switch } from "../components/Switch";
 import { useControlStore } from "../store";
-
-function formatError(err: unknown): string {
-  if (typeof err === "string") return err;
-  if (err && typeof err === "object" && "message" in err) {
-    return String((err as { message: unknown }).message);
-  }
-  return String(err);
-}
 
 function DiscordGlyph({ size = 20 }: { size?: number }) {
   return (
@@ -78,7 +71,7 @@ export function Settings() {
         if (!cancelled) setSensorStatus(status);
       })
       .catch((err) => {
-        if (!cancelled) setSensorError(formatError(err));
+        if (!cancelled) setSensorError(errorMessage(err));
       });
 
     void ipc
@@ -87,14 +80,14 @@ export function Settings() {
         if (cancelled) return;
         setDiscordStatus(st);
       })
-      .catch(() => {});
+      .catch((reason: unknown) => reportFailure("discord_rpc_status", reason));
 
     void ipc
       .updateStatus()
       .then((status) => {
         if (!cancelled) setUpdateInfo(status);
       })
-      .catch(() => {});
+      .catch((reason: unknown) => reportFailure("update_status", reason));
 
     let unlisten: (() => void) | null = null;
     void on
@@ -184,8 +177,11 @@ export function Settings() {
       const next = await ipc.cpuSensorInstall();
       setSensorStatus(next);
     } catch (err) {
-      setSensorError(formatError(err));
-      void ipc.cpuSensorStatus().then(setSensorStatus).catch(() => {});
+      setSensorError(errorMessage(err));
+      void ipc
+        .cpuSensorStatus()
+        .then(setSensorStatus)
+        .catch((reason: unknown) => reportFailure("cpu_sensor_status", reason));
     } finally {
       setSensorBusy(null);
     }
@@ -198,8 +194,11 @@ export function Settings() {
       const next = await ipc.cpuSensorUninstall();
       setSensorStatus(next);
     } catch (err) {
-      setSensorError(formatError(err));
-      void ipc.cpuSensorStatus().then(setSensorStatus).catch(() => {});
+      setSensorError(errorMessage(err));
+      void ipc
+        .cpuSensorStatus()
+        .then(setSensorStatus)
+        .catch((reason: unknown) => reportFailure("cpu_sensor_status", reason));
     } finally {
       setSensorBusy(null);
     }
@@ -214,7 +213,7 @@ export function Settings() {
       const next = await connect();
       setDiscordStatus(next);
     } catch (err) {
-      setDiscordError(formatError(err));
+      setDiscordError(errorMessage(err));
     } finally {
       setDiscordBusy(null);
     }
@@ -258,7 +257,7 @@ export function Settings() {
       const next = await ipc.discordRpcDisconnect();
       setDiscordStatus(next);
     } catch (err) {
-      setDiscordError(formatError(err));
+      setDiscordError(errorMessage(err));
     } finally {
       setDiscordBusy(null);
     }
@@ -272,7 +271,7 @@ export function Settings() {
       const next = await ipc.updateCheck();
       setUpdateInfo(next);
     } catch (err) {
-      setUpdateError(formatError(err));
+      setUpdateError(errorMessage(err));
     } finally {
       setUpdateBusy(null);
     }
@@ -287,7 +286,7 @@ export function Settings() {
       // Appen lukker sig selv når installeren starter.
       await ipc.updateInstall();
     } catch (err) {
-      setUpdateError(formatError(err));
+      setUpdateError(errorMessage(err));
       setUpdateBusy(null);
       setUpdateDl(null);
     }

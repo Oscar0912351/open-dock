@@ -6,7 +6,7 @@ import type { ProviderKind } from "../bindings/ProviderKind";
 import type { SystemSample } from "../bindings/SystemSample";
 import type { WeatherSnapshot } from "../bindings/WeatherSnapshot";
 import { ipc, on } from "../ipc";
-import { reportError } from "../logging";
+import { fireIpc, reportFailure } from "../logging";
 
 export type ProviderStatus = "loading" | "ready" | "empty" | "error" | "stale";
 
@@ -132,7 +132,7 @@ export function useProvider<K extends ProviderKind>(
       } catch (reason: unknown) {
         if (active) {
           setState({ subId, data: null, failed: true, showSkeleton: false });
-          void reportError(`useProvider (${kind}): ${String(reason)}`);
+          reportFailure(`useProvider (${kind})`, reason);
         }
         return;
       }
@@ -150,7 +150,7 @@ export function useProvider<K extends ProviderKind>(
         if (!active) {
           // Cleanup nåede før svaret — par subscribe/unsubscribe med det samme,
           // så unsubscribe altid sendes efter subscribe på Rust-siden.
-          void ipc.providerUnsubscribe(kind, normalizedKey).catch(() => {});
+          fireIpc(ipc.providerUnsubscribe(kind, normalizedKey), `provider_unsubscribe (${kind})`);
           return;
         }
         if (snapshot) {
@@ -165,7 +165,7 @@ export function useProvider<K extends ProviderKind>(
       .catch((reason: unknown) => {
         if (!active) return;
         setState({ subId, data: null, failed: true, showSkeleton: false });
-        void reportError(`useProvider (${kind}): ${String(reason)}`);
+        reportFailure(`useProvider (${kind})`, reason);
       });
 
     return () => {
@@ -174,7 +174,7 @@ export function useProvider<K extends ProviderKind>(
       unlisten?.();
       if (subscribed) {
         subscribed = false;
-        void ipc.providerUnsubscribe(kind, normalizedKey).catch(() => {});
+        fireIpc(ipc.providerUnsubscribe(kind, normalizedKey), `provider_unsubscribe (${kind})`);
       }
     };
   }, [kind, normalizedKey, subId]);

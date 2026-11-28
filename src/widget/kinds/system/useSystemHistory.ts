@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import type { SystemSample } from "../../../shared/bindings/SystemSample";
 import { ipc } from "../../../shared/ipc";
+import { reportFailure } from "../../../shared/logging";
 
 const MAX_HISTORY = 60;
 
@@ -26,7 +27,7 @@ export function useSystemHistory(
           return [...older, ...prev].slice(-MAX_HISTORY);
         });
       })
-      .catch(() => {});
+      .catch((reason: unknown) => reportFailure("system_history", reason));
 
     return () => {
       active = false;

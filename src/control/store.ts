@@ -5,8 +5,8 @@ import type { MonitorInfo } from "../shared/bindings/MonitorInfo";
 import type { WidgetInstance } from "../shared/bindings/WidgetInstance";
 import type { WidgetPlacement } from "../shared/bindings/WidgetPlacement";
 import { setLocale, t, type Locale } from "../shared/i18n";
-import { ipc, on } from "../shared/ipc";
-import { reportError } from "../shared/logging";
+import { ipc, on, subscribeAll } from "../shared/ipc";
+import { reportFailure } from "../shared/logging";
 
 export type ControlRoute = "gallery" | "desktop" | "wallpapers" | "settings";
 
@@ -147,7 +147,7 @@ export function showUndoRemoveToast(instance: WidgetInstance) {
     durationMs: 5000,
     onAction: () => {
       void ipc.widgetRestore(instance).catch((err) => {
-        void reportError(`widget_restore: ${String(err)}`);
+        reportFailure("widget_restore", err);
       });
     },
   });
@@ -155,7 +155,6 @@ export function showUndoRemoveToast(instance: WidgetInstance) {
 
 export function initControlStore(): () => void {
   let active = true;
-  const unlisteners: Array<() => void> = [];
   const store = useControlStore.getState();
 
   const applyConfig = (cfg: Config) => {
@@ -177,14 +176,14 @@ export function initControlStore(): () => void {
     .then((cfg) => {
       if (active) applyConfig(cfg);
     })
-    .catch((err) => void reportError(`configGet: ${String(err)}`));
+    .catch((err) => reportFailure("config_get", err));
 
   void ipc
     .monitorsList()
     .then((monitors) => {
       if (active) useControlStore.setState({ monitors });
     })
-    .catch((err) => void reportError(`monitorsList: ${String(err)}`));
+    .catch((err) => reportFailure("monitors_list", err));
 
   void ipc
     .appStatus()
@@ -198,7 +197,7 @@ export function initControlStore(): () => void {
         appVersion: status.version,
       });
     })
-    .catch((err) => void reportError(`appStatus: ${String(err)}`));
+    .catch((err) => reportFailure("app_status", err));
 
   void ipc
     .configTakeRestoreNotice()
@@ -207,56 +206,49 @@ export function initControlStore(): () => void {
         store.pushToast({ message: notice, durationMs: 5000 });
       }
     })
-    .catch(() => {});
+    .catch((err) => reportFailure("config_take_restore_notice", err));
 
-  const sub = <T,>(
-    fn: (cb: (payload: T) => void) => Promise<() => void>,
-    cb: (payload: T) => void,
-  ) => {
-    fn((payload) => {
-      if (active) cb(payload);
-    })
-      .then((dispose) => {
-        if (active) unlisteners.push(dispose);
-        else dispose();
-      })
-      .catch((err) => void reportError(`control listen: ${String(err)}`));
-  };
-
-  sub(on.config, (cfg) => applyConfig(cfg));
-  sub(on.configRestored, (msg) => {
-    useControlStore.getState().pushToast({ message: msg, durationMs: 5000 });
-  });
-  sub(on.trayNotice, (msg) => {
-    useControlStore.getState().pushToast({ message: msg, durationMs: 4000 });
-  });
-  sub(on.monitors, (monitors) => {
-    useControlStore.setState({ monitors });
-  });
-  sub(on.placement, (placement) => {
-    useControlStore.setState((prev) => ({
-      placements: { ...prev.placements, [placement.id]: placement },
-    }));
-  });
-  sub(on.editMode, (state) => {
-    useControlStore.setState({ editMode: state.on });
-  });
-  sub(on.visible, (state) => {
-    useControlStore.setState({ visible: state.visible });
-  });
-  sub(on.paused, (paused) => {
-    useControlStore.setState({ paused });
-  });
-  sub(on.widgetRemoved, (instance) => {
-    showUndoRemoveToast(instance);
-  });
-  sub(on.navigate, (raw) => {
-    const parsed = parseRouteNavigation(raw);
-    useControlStore.getState().setRoute(parsed.route, parsed.selectId);
-  });
+  const disposeListeners = subscribeAll([
+    ["control listen (config)", on.config((cfg) => {
+      if (active) applyConfig(cfg);
+    })],
+    ["control listen (config restored)", on.configRestored((msg) => {
+      if (active) useControlStore.getState().pushToast({ message: msg, durationMs: 5000 });
+    })],
+    ["control listen (tray notice)", on.trayNotice((msg) => {
+      if (active) useControlStore.getState().pushToast({ message: msg, durationMs: 4000 });
+    })],
+    ["control listen (monitors)", on.monitors((monitors) => {
+      if (active) useControlStore.setState({ monitors });
+    })],
+    ["control listen (placement)", on.placement((placement) => {
+      if (active) {
+        useControlStore.setState((prev) => ({
+          placements: { ...prev.placements, [placement.id]: placement },
+        }));
+      }
+    })],
+    ["control listen (edit mode)", on.editMode((state) => {
+      if (active) useControlStore.setState({ editMode: state.on });
+    })],
+    ["control listen (visible)", on.visible((state) => {
+      if (active) useControlStore.setState({ visible: state.visible });
+    })],
+    ["control listen (paused)", on.paused((paused) => {
+      if (active) useControlStore.setState({ paused });
+    })],
+    ["control listen (widget removed)", on.widgetRemoved((instance) => {
+      if (active) showUndoRemoveToast(instance);
+    })],
+    ["control listen (navigate)", on.navigate((raw) => {
+      if (!active) return;
+      const parsed = parseRouteNavigation(raw);
+      useControlStore.getState().setRoute(parsed.route, parsed.selectId);
+    })],
+  ]);
 
   return () => {
     active = false;
-    for (const dispose of unlisteners) dispose();
+    disposeListeners();
   };
 }

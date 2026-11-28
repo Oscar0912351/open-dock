@@ -4,9 +4,13 @@ import type { MonitorInfo } from "../../shared/bindings/MonitorInfo";
 import type { WidgetBoot } from "../../shared/bindings/WidgetBoot";
 import type { WidgetLiveLuma } from "../../shared/bindings/WidgetLiveLuma";
 import { setLocale, t } from "../../shared/i18n";
-import { ipc, on, toAssetUrl } from "../../shared/ipc";
-import { reportError } from "../../shared/logging";
+import { ipc, on, subscribeAll, toAssetUrl } from "../../shared/ipc";
+import { reportFailure } from "../../shared/logging";
 import { computeScrimAlpha } from "../WidgetShell";
+
+function sameJson(a: unknown, b: unknown): boolean {
+  return JSON.stringify(a) === JSON.stringify(b);
+}
 
 interface UseWidgetEventsOptions {
   id: string;
@@ -82,7 +86,7 @@ export function useWidgetEvents({
       })
       .catch((reason: unknown) => {
         if (!active) return;
-        void reportError(`widget_ready (${id}): ${String(reason)}`);
+        reportFailure(`widget_ready (${id})`, reason);
         setError(t("error.widgetBoot"));
       });
 
@@ -93,7 +97,7 @@ export function useWidgetEvents({
         setLocations(cfg.weather.locations);
         setLocale(cfg.general.language);
       })
-      .catch(() => {});
+      .catch((reason: unknown) => reportFailure("config_get", reason));
 
     return () => {
       active = false;
@@ -103,7 +107,7 @@ export function useWidgetEvents({
   useEffect(() => {
     if (!id) return;
     let active = true;
-    const unlisteners: Array<() => void> = [];
+    let unlistenLiveLuma: (() => void) | null = null;
 
     const applyLiveLuma = (payload: WidgetLiveLuma) => {
       if (!active || payload.seq <= liveLumaSeqRef.current) return;
@@ -119,191 +123,176 @@ export function useWidgetEvents({
         .widgetLiveLuma(id)
         .then(applyLiveLuma)
         .catch((reason: unknown) => {
-          if (active) void reportError(`widget_live_luma (${id}): ${String(reason)}`);
+          if (active) reportFailure(`widget_live_luma (${id})`, reason);
         });
     };
 
     on.liveLuma(applyLiveLuma).then((dispose) => {
       if (active) {
-        unlisteners.push(dispose);
+        unlistenLiveLuma = dispose;
         pullLiveLuma();
       } else {
         dispose();
       }
     }).catch((reason: unknown) => {
-      void reportError(`widget://live-luma: ${String(reason)}`);
+      reportFailure("widget://live-luma", reason);
     });
 
-    on.placement((placement) => {
-      if (!active || placement.id !== id) return;
-      const prev = placementRef.current;
-      const next = {
-        monitor: placement.monitor,
-        wx: placement.rect.x,
-        wy: placement.rect.y,
-        luma: placement.luma,
-      };
-      placementRef.current = next;
-      if (!draggingIdRef.current) {
-        setPlacementState(next);
-      }
+    const disposeListeners = subscribeAll([
+      [
+        "widget://placement",
+        on.placement((placement) => {
+          if (!active || placement.id !== id) return;
+          const prev = placementRef.current;
+          const next = {
+            monitor: placement.monitor,
+            wx: placement.rect.x,
+            wy: placement.rect.y,
+            luma: placement.luma,
+          };
+          placementRef.current = next;
+          if (!draggingIdRef.current) {
+            setPlacementState(next);
+          }
 
-      const plate = plateRef.current;
-      if (plate) {
-        plate.style.setProperty("--wx", `${placement.rect.x}px`);
-        plate.style.setProperty("--wy", `${placement.rect.y}px`);
-      }
+          const plate = plateRef.current;
+          if (plate) {
+            plate.style.setProperty("--wx", `${placement.rect.x}px`);
+            plate.style.setProperty("--wy", `${placement.rect.y}px`);
+          }
 
-      const currentBoot = bootRef.current;
-      const scrimNode = scrimRef.current;
-      if (draggingIdRef.current && scrimNode && currentBoot && liveLumaRef.current == null) {
-        const theme = currentBoot.instance.themeOverride ?? currentBoot.appearance.themeId;
-        const scrim = computeScrimAlpha(
-          theme,
-          placement.luma,
-          currentBoot.appearance.autoContrast,
-        );
-        scrimNode.style.setProperty("--scrim-a", scrim.toFixed(4));
-      }
+          const currentBoot = bootRef.current;
+          const scrimNode = scrimRef.current;
+          if (draggingIdRef.current && scrimNode && currentBoot && liveLumaRef.current == null) {
+            const theme = currentBoot.instance.themeOverride ?? currentBoot.appearance.themeId;
+            const scrim = computeScrimAlpha(
+              theme,
+              placement.luma,
+              currentBoot.appearance.autoContrast,
+            );
+            scrimNode.style.setProperty("--scrim-a", scrim.toFixed(4));
+          }
 
-      if (prev && prev.monitor !== placement.monitor) {
-        void ipc.monitorsList().then((monitors) => {
+          if (prev && prev.monitor !== placement.monitor) {
+            void ipc
+              .monitorsList()
+              .then((monitors) => {
+                if (!active) return;
+                const matched = monitors.find((m) => m.name === placement.monitor);
+                if (matched) setMonitor(matched);
+              })
+              .catch((reason: unknown) => reportFailure("monitors_list", reason));
+          }
+        }),
+      ],
+      [
+        "desktop://monitors",
+        on.monitors((monitors) => {
           if (!active) return;
-          const matched = monitors.find((m) => m.name === placement.monitor);
-          if (matched) setMonitor(matched);
-        });
-      }
-    }).then((dispose) => {
-      if (active) unlisteners.push(dispose);
-      else dispose();
-    }).catch((reason: unknown) => {
-      void reportError(`widget://placement: ${String(reason)}`);
-    });
-
-    on.monitors((monitors) => {
-      if (!active) return;
-      const targetName = placementRef.current?.monitor;
-      const matched =
-        (targetName ? monitors.find((m) => m.name === targetName) : undefined) ??
-        monitors.find((m) => m.isPrimary) ??
-        monitors[0] ??
-        null;
-      if (!matched) return;
-      setMonitor(matched);
-      const plate = plateRef.current;
-      if (plate) {
-        const pathToUse =
-          plate.classList.contains("is-preblurred") && matched.glassPlatePath
-            ? matched.glassPlatePath
-            : matched.platePath;
-        plate.style.setProperty("--plate", pathToUse ? `url("${toAssetUrl(pathToUse)}")` : "none");
-        plate.style.setProperty("--mon-w", `${matched.logicalSize.width}px`);
-        plate.style.setProperty("--mon-h", `${matched.logicalSize.height}px`);
-      }
-    }).then((dispose) => {
-      if (active) unlisteners.push(dispose);
-      else dispose();
-    }).catch((reason: unknown) => {
-      void reportError(`desktop://monitors: ${String(reason)}`);
-    });
-
-    on.glass((glassState) => {
-      if (!active) return;
-      setBoot((prev) =>
-        prev
-          ? {
-              ...prev,
-              appearance: glassState.appearance,
-              effectiveEngine: glassState.effectiveEngine,
-              liveBackdrop: glassState.liveBackdrop,
-            }
-          : prev,
-      );
-      pullLiveLuma();
-    }).then((dispose) => {
-      if (active) unlisteners.push(dispose);
-      else dispose();
-    }).catch((reason: unknown) => {
-      void reportError(`widget://glass: ${String(reason)}`);
-    });
-
-    on.config((config) => {
-      if (!active) return;
-      setLocations(config.weather.locations);
-      setLocale(config.general.language);
-      const updated = config.widgets.find((w) => w.id === id);
-      if (!updated) return;
-      setBoot((prev) =>
-        prev
-          ? {
+          const targetName = placementRef.current?.monitor;
+          const matched =
+            (targetName ? monitors.find((m) => m.name === targetName) : undefined) ??
+            monitors.find((m) => m.isPrimary) ??
+            monitors[0] ??
+            null;
+          if (!matched) return;
+          setMonitor(matched);
+          const plate = plateRef.current;
+          if (plate) {
+            const pathToUse =
+              plate.classList.contains("is-preblurred") && matched.glassPlatePath
+                ? matched.glassPlatePath
+                : matched.platePath;
+            plate.style.setProperty("--plate", pathToUse ? `url("${toAssetUrl(pathToUse)}")` : "none");
+            plate.style.setProperty("--mon-w", `${matched.logicalSize.width}px`);
+            plate.style.setProperty("--mon-h", `${matched.logicalSize.height}px`);
+          }
+        }),
+      ],
+      [
+        "widget://glass",
+        on.glass((glassState) => {
+          if (!active) return;
+          setBoot((prev) =>
+            prev
+              ? {
+                  ...prev,
+                  appearance: glassState.appearance,
+                  effectiveEngine: glassState.effectiveEngine,
+                  liveBackdrop: glassState.liveBackdrop,
+                }
+              : prev,
+          );
+          pullLiveLuma();
+        }),
+      ],
+      [
+        "config://changed",
+        on.config((config) => {
+          if (!active) return;
+          setLocations((prev) =>
+            sameJson(prev, config.weather.locations) ? prev : config.weather.locations,
+          );
+          setLocale(config.general.language);
+          const updated = config.widgets.find((w) => w.id === id);
+          if (!updated) return;
+          setBoot((prev) => {
+            if (!prev) return prev;
+            const instanceChanged = !sameJson(prev.instance, updated);
+            const appearanceChanged = !sameJson(prev.appearance, config.appearance);
+            if (!instanceChanged && !appearanceChanged) return prev;
+            return {
               ...prev,
               instance: updated,
               appearance: config.appearance,
+            };
+          });
+        }),
+      ],
+      [
+        "edit://mode",
+        on.editMode((state) => {
+          if (!active) return;
+          setBoot((prev) => (prev ? { ...prev, editMode: state.on } : prev));
+          if (!state.on) {
+            setSelectedWidgetId(null);
+            setDraggingWidgetId(null);
+          }
+        }),
+      ],
+      [
+        "edit://selected",
+        on.editSelected((state) => {
+          if (!active) return;
+          setSelectedWidgetId(state.id);
+        }),
+      ],
+      [
+        "edit://dragging",
+        on.editDragging((state) => {
+          if (!active) return;
+          if (state.id === null && draggingIdRef.current !== null) {
+            lastDragEndRef.current = Date.now();
+            if (placementRef.current) {
+              setPlacementState(placementRef.current);
             }
-          : prev,
-      );
-    }).then((dispose) => {
-      if (active) unlisteners.push(dispose);
-      else dispose();
-    }).catch((reason: unknown) => {
-      void reportError(`config://changed: ${String(reason)}`);
-    });
-
-    on.editMode((state) => {
-      if (!active) return;
-      setBoot((prev) => (prev ? { ...prev, editMode: state.on } : prev));
-      if (!state.on) {
-        setSelectedWidgetId(null);
-        setDraggingWidgetId(null);
-      }
-    }).then((dispose) => {
-      if (active) unlisteners.push(dispose);
-      else dispose();
-    }).catch((reason: unknown) => {
-      void reportError(`edit://mode: ${String(reason)}`);
-    });
-
-    on.editSelected((state) => {
-      if (!active) return;
-      setSelectedWidgetId(state.id);
-    }).then((dispose) => {
-      if (active) unlisteners.push(dispose);
-      else dispose();
-    }).catch((reason: unknown) => {
-      void reportError(`edit://selected: ${String(reason)}`);
-    });
-
-    on.editDragging((state) => {
-      if (!active) return;
-      if (state.id === null && draggingIdRef.current !== null) {
-        lastDragEndRef.current = Date.now();
-        if (placementRef.current) {
-          setPlacementState(placementRef.current);
-        }
-      }
-      setDraggingWidgetId(state.id);
-    }).then((dispose) => {
-      if (active) unlisteners.push(dispose);
-      else dispose();
-    }).catch((reason: unknown) => {
-      void reportError(`edit://dragging: ${String(reason)}`);
-    });
-
-    on.widgetHover((state) => {
-      if (!active) return;
-      handleHoverEvent(state.inside);
-    }).then((dispose) => {
-      if (active) unlisteners.push(dispose);
-      else dispose();
-    }).catch((reason: unknown) => {
-      void reportError(`widget://hover: ${String(reason)}`);
-    });
+          }
+          setDraggingWidgetId(state.id);
+        }),
+      ],
+      [
+        "widget://hover",
+        on.widgetHover((state) => {
+          if (!active) return;
+          handleHoverEvent(state.inside);
+        }),
+      ],
+    ]);
 
     return () => {
       active = false;
-      for (const dispose of unlisteners) {
-        dispose();
-      }
+      unlistenLiveLuma?.();
+      disposeListeners();
     };
   }, [id, plateRef, scrimRef, handleHoverEvent]);
 

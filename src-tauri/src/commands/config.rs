@@ -10,7 +10,7 @@ use crate::{
 
 #[tauri::command]
 pub fn config_get(app: AppHandle) -> Result<Config, AppError> {
-    Ok(app.state::<AppState>().config.get())
+    Ok(std::sync::Arc::unwrap_or_clone(app.state::<AppState>().config.get()))
 }
 
 #[tauri::command]
@@ -20,7 +20,7 @@ pub fn config_take_restore_notice(app: AppHandle) -> Result<Option<String>, AppE
 
 #[tauri::command]
 pub fn appearance_get(app: AppHandle) -> Result<Appearance, AppError> {
-    Ok(app.state::<AppState>().config.get().appearance)
+    Ok(app.state::<AppState>().config.read_with(|c| c.appearance.clone()))
 }
 
 #[tauri::command]

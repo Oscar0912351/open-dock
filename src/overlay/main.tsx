@@ -4,6 +4,7 @@ import type { Guide } from "../shared/bindings/Guide";
 import type { ThemeId } from "../shared/bindings/ThemeId";
 import { t, setLocale, type Locale } from "../shared/i18n";
 import { ipc, on } from "../shared/ipc";
+import { reportFailure } from "../shared/logging";
 import { installErrorReporting } from "../shared/runtime";
 import "../shared/theme.css";
 import "./overlay.css";
@@ -28,7 +29,7 @@ function GridOverlay({ monitor }: { monitor: string }) {
       .then((cfg) => {
         if (active) setTheme(cfg.appearance.themeId);
       })
-      .catch(() => {});
+      .catch((reason: unknown) => reportFailure("config_get", reason));
 
     on.config((cfg) => {
       if (active) setTheme(cfg.appearance.themeId);
@@ -118,7 +119,7 @@ function OverlayBar() {
         setLocale(cfg.general.language);
         setLocaleState(cfg.general.language);
       })
-      .catch(() => {});
+      .catch((reason: unknown) => reportFailure("config_get", reason));
 
     on.config((cfg) => {
       if (!active) return;
@@ -129,7 +130,7 @@ function OverlayBar() {
         if (active) dispose = fn;
         else fn();
       })
-      .catch(() => {});
+      .catch((reason: unknown) => reportFailure("config://changed", reason));
 
     return () => {
       active = false;

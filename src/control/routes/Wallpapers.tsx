@@ -19,7 +19,8 @@ import type { WallpaperItem } from "../../shared/bindings/WallpaperItem";
 import type { WallpaperResolution } from "../../shared/bindings/WallpaperResolution";
 import type { WindowsQualityStatus } from "../../shared/bindings/WindowsQualityStatus";
 import { t } from "../../shared/i18n";
-import { ipc, on, toAssetUrl } from "../../shared/ipc";
+import { ipc, on, subscribeAll, toAssetUrl } from "../../shared/ipc";
+import { errorMessage, reportFailure } from "../../shared/logging";
 import { Button } from "../components/Button";
 import { SettingRow } from "../components/Card";
 import { Segmented } from "../components/Segmented";
@@ -77,7 +78,7 @@ export function Wallpapers() {
       setCatalog(list);
       setErrorMsg(null);
     } catch (err) {
-      setErrorMsg(String(err));
+      setErrorMsg(errorMessage(err));
     } finally {
       setCatalogLoading(false);
     }
@@ -95,7 +96,7 @@ export function Wallpapers() {
       })
       .catch((err) => {
         if (!active) return;
-        setErrorMsg(String(err));
+        setErrorMsg(errorMessage(err));
         setCatalogLoading(false);
       });
     ipc
@@ -103,13 +104,13 @@ export function Wallpapers() {
       .then((st) => {
         if (active) setEngineStatus(st);
       })
-      .catch(() => {});
+      .catch((reason: unknown) => reportFailure("wallpaper_engine_status", reason));
     ipc
       .wallpaperWindowsQualityGet()
       .then((wq) => {
         if (active) setWinQuality(wq);
       })
-      .catch(() => {});
+      .catch((reason: unknown) => reportFailure("wallpaper_windows_quality_get", reason));
     return () => {
       active = false;
     };
@@ -117,29 +118,24 @@ export function Wallpapers() {
 
   useEffect(() => {
     let active = true;
-    const unlisteners: Array<() => void> = [];
-
-    on.wallpaperStatus((status) => {
-      if (active) setEngineStatus(status);
-    })
-      .then((fn) => {
-        if (active) unlisteners.push(fn);
-        else fn();
-      })
-      .catch(() => {});
-
-    on.wallpaperThumbsReady(() => {
-      if (active) void refreshCatalog();
-    })
-      .then((fn) => {
-        if (active) unlisteners.push(fn);
-        else fn();
-      })
-      .catch(() => {});
+    const disposeListeners = subscribeAll([
+      [
+        "wallpaper://status",
+        on.wallpaperStatus((status) => {
+          if (active) setEngineStatus(status);
+        }),
+      ],
+      [
+        "wallpaper://thumbs-ready",
+        on.wallpaperThumbsReady(() => {
+          if (active) void refreshCatalog();
+        }),
+      ],
+    ]);
 
     return () => {
       active = false;
-      for (const dispose of unlisteners) dispose();
+      disposeListeners();
       if (speedTimer.current !== null) window.clearTimeout(speedTimer.current);
       if (brightnessTimer.current !== null) window.clearTimeout(brightnessTimer.current);
     };
@@ -241,7 +237,7 @@ export function Wallpapers() {
       pushToast({ message: t("wallpapers.toast.applied", { title: item.title }) });
       void refreshCatalog();
     } catch (err) {
-      const msg = extractErrMessage(err);
+      const msg = errorMessage(err);
       setErrorMsg(msg);
       pushToast({ message: msg });
     } finally {
@@ -271,7 +267,7 @@ export function Wallpapers() {
       setKindFilter("custom");
       pushToast({ message: t("wallpapers.toast.imported", { title: imported.title }) });
     } catch (err) {
-      const msg = extractErrMessage(err);
+      const msg = errorMessage(err);
       setErrorMsg(msg);
       pushToast({ message: msg });
     } finally {
@@ -285,7 +281,7 @@ export function Wallpapers() {
       await refreshCatalog();
       pushToast({ message: t("wallpapers.toast.removed") });
     } catch (err) {
-      pushToast({ message: extractErrMessage(err) });
+      pushToast({ message: errorMessage(err) });
     }
   };
 
@@ -294,7 +290,7 @@ export function Wallpapers() {
       await ipc.wallpaperStopLive(effectiveTarget);
       pushToast({ message: t("wallpapers.toast.stopped") });
     } catch (err) {
-      pushToast({ message: extractErrMessage(err) });
+      pushToast({ message: errorMessage(err) });
     }
   };
 
@@ -324,7 +320,7 @@ export function Wallpapers() {
         message: enabled ? t("wallpapers.toast.qualityOn") : t("wallpapers.toast.qualityOff"),
       });
     } catch (err) {
-      pushToast({ message: extractErrMessage(err) });
+      pushToast({ message: errorMessage(err) });
     }
   };
 
@@ -831,11 +827,4 @@ function formatEngineStatus(
     default:
       return t("wallpapers.status.idle");
   }
-}
-
-function extractErrMessage(err: unknown): string {
-  if (typeof err === "object" && err !== null && "message" in err) {
-    return String((err as { message: unknown }).message);
-  }
-  return String(err);
 }

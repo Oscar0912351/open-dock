@@ -25,7 +25,7 @@ pub struct AgentPaths {
     pub claude_todos: PathBuf,
     pub cursor_db: Option<PathBuf>,
     pub gemini_tmp: PathBuf,
-    pub opencode_dirs: Vec<PathBuf>,
+    pub opencode_db: PathBuf,
     pub windsurf_cascade: PathBuf,
     pub appdata: Option<PathBuf>,
     pub hermes_root: Option<PathBuf>,
@@ -68,10 +68,7 @@ impl AgentPaths {
                 .as_ref()
                 .map(|p| p.join("Cursor/User/globalStorage/state.vscdb")),
             gemini_tmp: home.join(".gemini/tmp"),
-            opencode_dirs: vec![
-                home.join(".local/share/opencode"),
-                home.join(".config/opencode"),
-            ],
+            opencode_db: home.join(".local/share/opencode/opencode.db"),
             windsurf_cascade: home.join(".codeium/windsurf/cascade"),
             hermes_root: local_appdata.map(|p| p.join("hermes")),
             grokbot_persistence: appdata_buf
@@ -188,7 +185,7 @@ fn exes_for_cached_agent(agent: &str) -> &'static [&'static str] {
         "claude-code" => &["claude", "claude-code"],
         "cursor" => &["cursor"],
         "gemini" => &["gemini"],
-        "opencode" => &["opencode"],
+        "opencode" => &["opencode", "opencode-cli"],
         "windsurf" => &["windsurf"],
         "grok-bot" => &["grok bot"],
         "hermes" => &["hermes", "hermes-acp"],

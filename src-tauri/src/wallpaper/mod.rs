@@ -356,12 +356,13 @@ pub fn update_assignment(
                         app_clone
                             .state::<AppState>()
                             .config
-                            .get()
-                            .wallpaper
-                            .custom_items
-                            .into_iter()
-                            .find(|c| c.id == wp_id)
-                            .map(|c| PathBuf::from(c.file_path))
+                            .read_with(|cfg| {
+                                cfg.wallpaper
+                                    .custom_items
+                                    .iter()
+                                    .find(|c| c.id == wp_id)
+                                    .map(|c| PathBuf::from(c.file_path.as_str()))
+                            })
                     };
                     if let Some(p) = path_res {
                         let app_for_block = app_clone.clone();
@@ -501,12 +502,13 @@ pub fn reapply_static_assignments(app: &AppHandle) {
                 app_clone
                     .state::<AppState>()
                     .config
-                    .get()
-                    .wallpaper
-                    .custom_items
-                    .into_iter()
-                    .find(|c| c.id == wp_id)
-                    .map(|c| PathBuf::from(c.file_path))
+                    .read_with(|cfg| {
+                        cfg.wallpaper
+                            .custom_items
+                            .iter()
+                            .find(|c| c.id == wp_id)
+                            .map(|c| PathBuf::from(c.file_path.as_str()))
+                    })
             };
             if let Some(path) = path_opt {
                 let app_for_block = app_clone.clone();

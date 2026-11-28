@@ -9,6 +9,7 @@ import { formatDuration } from "../../../shared/format";
 import { useProvider } from "../../../shared/hooks/useProvider";
 import { t } from "../../../shared/i18n";
 import { ipc } from "../../../shared/ipc";
+import { fireIpc } from "../../../shared/logging";
 import { Skeleton, StateEmpty } from "../../components/States";
 import { AgentIcon } from "./AgentIcon";
 import "./agents.css";
@@ -331,7 +332,10 @@ export function Agents({
           className="col between ag-root ag-s-btn"
           title={t("agents.focusHint", { agent: lead.agentLabel })}
           onClick={() => {
-            void ipc.agentFocus(lead.agent, lead.pid, lead.project).catch(() => {});
+            fireIpc(
+              ipc.agentFocus(lead.agent, lead.pid, lead.project),
+              `agent_focus (${lead.agent})`,
+            );
           }}
         >
           {inner}
@@ -401,7 +405,10 @@ export function AgentRow({
       onClick={(e) => {
         e.stopPropagation();
         if (preview) return;
-        void ipc.agentFocus(session.agent, session.pid, session.project).catch(() => {});
+        fireIpc(
+          ipc.agentFocus(session.agent, session.pid, session.project),
+          `agent_focus (${session.agent})`,
+        );
       }}
     >
       <AgentIcon agent={session.agent} size={12} />

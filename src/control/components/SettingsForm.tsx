@@ -6,6 +6,7 @@ import type { SystemCaps } from "../../shared/bindings/SystemCaps";
 import type { WidgetSize } from "../../shared/bindings/WidgetSize";
 import { translate, useLocale, useT, type Locale } from "../../shared/i18n";
 import { ipc } from "../../shared/ipc";
+import { reportFailure } from "../../shared/logging";
 import { WIDGET_REGISTRY, type FreeWidgetKind, type WidgetSettingField } from "../../widget/registry";
 import { useControlStore } from "../store";
 import { Drawer } from "./Drawer";
@@ -113,7 +114,7 @@ export function SettingsForm({ kind, size, settings, onPatch }: SettingsFormProp
       .then((caps) => {
         if (active) setSystemCaps(caps);
       })
-      .catch(() => {});
+      .catch((reason: unknown) => reportFailure("system_caps", reason));
     return () => {
       active = false;
     };

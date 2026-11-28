@@ -70,7 +70,7 @@ pub fn open(app: &AppHandle, route: Option<String>) -> Result<(), AppError> {
     };
     let theme = app
         .try_state::<AppState>()
-        .map(|state| state.config.get().general.control_theme)
+        .map(|state| state.config.read_with(|c| c.general.control_theme))
         .unwrap_or(ControlTheme::Dark);
 
     let control = crate::windows::apply_webview_defaults(
@@ -96,7 +96,7 @@ pub fn open(app: &AppHandle, route: Option<String>) -> Result<(), AppError> {
 pub fn notify_closed_to_tray(app: &AppHandle) {
     let state = app.state::<AppState>();
     if !state.tray_notice_shown.swap(true, Ordering::AcqRel) {
-        let msg = match state.config.get().general.language {
+        let msg = match state.config.read_with(|c| c.general.language) {
             Language::Da => {
                 "Open Dock kører videre i baggrunden. Find den i proceslinjens hjørne."
             }

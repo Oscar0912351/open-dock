@@ -4,6 +4,7 @@ import { memo, useCallback, useEffect, useMemo, useRef, useState, type KeyboardE
 import type { ClusterModule } from "../../../shared/bindings/ClusterModule";
 import { t, useLocale } from "../../../shared/i18n";
 import { ipc } from "../../../shared/ipc";
+import { fireIpc, reportFailure } from "../../../shared/logging";
 import { parseChecklist, resolveNoteSettings, serializeChecklist, type ChecklistRow } from "./Note";
 import { shouldIgnoreExpand, viewTransitionStyle, HintBadge } from "../../cluster/clusterModuleShared";
 
@@ -39,10 +40,14 @@ const NoteClusterMod = memo(function NoteClusterMod({
   const [text, setText] = useState(() =>
     isPreviewSample ? PREVIEW_CLUSTER_NOTE : (noteTextCache.get(mod.id) ?? ""),
   );
+  const [loaded, setLoaded] = useState(false);
+  const [saveFailed, setSaveFailed] = useState(false);
   const saveTimerRef = useRef<number | null>(null);
+  const retryTimerRef = useRef<number | null>(null);
   const latestRef = useRef(
     isPreviewSample ? PREVIEW_CLUSTER_NOTE : (noteTextCache.get(mod.id) ?? ""),
   );
+  const performSaveRef = useRef<(value: string) => Promise<void>>(async () => {});
 
   useEffect(() => {
     if (isPreviewSample) {
@@ -56,13 +61,47 @@ const NoteClusterMod = memo(function NoteClusterMod({
         noteTextCache.set(mod.id, content);
         setText(content);
         latestRef.current = content;
+        setLoaded(true);
       })
-      .catch(() => {});
+      .catch((reason: unknown) => {
+        reportFailure(`note_load (${mod.id})`, reason);
+        if (active) setLoaded(true);
+      });
     return () => {
       active = false;
       if (saveTimerRef.current !== null) window.clearTimeout(saveTimerRef.current);
+      if (retryTimerRef.current !== null) window.clearTimeout(retryTimerRef.current);
     };
   }, [mod.id, isPreviewSample]);
+
+  const performSave = useCallback(
+    async (value: string) => {
+      if (isPreviewSample) return;
+      const clipped = value.slice(0, 4000);
+      try {
+        await ipc.noteSave(mod.id, clipped);
+        setSaveFailed(false);
+        if (retryTimerRef.current !== null) {
+          window.clearTimeout(retryTimerRef.current);
+          retryTimerRef.current = null;
+        }
+      } catch (reason) {
+        reportFailure(`note_save (${mod.id})`, reason);
+        setSaveFailed(true);
+        if (retryTimerRef.current === null) {
+          retryTimerRef.current = window.setTimeout(() => {
+            retryTimerRef.current = null;
+            void performSaveRef.current(latestRef.current);
+          }, 5000);
+        }
+      }
+    },
+    [mod.id, isPreviewSample],
+  );
+
+  useEffect(() => {
+    performSaveRef.current = performSave;
+  }, [performSave]);
 
   const scheduleSave = useCallback(
     (next: string) => {
@@ -74,10 +113,10 @@ const NoteClusterMod = memo(function NoteClusterMod({
       if (saveTimerRef.current !== null) window.clearTimeout(saveTimerRef.current);
       saveTimerRef.current = window.setTimeout(() => {
         saveTimerRef.current = null;
-        void ipc.noteSave(mod.id, clipped).catch(() => {});
+        void performSave(clipped);
       }, 500);
     },
-    [mod.id, isPreviewSample],
+    [mod.id, isPreviewSample, performSave],
   );
 
   const flushSave = useCallback(() => {
@@ -86,9 +125,10 @@ const NoteClusterMod = memo(function NoteClusterMod({
       saveTimerRef.current = null;
     }
     if (isPreviewSample) return;
-    void ipc.noteSave(mod.id, latestRef.current.slice(0, 4000)).catch(() => {});
-  }, [mod.id, isPreviewSample]);
+    void performSave(latestRef.current);
+  }, [isPreviewSample, performSave]);
 
+  const effectiveLoaded = isPreviewSample || loaded;
   const rows = useMemo(() => parseChecklist(text), [text]);
   const nonEmptyRows = rows.filter((r) => r.text.trim().length > 0);
   const doneCount = nonEmptyRows.filter((r) => r.done).length;
@@ -103,14 +143,14 @@ const NoteClusterMod = memo(function NoteClusterMod({
 
   const enterEditing = () => {
     if (editMode || preview) return;
-    void ipc.widgetSetFocusable(widgetId, true).catch(() => {});
+    fireIpc(ipc.widgetSetFocusable(widgetId, true), `widget_set_focusable (${widgetId})`);
     onModuleFocus?.(mod.id, true);
   };
 
   const exitEditing = () => {
     flushSave();
     if (!preview) {
-      void ipc.widgetSetFocusable(widgetId, false).catch(() => {});
+      fireIpc(ipc.widgetSetFocusable(widgetId, false), `widget_set_focusable (${widgetId})`);
     }
     onModuleFocus?.(mod.id, false);
   };
@@ -139,7 +179,7 @@ const NoteClusterMod = memo(function NoteClusterMod({
           </span>
         </div>
 
-        {settings.mode === "checklist" ? (
+        {!effectiveLoaded ? null : settings.mode === "checklist" ? (
           <div className="c-note-list" data-no-expand>
             {rows.slice(0, 3).map((row, idx) => (
               <div className={`c-note-row${row.done ? " is-done" : ""}`} key={idx}>
@@ -184,6 +224,7 @@ const NoteClusterMod = memo(function NoteClusterMod({
             onChange={(e) => scheduleSave(e.target.value)}
           />
         )}
+        {saveFailed && <div className="micro note-save-error">{t("note.saveError")}</div>}
       </div>
     );
   }

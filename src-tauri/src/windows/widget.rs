@@ -246,8 +246,9 @@ pub fn ready(app: &AppHandle, id: &str) -> Result<WidgetBoot, AppError> {
     let config = state.config.get();
     let instance = config
         .widgets
-        .into_iter()
+        .iter()
         .find(|w| w.id == uuid)
+        .cloned()
         .ok_or(AppError::WidgetNotFound)?;
 
     let label = instance.window_label();
@@ -260,7 +261,7 @@ pub fn ready(app: &AppHandle, id: &str) -> Result<WidgetBoot, AppError> {
     apply_window_geometry(app, &window, &instance, &monitor_infos)?;
 
     let hwnd = HWND(window.hwnd()?.0 as _);
-    let appearance = config.appearance;
+    let appearance = config.appearance.clone();
     let game_overlay = widget_game_overlay_active(app, hwnd, instance.layer);
     zorder::set_widget_game_overlay(hwnd, game_overlay);
 
@@ -437,7 +438,7 @@ pub fn apply_instance_live(app: &AppHandle, instance: &WidgetInstance) {
     );
 
     let glass_payload = WidgetGlassState {
-        appearance: config.appearance,
+        appearance: config.appearance.clone(),
         effective_engine,
         live_backdrop,
     };
@@ -696,8 +697,9 @@ pub fn cluster_set_window_size(
         .config
         .get()
         .widgets
-        .into_iter()
+        .iter()
         .find(|w| w.id == id)
+        .cloned()
         .ok_or(AppError::WidgetNotFound)?;
     if instance.kind != WidgetKind::Cluster {
         return Err(AppError::SizeNotAllowed);

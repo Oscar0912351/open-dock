@@ -288,11 +288,13 @@ async fn fetch_and_emit(
     let location = app
         .state::<AppState>()
         .config
-        .get()
-        .weather
-        .locations
-        .into_iter()
-        .find(|loc| loc.id == target_uuid)
+        .read_with(|cfg| {
+            cfg.weather
+                .locations
+                .iter()
+                .find(|loc| loc.id == target_uuid)
+                .cloned()
+        })
         .ok_or_else(|| "missing_location".to_string())?;
 
     // Yr.no (MET Norway) er primaerkilde — bedre data i Norden og

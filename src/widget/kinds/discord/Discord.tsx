@@ -14,6 +14,7 @@ import { formatCallTimer } from "../../../shared/format";
 import { useProvider } from "../../../shared/hooks/useProvider";
 import { t } from "../../../shared/i18n";
 import { ipc, toAssetUrl } from "../../../shared/ipc";
+import { fireIpc } from "../../../shared/logging";
 import { Skeleton, StateEmpty } from "../../components/States";
 import "./discord.css";
 
@@ -175,7 +176,7 @@ export function DiscordVoiceControls({
         onClick={(e) => {
           e.stopPropagation();
           if (preview) return;
-          void ipc.discordVoiceAction("toggleMute").catch(() => {});
+          fireIpc(ipc.discordVoiceAction("toggleMute"), "discord_voice_action (toggleMute)");
         }}
       >
         {selfMute ? (
@@ -194,7 +195,7 @@ export function DiscordVoiceControls({
         onClick={(e) => {
           e.stopPropagation();
           if (preview) return;
-          void ipc.discordVoiceAction("toggleDeafen").catch(() => {});
+          fireIpc(ipc.discordVoiceAction("toggleDeafen"), "discord_voice_action (toggleDeafen)");
         }}
       >
         {selfDeaf ? (

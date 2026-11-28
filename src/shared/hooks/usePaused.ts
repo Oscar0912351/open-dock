@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { on } from "../ipc";
-import { reportError } from "../logging";
+import { reportFailure } from "../logging";
 
 export function usePaused() {
   const [paused, setPaused] = useState(false);
@@ -14,7 +14,7 @@ export function usePaused() {
       if (active) unlisten = dispose;
       else dispose();
     }).catch((reason: unknown) => {
-      void reportError(`app://paused: ${String(reason)}`);
+      reportFailure("app://paused", reason);
     });
 
     return () => {

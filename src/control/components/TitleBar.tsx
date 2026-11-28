@@ -4,6 +4,7 @@ import type { UpdateStatus } from "../../shared/bindings/UpdateStatus";
 import { t } from "../../shared/i18n";
 import { DockLogo } from "../../shared/icons/DockLogo";
 import { ipc, on, windowControls } from "../../shared/ipc";
+import { reportFailure } from "../../shared/logging";
 import { useControlStore } from "../store";
 
 interface TitleBarProps {
@@ -30,7 +31,7 @@ export function TitleBar({
       .then((status) => {
         if (!cancelled) setUpdate(status);
       })
-      .catch(() => {});
+      .catch((reason: unknown) => reportFailure("update_status", reason));
 
     let unlistenStatus: (() => void) | null = null;
     void on

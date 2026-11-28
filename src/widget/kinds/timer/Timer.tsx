@@ -15,6 +15,7 @@ import type { RecentTimer } from "../../../shared/bindings/RecentTimer";
 import type { TimerItem } from "../../../shared/bindings/TimerItem";
 import { t } from "../../../shared/i18n";
 import { ipc } from "../../../shared/ipc";
+import { errorMessage, fireIpc } from "../../../shared/logging";
 import { Ring } from "../system/Ring";
 import { formatCountdown, formatDurationShort, formatOvertime } from "./formatDuration";
 import { cleanTimerLabel, parseTimerInput } from "./parseTimerInput";
@@ -76,14 +77,6 @@ function formatEndTime(ms: number): string {
   return new Intl.DateTimeFormat("da-DK", { hour: "2-digit", minute: "2-digit", hourCycle: "h23" })
     .format(new Date(ms))
     .replaceAll(".", ":");
-}
-
-export function errorMessage(error: unknown): string {
-  if (typeof error === "object" && error !== null && "message" in error) {
-    const message = (error as { message: unknown }).message;
-    if (typeof message === "string" && message) return message;
-  }
-  return String(error);
 }
 
 export function chipLabel(minutes: number): string {
@@ -208,7 +201,7 @@ export function TimerInput({
   const enterEditing = useCallback(() => {
     if (disabled) return;
     if (!editing) {
-      void ipc.widgetSetFocusable(focusId, true).catch(() => {});
+      fireIpc(ipc.widgetSetFocusable(focusId, true), `widget_set_focusable (${focusId})`);
       setEditingState(true);
     }
     window.requestAnimationFrame(() => inputRef.current?.focus());
@@ -217,7 +210,7 @@ export function TimerInput({
   const leaveEditing = useCallback(() => {
     setEditingState(false);
     setError(null);
-    void ipc.widgetSetFocusable(focusId, false).catch(() => {});
+    fireIpc(ipc.widgetSetFocusable(focusId, false), `widget_set_focusable (${focusId})`);
     onBlur?.();
   }, [focusId, onBlur, setEditingState]);
 
@@ -292,7 +285,7 @@ export function TimerInput({
         onPointerDown={enterEditing}
         onFocus={() => {
           if (!disabled && !editing) {
-            void ipc.widgetSetFocusable(focusId, true).catch(() => {});
+            fireIpc(ipc.widgetSetFocusable(focusId, true), `widget_set_focusable (${focusId})`);
             setEditingState(true);
           }
         }}
@@ -370,18 +363,19 @@ export function TimerRow({ timerId, item, nowMs, size = "m", interactive = true 
     if (now - wheelAt.current < ADJUST_WHEEL_MS) return;
     wheelAt.current = now;
     const delta = (event.deltaY < 0 ? 1 : -1) * (event.shiftKey ? 300_000 : 60_000);
-    void ipc.timerAdjust(timerId, item.id, delta).catch(() => {});
+    fireIpc(ipc.timerAdjust(timerId, item.id, delta), `timer_adjust (${timerId})`);
   };
 
   const adjust = (deltaMs: number) => {
-    void ipc.timerAdjust(timerId, item.id, deltaMs).catch(() => {});
+    fireIpc(ipc.timerAdjust(timerId, item.id, deltaMs), `timer_adjust (${timerId})`);
   };
   const togglePause = () => {
     const call = paused ? ipc.timerResume(timerId, item.id) : ipc.timerPause(timerId, item.id);
-    void call.catch(() => {});
+    const context = paused ? `timer_resume (${timerId})` : `timer_pause (${timerId})`;
+    fireIpc(call, context);
   };
   const remove = () => {
-    void ipc.timerRemove(timerId, item.id).catch(() => {});
+    fireIpc(ipc.timerRemove(timerId, item.id), `timer_remove (${timerId})`);
   };
 
   const actBtnSize = size === "m" ? 16 : 18;
@@ -767,9 +761,9 @@ export function Timer({
 
     const ringAction = () => {
       if (!interactive) return;
-      if (finished) void ipc.timerRemove(id, next.id).catch(() => {});
-      else if (paused) void ipc.timerResume(id, next.id).catch(() => {});
-      else void ipc.timerPause(id, next.id).catch(() => {});
+      if (finished) fireIpc(ipc.timerRemove(id, next.id), `timer_remove (${id})`);
+      else if (paused) fireIpc(ipc.timerResume(id, next.id), `timer_resume (${id})`);
+      else fireIpc(ipc.timerPause(id, next.id), `timer_pause (${id})`);
     };
 
     return (
@@ -800,7 +794,7 @@ export function Timer({
               type="button"
               className="tm-chipbtn tm-chipbtn-mini"
               disabled={!interactive}
-              onClick={() => void ipc.timerAdjust(id, next.id, 300_000).catch(() => {})}
+              onClick={() => fireIpc(ipc.timerAdjust(id, next.id, 300_000), `timer_adjust (${id})`)}
             >
               {t("timer.plus5")}
             </button>

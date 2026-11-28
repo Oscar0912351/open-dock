@@ -66,8 +66,9 @@ pub fn show_widget_context_menu(app: &AppHandle, id: &str) -> Result<(), AppErro
     let copy = copy_for(config.general.language);
     let instance = config
         .widgets
-        .into_iter()
+        .iter()
         .find(|w| w.id == uuid)
+        .cloned()
         .ok_or(AppError::WidgetNotFound)?;
 
     let window = app

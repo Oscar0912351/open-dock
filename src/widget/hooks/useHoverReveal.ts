@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { WidgetBoot } from "../../shared/bindings/WidgetBoot";
 import { ipc } from "../../shared/ipc";
+import { fireIpc } from "../../shared/logging";
 
 interface UseHoverRevealOptions {
   id: string;
@@ -77,7 +78,7 @@ export function useHoverReveal({ id, boot, hiddenIdle }: UseHoverRevealOptions) 
     if (!id || !boot) return;
     if (prevIdleHiddenRef.current === idleHiddenActive) return;
     prevIdleHiddenRef.current = idleHiddenActive;
-    void ipc.widgetSetIdleHidden(id, idleHiddenActive).catch(() => {});
+    fireIpc(ipc.widgetSetIdleHidden(id, idleHiddenActive), `widget_set_idle_hidden (${id})`);
   }, [id, idleHiddenActive, boot]);
 
   return {

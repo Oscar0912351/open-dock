@@ -3,6 +3,7 @@ import type { ControlTheme } from "../shared/bindings/ControlTheme";
 import { DockLogo } from "../shared/icons/DockLogo";
 import { WeatherSprite } from "../shared/icons/WeatherSprite";
 import { windowControls } from "../shared/ipc";
+import { reportFailure } from "../shared/logging";
 import { Sidebar } from "./components/Sidebar";
 import { TitleBar } from "./components/TitleBar";
 import { ToastStack } from "./components/Toast";
@@ -45,7 +46,7 @@ export function App() {
         .then((val) => {
           if (active) setMaximized(val);
         })
-        .catch(() => {});
+        .catch((reason: unknown) => reportFailure("window_is_maximized", reason));
     };
     sync();
 
@@ -56,7 +57,7 @@ export function App() {
         if (active) dispose = fn;
         else fn();
       })
-      .catch(() => {});
+      .catch((reason: unknown) => reportFailure("window_on_resized", reason));
 
     return () => {
       active = false;

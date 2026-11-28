@@ -8,3 +8,21 @@ export async function reportError(message: string): Promise<void> {
     // Browserbaserede komponenttests har ingen Tauri-logtransport.
   }
 }
+
+export function errorMessage(error: unknown): string {
+  if (typeof error === "string") return error;
+  if (typeof error === "object" && error !== null && "message" in error) {
+    const message = (error as { message: unknown }).message;
+    if (typeof message === "string" && message) return message;
+  }
+  return String(error);
+}
+
+export function reportFailure(context: string, reason: unknown): void {
+  void reportError(`${context}: ${errorMessage(reason)}`);
+}
+
+/** Fire-and-forget IPC: fejl logges med kontekst, aldrig tavst. */
+export function fireIpc(promise: Promise<unknown>, context: string): void {
+  promise.catch((reason: unknown) => reportFailure(context, reason));
+}

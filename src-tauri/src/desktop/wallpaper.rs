@@ -187,7 +187,7 @@ fn compose_if_changed(
     let snapshot = query_desktop_wallpaper(desktop_wp);
     let state = app.state::<AppState>();
     let live_overrides = state.live_plate_overrides.read().clone();
-    let appearance = state.config.get().appearance;
+    let appearance = state.config.read_with(|c| c.appearance.clone());
     let glass_theme = appearance.theme_id;
     let glass_strength = appearance.glass_strength;
     let glass_strength_pct = (glass_strength * 100.0).round() as i32;

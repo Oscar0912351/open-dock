@@ -4,6 +4,7 @@ import { usePaused } from "../shared/hooks/usePaused";
 import { t, useLocale } from "../shared/i18n";
 import { WeatherSprite } from "../shared/icons/WeatherSprite";
 import { ipc } from "../shared/ipc";
+import { fireIpc } from "../shared/logging";
 import { ClusterShell } from "./cluster/ClusterShell";
 import { StateError } from "./components/States";
 import { useHoverReveal } from "./hooks/useHoverReveal";
@@ -137,7 +138,7 @@ export function WidgetApp({ id }: WidgetAppProps) {
     if (!id || !liveBackdrop) return;
     if (!prev.live) {
       if (!backdropVisible) {
-        void ipc.widgetSetBackdropVisible(id, false, 0).catch(() => {});
+        fireIpc(ipc.widgetSetBackdropVisible(id, false, 0), `widget_set_backdrop_visible (${id})`);
       }
       return;
     }
@@ -147,9 +148,10 @@ export function WidgetApp({ id }: WidgetAppProps) {
         (typeof window !== "undefined" &&
           typeof window.matchMedia === "function" &&
           window.matchMedia("(prefers-reduced-motion: reduce)").matches);
-      void ipc
-        .widgetSetBackdropVisible(id, backdropVisible, reducedMotion ? 0 : backdropVisible ? 180 : 420)
-        .catch(() => {});
+      fireIpc(
+        ipc.widgetSetBackdropVisible(id, backdropVisible, reducedMotion ? 0 : backdropVisible ? 180 : 420),
+        `widget_set_backdrop_visible (${id})`,
+      );
     }
   }, [id, liveBackdrop, backdropVisible, appearance?.motion]);
 

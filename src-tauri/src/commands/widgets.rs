@@ -195,7 +195,7 @@ pub fn remove_widget_by_id(app: &AppHandle, id: Uuid) -> Result<WidgetInstance, 
         .unwrap_or(false);
     if !control_visible {
         use tauri_plugin_notification::NotificationExt;
-        let body = match state.config.get().general.language {
+        let body = match state.config.read_with(|c| c.general.language) {
             Language::En => "Widget removed",
             Language::Da => "Widget fjernet",
         };
