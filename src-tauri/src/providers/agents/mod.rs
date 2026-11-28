@@ -1644,46 +1644,51 @@ mod tests {
                 time_created INTEGER NOT NULL DEFAULT 0,
                 time_updated INTEGER NOT NULL DEFAULT 0,
                 data TEXT
+            );
+            CREATE TABLE session_part (
+                id TEXT PRIMARY KEY,
+                message_id TEXT,
+                session_id TEXT NOT NULL,
+                ordinal INTEGER NOT NULL DEFAULT 0,
+                type TEXT,
+                call_id TEXT,
+                time_created INTEGER NOT NULL DEFAULT 0,
+                time_updated INTEGER NOT NULL DEFAULT 0,
+                data TEXT
             );",
         )
         .unwrap();
 
-        // s1: busy top-level med ét busy barn (underagent).
+        // s1: busy, seneste part = shell-værktøj i gang.
         conn.execute(
             "INSERT INTO session_v2 (id, parent_id, directory, title, time_created, time_updated, time_busy) \
-             VALUES ('s1', NULL, 'C:/Users/oscar/Desktop/APPS', 'Fix bug', ?1, ?2, ?2)",
+             VALUES ('s1', NULL, 'C:/Users/oscar/Desktop/APPS', 'Fix bug', ?1, ?1, ?2)",
             rusqlite::params![now - 300_000, now - 2_000],
         )
         .unwrap();
         conn.execute(
-            "INSERT INTO session_v2 (id, parent_id, directory, title, time_created, time_updated, time_busy) \
-             VALUES ('c1', 's1', 'C:/Users/oscar/Desktop/APPS', 'child', ?1, ?2, ?2)",
-            rusqlite::params![now - 200_000, now - 1_000],
-        )
-        .unwrap();
-        conn.execute(
-            "INSERT INTO session_message (id, session_id, type, seq, time_created, time_updated, data) \
-             VALUES ('m1', 's1', 'assistant', 1, ?1, ?1, ?2)",
+            "INSERT INTO session_part (id, session_id, type, time_created, time_updated, data) \
+             VALUES ('p1', 's1', 'tool', ?1, ?1, ?2)",
             rusqlite::params![
                 now - 2_000,
-                r#"{"content":[{"type":"tool","name":"shell","state":{"status":"running"}}]}"#
+                r#"{"type":"tool","id":"c1","name":"shell","state":{"status":"running","input":{}}}"#
             ],
         )
         .unwrap();
 
-        // s2: busy med question-værktøj i gang.
+        // s2: busy, seneste part = question-værktøj i gang.
         conn.execute(
             "INSERT INTO session_v2 (id, parent_id, directory, title, time_created, time_updated, time_busy) \
-             VALUES ('s2', NULL, 'D:/work/Proj', 'Spørgsmål', ?1, ?2, ?2)",
+             VALUES ('s2', NULL, 'D:/work/Proj', 'Spørgsmål', ?1, ?1, ?2)",
             rusqlite::params![now - 300_000, now - 3_000],
         )
         .unwrap();
         conn.execute(
-            "INSERT INTO session_message (id, session_id, type, seq, time_created, time_updated, data) \
-             VALUES ('m2', 's2', 'assistant', 1, ?1, ?1, ?2)",
+            "INSERT INTO session_part (id, session_id, type, time_created, time_updated, data) \
+             VALUES ('p2', 's2', 'tool', ?1, ?1, ?2)",
             rusqlite::params![
                 now - 3_000,
-                r#"{"content":[{"type":"tool","name":"question","state":{"status":"running"}}]}"#
+                r#"{"type":"tool","id":"c2","name":"question","state":{"status":"running","input":{}}}"#
             ],
         )
         .unwrap();
@@ -1706,17 +1711,65 @@ mod tests {
 
         // s5: arkiveret → udelades.
         conn.execute(
-            "INSERT INTO session_v2 (id, parent_id, directory, title, time_created, time_updated, time_archived) \
-             VALUES ('s5', NULL, 'D:/work/Arch', 'Arkiv', ?1, ?2, ?1)",
-            rusqlite::params![now - 10_000, now - 5_000],
+            "INSERT INTO session_v2 (id, parent_id, directory, title, time_created, time_updated, time_busy, time_idle, time_archived) \
+             VALUES ('s5', NULL, 'D:/work/Arch', 'Arkiv', ?1, ?1, ?1, ?1, ?1)",
+            rusqlite::params![now - 10_000],
         )
         .unwrap();
 
-        // s6: for gammel og ikke busy → udelades.
+        // s6: busy/idle og time_updated gamle → udelades.
         conn.execute(
-            "INSERT INTO session_v2 (id, parent_id, directory, title, time_created, time_updated) \
-             VALUES ('s6', NULL, 'D:/work/Old', 'Gammel', ?1, ?1)",
-            rusqlite::params![now - 2 * 60 * 60 * 1000],
+            "INSERT INTO session_v2 (id, parent_id, directory, title, time_created, time_updated, time_busy, time_idle, idle_outcome) \
+             VALUES ('s6', NULL, 'D:/work/Old', 'Gammel', ?1, ?1, ?2, ?3, 'succeeded')",
+            rusqlite::params![now - 3 * 60 * 60 * 1000, now - 2 * 60 * 60 * 1000, now - 110 * 60 * 1000],
+        )
+        .unwrap();
+
+        // s7: time_updated frisk (appen så sessionen), men busy/idle gamle → udelades.
+        conn.execute(
+            "INSERT INTO session_v2 (id, parent_id, directory, title, time_created, time_updated, time_busy, time_idle, idle_outcome) \
+             VALUES ('s7', NULL, 'D:/work/Seen', 'Set for nylig', ?1, ?2, ?3, ?4, 'succeeded')",
+            rusqlite::params![now - 8 * 24 * 60 * 60 * 1000, now - 1_000, now - 2 * 60 * 60 * 1000, now - 90 * 60 * 1000],
+        )
+        .unwrap();
+
+        // s8: busy med ét busy barn → "Kører underagent".
+        conn.execute(
+            "INSERT INTO session_v2 (id, parent_id, directory, title, time_created, time_updated, time_busy) \
+             VALUES ('s8', NULL, 'D:/work/Sub', 'Med underagent', ?1, ?1, ?2)",
+            rusqlite::params![now - 300_000, now - 2_500],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO session_v2 (id, parent_id, directory, title, time_created, time_updated, time_busy) \
+             VALUES ('c8', 's8', 'D:/work/Sub', 'barn', ?1, ?1, ?2)",
+            rusqlite::params![now - 200_000, now - 1_000],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO session_part (id, session_id, type, time_created, time_updated, data) \
+             VALUES ('p8', 's8', 'tool', ?1, ?1, ?2)",
+            rusqlite::params![
+                now - 2_500,
+                r#"{"type":"tool","id":"c8","name":"shell","state":{"status":"running","input":{}}}"#
+            ],
+        )
+        .unwrap();
+
+        // s9: busy, seneste part = execute med browser-click i gang.
+        conn.execute(
+            "INSERT INTO session_v2 (id, parent_id, directory, title, time_created, time_updated, time_busy) \
+             VALUES ('s9', NULL, 'D:/work/Browse', 'Browser', ?1, ?1, ?2)",
+            rusqlite::params![now - 300_000, now - 1_500],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO session_part (id, session_id, type, time_created, time_updated, data) \
+             VALUES ('p9', 's9', 'tool', ?1, ?1, ?2)",
+            rusqlite::params![
+                now - 1_500,
+                r#"{"type":"tool","id":"c9","name":"execute","state":{"status":"running","input":{},"metadata":{"toolCalls":[{"tool":"browser.click","status":"running"}]}}}"#
+            ],
         )
         .unwrap();
     }
@@ -1732,14 +1785,15 @@ mod tests {
         let sessions = sources::scan_opencode(&paths, &procs, now);
 
         let ids: Vec<&str> = sessions.iter().map(|s| s.id.as_str()).collect();
-        assert!(!ids.contains(&"opencode:c1"), "underagent-session må ikke vises: {ids:?}");
+        assert!(!ids.contains(&"opencode:c8"), "underagent-session må ikke vises: {ids:?}");
         assert!(!ids.contains(&"opencode:s5"), "arkiveret udelades: {ids:?}");
         assert!(!ids.contains(&"opencode:s6"), "gammel udelades: {ids:?}");
+        assert!(!ids.contains(&"opencode:s7"), "frisk time_updated men gammel aktivitet udelades: {ids:?}");
 
         let s1 = sessions.iter().find(|s| s.id == "opencode:s1").unwrap();
         assert_eq!(s1.status, AgentStatus::Working);
         assert_eq!(s1.detail.as_deref(), Some("Kører kommando"));
-        assert_eq!(s1.subagent_count, 1);
+        assert_eq!(s1.subagent_count, 0);
         assert_eq!(s1.agent_label, "OpenCode");
         assert_eq!(s1.title.as_deref(), Some("Fix bug"));
         assert_eq!(s1.project.as_deref(), Some("APPS"));
@@ -1755,26 +1809,30 @@ mod tests {
         let s4 = sessions.iter().find(|s| s.id == "opencode:s4").unwrap();
         assert_eq!(s4.status, AgentStatus::Idle);
         assert_eq!(s4.detail, None);
+
+        let s8 = sessions.iter().find(|s| s.id == "opencode:s8").unwrap();
+        assert_eq!(s8.status, AgentStatus::Working);
+        assert_eq!(s8.detail.as_deref(), Some("Kører underagent"));
+        assert_eq!(s8.subagent_count, 1);
+
+        let s9 = sessions.iter().find(|s| s.id == "opencode:s9").unwrap();
+        assert_eq!(s9.status, AgentStatus::Working);
+        assert_eq!(s9.detail.as_deref(), Some("Bruger browser"));
     }
 
     #[test]
-    fn opencode_busy_without_process_is_not_working() {
+    fn opencode_without_process_returns_empty() {
         let td = TestDir::new("opencode-dead");
         let paths = td.paths();
         let now: i64 = 1_795_469_200_000;
         setup_opencode_db(&paths.opencode_db, now);
 
         let dead = sources::scan_opencode(&paths, &ProcessIndex::empty(), now);
-        let s1 = dead.iter().find(|s| s.id == "opencode:s1").unwrap();
-        assert_ne!(s1.status, AgentStatus::Working);
-        assert_ne!(s1.status, AgentStatus::Waiting);
-        let s2 = dead.iter().find(|s| s.id == "opencode:s2").unwrap();
-        assert_ne!(s2.status, AgentStatus::Working);
-        assert_ne!(s2.status, AgentStatus::Waiting);
+        assert!(dead.is_empty(), "ingen sessioner uden kørende proces: {dead:?}");
     }
 
     #[test]
-    fn opencode_cli_sidecar_counts_as_running() {
+    fn opencode_cli_sidecar_alone_is_not_running() {
         let td = TestDir::new("opencode-cli");
         let paths = td.paths();
         let now: i64 = 1_795_469_200_000;
@@ -1782,8 +1840,7 @@ mod tests {
 
         let procs = ProcessIndex::from_exes(&["opencode-cli.exe"]);
         let sessions = sources::scan_opencode(&paths, &procs, now);
-        let s1 = sessions.iter().find(|s| s.id == "opencode:s1").unwrap();
-        assert_eq!(s1.status, AgentStatus::Working);
+        assert!(sessions.is_empty(), "orphanet sidecar tæller ikke som kørende: {sessions:?}");
     }
 
     #[test]

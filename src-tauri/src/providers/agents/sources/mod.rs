@@ -185,7 +185,7 @@ fn exes_for_cached_agent(agent: &str) -> &'static [&'static str] {
         "claude-code" => &["claude", "claude-code"],
         "cursor" => &["cursor"],
         "gemini" => &["gemini"],
-        "opencode" => &["opencode", "opencode-cli"],
+        "opencode" => &["opencode"],
         "windsurf" => &["windsurf"],
         "grok-bot" => &["grok bot"],
         "hermes" => &["hermes", "hermes-acp"],

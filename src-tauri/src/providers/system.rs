@@ -1,13 +1,10 @@
 use std::{
     collections::VecDeque,
-    sync::{
-        atomic::{AtomicBool, AtomicU64, Ordering},
-        Arc,
-    },
+    sync::Arc,
     time::{Duration, Instant},
 };
 
-use parking_lot::{Condvar, Mutex};
+use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use sysinfo::{CpuRefreshKind, MemoryRefreshKind, Networks, RefreshKind, System};
 use tauri::{AppHandle, Manager};
@@ -15,7 +12,10 @@ use ts_rs::TS;
 
 use crate::{state::AppState, util::unix_now_ms};
 
-use super::gpu::{compute_effective_freq_mhz, HardwareSampler, SystemCaps};
+use super::{
+    gpu::{compute_effective_freq_mhz, HardwareSampler, SystemCaps},
+    worker::{StopToken, Worker},
+};
 
 const HISTORY_CAP: usize = 60;
 
@@ -80,17 +80,10 @@ pub struct SystemSample {
 }
 
 pub struct SystemProvider {
-    running: AtomicBool,
-    worker: Mutex<Option<SystemWorker>>,
+    worker: Mutex<Option<Worker>>,
     history: Arc<Mutex<VecDeque<SystemSample>>>,
     caps_cache: Arc<Mutex<Option<SystemCaps>>>,
     pending_sampler: Arc<Mutex<Option<HardwareSampler>>>,
-    generation: Arc<AtomicU64>,
-}
-
-struct SystemWorker {
-    stop_signal: Arc<(Mutex<bool>, Condvar)>,
-    join: Option<std::thread::JoinHandle<()>>,
 }
 
 impl Default for SystemProvider {
@@ -102,12 +95,10 @@ impl Default for SystemProvider {
 impl SystemProvider {
     pub fn new() -> Self {
         Self {
-            running: AtomicBool::new(false),
             worker: Mutex::new(None),
             history: Arc::new(Mutex::new(VecDeque::with_capacity(HISTORY_CAP))),
             caps_cache: Arc::new(Mutex::new(None)),
             pending_sampler: Arc::new(Mutex::new(None)),
-            generation: Arc::new(AtomicU64::new(0)),
         }
     }
 
@@ -133,7 +124,8 @@ impl SystemProvider {
     }
 
     pub fn start(&self, app: &AppHandle) {
-        if self.running.swap(true, Ordering::AcqRel) {
+        let mut slot = self.worker.lock();
+        if slot.as_ref().is_some_and(|worker| !worker.is_finished()) {
             return;
         }
         log::info!(target: "provider:system", "Starter system-provider (od-system)");
@@ -142,73 +134,30 @@ impl SystemProvider {
         let history = Arc::clone(&self.history);
         let caps_cache = Arc::clone(&self.caps_cache);
         let pending_sampler = Arc::clone(&self.pending_sampler);
-        let stop_signal = Arc::new((Mutex::new(false), Condvar::new()));
-        let stop_thread = Arc::clone(&stop_signal);
-        let my_gen = self.generation.fetch_add(1, Ordering::AcqRel) + 1;
-        let gen_ref = Arc::clone(&self.generation);
-
-        let join = std::thread::Builder::new()
-            .name("od-system".into())
-            .spawn(move || {
-                let hw = pending_sampler
-                    .lock()
-                    .take()
-                    .unwrap_or_else(HardwareSampler::new);
-                run_system_thread(
-                    app_handle,
-                    history,
-                    caps_cache,
-                    stop_thread,
-                    my_gen,
-                    gen_ref,
-                    hw,
-                );
-            })
-            .ok();
-
-        if join.is_none() {
-            log::warn!(target: "provider:system", "Kunne ikke starte od-system-tråd");
-            self.running.store(false, Ordering::Release);
-            return;
-        }
-        *self.worker.lock() = Some(SystemWorker { stop_signal, join });
+        *slot = Worker::spawn("od-system", "provider:system", move |stop| {
+            let hw = pending_sampler
+                .lock()
+                .take()
+                .unwrap_or_else(HardwareSampler::new);
+            run_system_thread(app_handle, history, caps_cache, stop, hw);
+        });
     }
 
     pub fn stop(&self) {
-        let was_running = self.running.swap(false, Ordering::AcqRel);
-        self.generation.fetch_add(1, Ordering::AcqRel);
-        if !was_running {
+        let Some(worker) = self.worker.lock().take() else {
             return;
-        }
+        };
         log::info!(target: "provider:system", "Stopper system-provider");
-        if let Some(mut worker) = self.worker.lock().take() {
-            let (lock, cvar) = &*worker.stop_signal;
-            *lock.lock() = true;
-            cvar.notify_all();
-            if let Some(join) = worker.join.take() {
-                drop(join);
-            }
-            drop(worker);
-        }
+        drop(worker);
         self.history.lock().clear();
     }
-}
-
-fn system_thread_active(
-    stop_signal: &Arc<(Mutex<bool>, Condvar)>,
-    gen_ref: &AtomicU64,
-    my_gen: u64,
-) -> bool {
-    !*stop_signal.0.lock() && gen_ref.load(Ordering::Acquire) == my_gen
 }
 
 fn run_system_thread(
     app_handle: AppHandle,
     history: Arc<Mutex<VecDeque<SystemSample>>>,
     caps_cache: Arc<Mutex<Option<SystemCaps>>>,
-    stop_signal: Arc<(Mutex<bool>, Condvar)>,
-    my_gen: u64,
-    gen_ref: Arc<AtomicU64>,
+    stop: StopToken,
     mut hw: HardwareSampler,
 ) {
     let mut sys = match System::new_with_specifics(
@@ -253,7 +202,7 @@ fn run_system_thread(
     let mut last_cpu_temp_c: Option<f32> = None;
 
     loop {
-        if !system_thread_active(&stop_signal, &gen_ref, my_gen) {
+        if stop.is_stopped() {
             break;
         }
         let sleep_ms = if first_tick {
@@ -265,15 +214,8 @@ fn run_system_thread(
                 .read_with(|c| c.general.system_interval_ms.max(500) as u64)
         };
 
-        {
-            let (lock, cvar) = &*stop_signal;
-            let mut stopped = lock.lock();
-            if !*stopped {
-                cvar.wait_for(&mut stopped, Duration::from_millis(sleep_ms));
-            }
-            if *stopped || gen_ref.load(Ordering::Acquire) != my_gen {
-                break;
-            }
+        if stop.wait(Duration::from_millis(sleep_ms)) {
+            break;
         }
 
         first_tick = false;
@@ -366,7 +308,7 @@ fn run_system_thread(
             },
         };
 
-        if !system_thread_active(&stop_signal, &gen_ref, my_gen) {
+        if stop.is_stopped() {
             break;
         }
         {
@@ -377,7 +319,7 @@ fn run_system_thread(
             guard.push_back(sample.clone());
         }
 
-        if !system_thread_active(&stop_signal, &gen_ref, my_gen) {
+        if stop.is_stopped() {
             break;
         }
         super::scheduler::emit_provider(

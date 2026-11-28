@@ -34,7 +34,6 @@ const TRACKED_AGENT_EXES: &[&str] = &[
     "vscodium",
     "gemini",
     "opencode",
-    "opencode-cli",
     "aider",
     "qoder",
     "freebuff",

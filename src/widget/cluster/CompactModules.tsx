@@ -4,6 +4,7 @@ import { formatPercent, formatTemperature, formatTime } from "../../shared/forma
 import { t } from "../../shared/i18n";
 import { WeatherIcon } from "../../shared/icons/WeatherSprite";
 import { resolveWmo } from "../../shared/wmo";
+import { useClock } from "../kinds/clock/useClock";
 import { resolveWeatherSettings } from "../kinds/weather/Weather";
 import { WIDGET_REGISTRY, type FreeWidgetKind } from "../registry";
 import {
@@ -27,6 +28,11 @@ export function ClusterModuleView({ mod, mode, shared, onToggleExpand }: ModuleC
       onToggleExpand,
     }) ?? null
   );
+}
+
+function ClockChipTime() {
+  const now = useClock(false);
+  return <span className="value tabular">{formatTime(now)}</span>;
 }
 
 export function ClusterPillBarHeader({
@@ -57,9 +63,7 @@ export function ClusterPillBarHeader({
               className={`c-pill-chip${active ? " is-active" : ""}`}
               onClick={() => onToggleChip(mod.id)}
             >
-              {mod.kind === "clock" && (
-                <span className="value tabular">{formatTime(shared.now)}</span>
-              )}
+              {mod.kind === "clock" && <ClockChipTime />}
               {mod.kind === "weather" && (() => {
                 const ws = resolveWeatherSettings(mod.settings);
                 const locId = ws.locationId ?? shared.locations[0]?.id ?? "";

@@ -9,8 +9,6 @@ import { ClusterShell } from "./cluster/ClusterShell";
 import { StateError } from "./components/States";
 import { useHoverReveal } from "./hooks/useHoverReveal";
 import { useWidgetEvents } from "./hooks/useWidgetEvents";
-import { resolveClockSettings } from "./kinds/clock/Clock";
-import { useClock } from "./kinds/clock/useClock";
 import { renderWidget, WIDGET_REGISTRY } from "./registry";
 import {
   WidgetShell,
@@ -81,8 +79,6 @@ export function WidgetApp({ id }: WidgetAppProps) {
   const instance = boot?.instance;
   const kind = instance?.kind ?? "clock";
   const isEditing = boot?.editMode ?? false;
-  const clockSettings = resolveClockSettings(kind === "clock" ? instance?.settings : undefined);
-  const now = useClock(kind === "clock" && clockSettings.showSeconds, kind === "clock");
 
   const isSelected = selectedWidgetId === id;
   const isDragging = draggingWidgetId === id;
@@ -232,7 +228,6 @@ export function WidgetApp({ id }: WidgetAppProps) {
             size,
             theme,
             settings: instance.settings,
-            now,
             editMode: boot?.editMode ?? false,
             preview: false,
             pausedApp: paused,

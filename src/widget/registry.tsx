@@ -13,12 +13,8 @@ import type { ThemeId } from "../shared/bindings/ThemeId";
 import type { WidgetKind } from "../shared/bindings/WidgetKind";
 import type { WidgetSize } from "../shared/bindings/WidgetSize";
 import { Agents, defaultAgentsSettings, resolveAgentsSettings } from "./kinds/agents/Agents";
-import {
-  Clock,
-  defaultClockSettings,
-  resolveClockSettings,
-  type ClockSize,
-} from "./kinds/clock/Clock";
+import { defaultClockSettings, type ClockSize } from "./kinds/clock/Clock";
+import { LiveClock } from "./kinds/clock/LiveClock";
 import { Discord } from "./kinds/discord/Discord";
 import { Note, defaultNoteSettings, resolveNoteSettings } from "./kinds/note/Note";
 import { Timer, defaultTimerSettings, resolveTimerSettings } from "./kinds/timer/Timer";
@@ -78,7 +74,6 @@ export interface WidgetRenderContext {
   size: WidgetSize;
   theme: ThemeId;
   settings: Record<string, unknown>;
-  now: Date;
   editMode: boolean;
   preview: boolean;
   pausedApp: boolean;
@@ -110,13 +105,8 @@ export const WIDGET_REGISTRY: Record<FreeWidgetKind, WidgetMeta> = {
     allowedSizes: ["pill", "s", "m"],
     defaultSize: "m",
     defaultSettings: { ...defaultClockSettings },
-    render: ({ now, settings, size, theme }) => (
-      <Clock
-        now={now}
-        settings={resolveClockSettings(settings)}
-        size={size as ClockSize}
-        theme={theme}
-      />
+    render: ({ settings, size, theme }) => (
+      <LiveClock settings={settings} size={size as ClockSize} theme={theme} />
     ),
     settingsSchema: [
       {

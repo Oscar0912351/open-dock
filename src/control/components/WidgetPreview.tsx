@@ -13,8 +13,6 @@ import { useLocale } from "../../shared/i18n";
 import { toAssetUrl } from "../../shared/ipc";
 import { ClusterShell } from "../../widget/cluster/ClusterShell";
 import { computeClusterTargetHeight, DEFAULT_CLUSTER_SIGNALS, resolveModuleModes } from "../../widget/cluster/resolveLayout";
-import { resolveClockSettings } from "../../widget/kinds/clock/Clock";
-import { useClock } from "../../widget/kinds/clock/useClock";
 import { renderWidget, WIDGET_REGISTRY } from "../../widget/registry";
 import { WidgetShell, WIDGET_SIZES, type ClusterFrameInfo, type GlassPlacementInfo } from "../../widget/WidgetShell";
 
@@ -104,9 +102,6 @@ export const WidgetPreview = memo(function WidgetPreview({
 
   // Forhåndsvisning viser den valgte motor ensartet på tværs af alle widgets i scenen.
   const previewEngine: GlassEngine = appearance.glassEngine;
-
-  const clockSettings = resolveClockSettings(kind === "clock" ? settings : undefined);
-  const now = useClock(kind === "clock" && clockSettings.showSeconds, kind === "clock");
 
   const syntheticInstance = useMemo<WidgetInstance>(() => {
     if (instance) return instance;
@@ -248,7 +243,6 @@ export const WidgetPreview = memo(function WidgetPreview({
       size,
       theme: effectiveTheme,
       settings: settings ?? {},
-      now,
       editMode: false,
       preview: true,
       pausedApp: true,

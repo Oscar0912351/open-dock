@@ -8,3 +8,4 @@ pub mod sound;
 pub mod system;
 pub mod timer;
 pub mod weather;
+pub mod worker;

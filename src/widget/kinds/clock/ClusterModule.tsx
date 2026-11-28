@@ -4,6 +4,7 @@ import type { ClusterModule } from "../../../shared/bindings/ClusterModule";
 import { formatDateLong, formatDateShort, formatTime, timeZoneCity } from "../../../shared/format";
 import { t, useLocale } from "../../../shared/i18n";
 import { resolveClockSettings, validTimeZone } from "./Clock";
+import { useClock } from "./useClock";
 import { RollingNumber } from "./RollingNumber";
 import { shouldIgnoreExpand, viewTransitionStyle, HintBadge } from "../../cluster/clusterModuleShared";
 
@@ -83,11 +84,12 @@ const ClockClusterMod = memo(function ClockClusterMod({
 });
 
 export function ClockClusterModule({ mod, mode, shared, onToggleExpand }: ClusterModuleRenderProps) {
+  const now = useClock(resolveClockSettings(mod.settings).showSeconds);
   return (
     <ClockClusterMod
       mod={mod}
       mode={mode}
-      now={shared.now}
+      now={now}
       preview={shared.preview}
       onToggleExpand={onToggleExpand}
     />

@@ -15,7 +15,6 @@ import type { WeatherSnapshot } from "../../shared/bindings/WeatherSnapshot";
 export interface ClusterModuleSharedData {
   widgetId: string;
   theme: ThemeId;
-  now: Date;
   editMode: boolean;
   pausedApp: boolean;
   preview?: boolean;
@@ -31,7 +30,6 @@ export interface ClusterModuleSharedData {
   /** Timer-snapshots pr. timer-modul-id — hentes i shell så de er levende
       selv når modulet er hidden (pin-regler og auto-udvidelse ved ring). */
   timerSnapshots?: ReadonlyMap<string, TimerListSnapshot>;
-  timerNowMs?: number;
   /** Moduler med aktivt input rapporterer fokus hit, så et showOnHover-modul
       ikke kollapser mens brugeren skriver. */
   onModuleFocus?: (moduleId: string, focused: boolean) => void;

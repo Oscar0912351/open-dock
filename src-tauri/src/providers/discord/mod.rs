@@ -10,11 +10,10 @@ pub mod wasapi;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::{
-    atomic::{AtomicBool, AtomicU64, Ordering},
+    atomic::{AtomicBool, Ordering},
     mpsc::{self, Receiver, Sender},
     Arc,
 };
-use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use parking_lot::Mutex;
@@ -24,6 +23,7 @@ use tauri::{AppHandle, Emitter, Manager};
 use ts_rs::TS;
 
 use crate::{error::AppError, util::unix_now_ms};
+use super::worker::{StopToken, Worker};
 use call_timer::CallTimer;
 use credentials::{DiscordRpcCredentials, DEFAULT_REDIRECT_URI};
 use ipc::{DiscordIpcPipe, PipeError, RawParticipant, SelfUserProfile, OP_PONG};
@@ -230,7 +230,6 @@ impl SnapshotKey {
 }
 
 pub struct DiscordProvider {
-    running: Arc<AtomicBool>,
     worker: Mutex<Option<Worker>>,
     latest: Arc<Mutex<Option<DiscordSnapshot>>>,
     config_dir: Mutex<Option<PathBuf>>,
@@ -238,12 +237,19 @@ pub struct DiscordProvider {
     rpc_status: Arc<Mutex<DiscordRpcStatus>>,
     cmd_tx: Arc<Mutex<Option<Sender<WorkerMsg>>>>,
     auth_in_progress: Arc<AtomicBool>,
-    generation: Arc<AtomicU64>,
 }
 
-struct Worker {
-    stop: Arc<AtomicBool>,
-    join: Option<JoinHandle<()>>,
+struct ClearCmdTxOnExit {
+    stop: StopToken,
+    cmd_tx: Arc<Mutex<Option<Sender<WorkerMsg>>>>,
+}
+
+impl Drop for ClearCmdTxOnExit {
+    fn drop(&mut self) {
+        if !self.stop.is_stopped() {
+            *self.cmd_tx.lock() = None;
+        }
+    }
 }
 
 impl Default for DiscordProvider {
@@ -255,7 +261,6 @@ impl Default for DiscordProvider {
 impl DiscordProvider {
     pub fn new() -> Self {
         Self {
-            running: Arc::new(AtomicBool::new(false)),
             worker: Mutex::new(None),
             latest: Arc::new(Mutex::new(None)),
             config_dir: Mutex::new(None),
@@ -263,7 +268,6 @@ impl DiscordProvider {
             rpc_status: Arc::new(Mutex::new(DiscordRpcStatus::default())),
             cmd_tx: Arc::new(Mutex::new(None)),
             auth_in_progress: Arc::new(AtomicBool::new(false)),
-            generation: Arc::new(AtomicU64::new(0)),
         }
     }
 
@@ -306,7 +310,8 @@ impl DiscordProvider {
     }
 
     pub fn start(&self, app: &AppHandle) {
-        if self.running.swap(true, Ordering::AcqRel) {
+        let mut slot = self.worker.lock();
+        if slot.as_ref().is_some_and(|worker| !worker.is_finished()) {
             return;
         }
         let cfg_dir = {
@@ -321,76 +326,46 @@ impl DiscordProvider {
         .unwrap_or_else(|| cfg_dir.join("discord-avatars"));
 
         log::info!(target: "provider:discord", "Starter discord-provider (RPC + WASAPI fallback)");
-        let stop = Arc::new(AtomicBool::new(false));
-        let stop_thread = Arc::clone(&stop);
         let latest = Arc::clone(&self.latest);
         let rpc_status = Arc::clone(&self.rpc_status);
         let auth_in_progress = Arc::clone(&self.auth_in_progress);
-        let running_flag = Arc::clone(&self.running);
         let (tx, rx) = mpsc::channel::<WorkerMsg>();
         *self.cmd_tx.lock() = Some(tx.clone());
         let cmd_tx_ref = Arc::clone(&self.cmd_tx);
         let app_handle = app.clone();
-        let my_gen = self.generation.fetch_add(1, Ordering::AcqRel) + 1;
-        let gen_ref = Arc::clone(&self.generation);
 
-        let join = std::thread::Builder::new()
-            .name("od-discord".into())
-            .spawn(move || {
-                let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    run_discord_thread(
-                        app_handle,
-                        stop_thread,
-                        latest,
-                        rpc_status,
-                        auth_in_progress,
-                        cfg_dir,
-                        cache_dir,
-                        tx,
-                        rx,
-                    );
-                }));
-                if let Err(payload) = res {
-                    let msg = payload
-                        .downcast_ref::<&str>()
-                        .copied()
-                        .or_else(|| payload.downcast_ref::<String>().map(String::as_str))
-                        .unwrap_or("ukendt panic");
-                    log::error!(target: "provider:discord", "od-discord-tråd afbrudt af panic: {msg}");
-                }
-                if gen_ref.load(Ordering::Acquire) == my_gen {
-                    *cmd_tx_ref.lock() = None;
-                    running_flag.store(false, Ordering::Release);
-                }
-            })
-            .ok();
-
-        if join.is_none() {
-            log::warn!(target: "provider:discord", "Kunne ikke starte od-discord-tråd");
+        let spawned = Worker::spawn("od-discord", "provider:discord", move |stop| {
+            let _clear_cmd_tx_on_exit = ClearCmdTxOnExit {
+                stop: stop.clone(),
+                cmd_tx: cmd_tx_ref,
+            };
+            run_discord_thread(
+                app_handle,
+                stop,
+                latest,
+                rpc_status,
+                auth_in_progress,
+                cfg_dir,
+                cache_dir,
+                tx,
+                rx,
+            );
+        });
+        if spawned.is_none() {
             *self.cmd_tx.lock() = None;
-            self.running.store(false, Ordering::Release);
-            return;
         }
-        *self.worker.lock() = Some(Worker { stop, join });
+        *slot = spawned;
     }
 
     pub fn stop(&self) {
-        let was_running = self.running.swap(false, Ordering::AcqRel);
-        self.generation.fetch_add(1, Ordering::AcqRel);
-        if !was_running {
+        let Some(worker) = self.worker.lock().take() else {
             return;
-        }
+        };
         log::info!(target: "provider:discord", "Stopper discord-provider");
         if let Some(tx) = self.cmd_tx.lock().take() {
             let _ = tx.send(WorkerMsg::Stop);
         }
-        if let Some(mut worker) = self.worker.lock().take() {
-            worker.stop.store(true, Ordering::Release);
-            if let Some(join) = worker.join.take() {
-                drop(join);
-            }
-            drop(worker);
-        }
+        drop(worker);
     }
 
     pub async fn connect_rpc(
@@ -1235,7 +1210,7 @@ fn try_open_and_auth_rpc(
 #[allow(clippy::too_many_arguments)]
 fn run_discord_thread(
     app: AppHandle,
-    stop: Arc<AtomicBool>,
+    stop: StopToken,
     latest: Arc<Mutex<Option<DiscordSnapshot>>>,
     rpc_status: Arc<Mutex<DiscordRpcStatus>>,
     auth_in_progress: Arc<AtomicBool>,
@@ -1309,7 +1284,7 @@ fn run_discord_thread(
         }
     };
 
-    while !stop.load(Ordering::Acquire) {
+    while !stop.is_stopped() {
         // 1. Dræn eventuelle beskeder (pause/attach/reload, voice-mute/deafen, avatar-ready).
         let mut pause_for_auth = false;
         let mut attached_pipe: Option<(DiscordIpcPipe, bool, SelfUserProfile)> = None;

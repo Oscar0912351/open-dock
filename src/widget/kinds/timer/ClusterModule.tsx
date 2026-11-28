@@ -10,6 +10,7 @@ import { formatCountdown, formatOvertime } from "./formatDuration";
 import { sortTimers } from "./sortTimers";
 import { chipLabel, Chips, releaseTimerFocus, TimerInput, TimerRow, timerItemTitle, timerRestMs } from "./Timer";
 import { cleanTimerLabel, parseTimerInput } from "./parseTimerInput";
+import { useTimerNow } from "./useTimers";
 import { shouldIgnoreExpand, viewTransitionStyle, HintBadge } from "../../cluster/clusterModuleShared";
 import "./timer.css";
 
@@ -169,6 +170,8 @@ const TimerClusterMod = memo(function TimerClusterMod({
 });
 
 export function TimerClusterModule({ mod, mode, shared, onToggleExpand }: ClusterModuleRenderProps) {
+  const snapshot = shared.timerSnapshots?.get(mod.id) ?? null;
+  const nowMs = useTimerNow(snapshot);
   return (
     <TimerClusterMod
       mod={mod}
@@ -176,8 +179,8 @@ export function TimerClusterModule({ mod, mode, shared, onToggleExpand }: Cluste
       widgetId={shared.widgetId}
       editMode={shared.editMode}
       preview={shared.preview}
-      snapshot={shared.timerSnapshots?.get(mod.id) ?? null}
-      nowMs={shared.timerNowMs ?? Date.now()}
+      snapshot={snapshot}
+      nowMs={nowMs}
       onModuleFocus={shared.onModuleFocus}
       onToggleExpand={onToggleExpand}
     />

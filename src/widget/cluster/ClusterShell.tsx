@@ -12,8 +12,6 @@ import { useProvider } from "../../shared/hooks/useProvider";
 import { t } from "../../shared/i18n";
 import { ipc } from "../../shared/ipc";
 import { reportFailure } from "../../shared/logging";
-import { resolveClockSettings } from "../kinds/clock/Clock";
-import { useClock } from "../kinds/clock/useClock";
 import {
   computeAgentsExpandedHeight,
   filterAgentSessions,
@@ -101,16 +99,11 @@ export function ClusterShell({
   const hasDiscord = cluster.modules.some((m) => m.kind === "discord");
   const hasAgents = cluster.modules.some((m) => m.kind === "agents");
   const firstWeather = cluster.modules.find((m) => m.kind === "weather");
-  const hasClock = cluster.modules.some((m) => m.kind === "clock");
-  const needsSeconds = cluster.modules.some(
-    (m) => m.kind === "clock" && resolveClockSettings(m.settings).showSeconds,
-  );
 
   const weatherLocId = firstWeather
     ? (resolveWeatherSettings(firstWeather.settings).locationId ?? locations[0]?.id ?? null)
     : null;
 
-  const now = useClock(hasClock && needsSeconds, hasClock);
   const media = useProvider("media", null, hasMedia);
   const system = useProvider("system", null, hasSystem);
   const discord = useProvider("discord", null, hasDiscord);
@@ -142,7 +135,7 @@ export function ClusterShell({
     () => cluster.modules.filter((m) => m.kind === "timer").map((m) => m.id),
     [cluster.modules],
   );
-  const { snapshots: timerSnapshots, nowMs: timerNowMs } = useClusterTimers(
+  const { snapshots: timerSnapshots } = useClusterTimers(
     timerModuleIds,
     !preview && timerModuleIds.length > 0,
   );
@@ -486,7 +479,6 @@ export function ClusterShell({
   const shared: ClusterModuleSharedData = {
     widgetId: instance.id,
     theme,
-    now,
     editMode,
     pausedApp,
     preview,
@@ -500,7 +492,6 @@ export function ClusterShell({
     agents: { status: agents.status, data: agents.data },
     agentsNowMs,
     timerSnapshots,
-    timerNowMs,
     onModuleFocus: reportModuleFocus,
   };
 
